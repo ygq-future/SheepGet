@@ -109,7 +109,7 @@
 工程已建立正式的质量契约，完整能力矩阵与边界说明详见 [docs/agents/quality.md](docs/agents/quality.md)。
 
 ### 1. 质量门禁执行命令
-- **统一门禁入口**：`node scripts/quality-gate.mjs`（亦可通过根目录 `npm run quality` 调用）。
+- **统一门禁入口**：`node scripts/quality-gate.mjs`（亦可通过根目录 `bun run quality` 调用）。
 - **门禁覆盖范围与工具职责**：
   1. **Go 代码格式检查**：`gofmt -l .`（check-only，发现未格式化代码即失败）。
   2. **Go 依赖清单校验**：`go mod verify`（检查缓存依赖完整性与哈希一致性）。

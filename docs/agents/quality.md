@@ -8,7 +8,7 @@
   ```bash
   node scripts/quality-gate.mjs
   # 或
-  npm run quality
+  bun run quality
   ```
 - **退出契约**：严格遵循 Check-Only 原则，任一检查项失败即非 0 退出阻断流程，无隐蔽修补、不篡改源码与锁文件。
 
