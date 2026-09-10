@@ -2,12 +2,21 @@
 
 ## 项目状态与依据
 
-- 项目处于已完成需求规格与任务拆分、尚未初始化业务工程的阶段。当前文档不代表代码、质量检查或跨平台能力已实现。
-- 当前目标为 Windows、macOS、Linux 桌面下载管理器，技术方向为 Wails + Go + Web 前端，配套浏览器为 Chrome 和 Edge。
+- 项目处于已完成工程脚手架初始化与质量门禁搭建、即将开展 Ticket 01（核心下载引擎与主界面）实施的阶段。
+- 当前目标为 Windows、macOS、Linux 桌面下载管理器，技术方向为 Wails v2 + Go (1.27) + Web 前端，配套浏览器为 Chrome 和 Edge。
 - 产品范围与验收以 `docs/spec.md` 及 GitHub 母 issue #1 为依据；任务范围以对应实施 issue 为准。原始背景见 `docs/project-desc.md`，讨论依据见 `docs/requirements-discussion.md`。
 - 探索领域前读取 `CONTEXT.md` 和相关 `docs/adr/`。术语表仅记录领域语言，架构决策写入 ADR，功能与验收写入规格。
 - 最新用户明确决定优先于旧文档；发现冲突应指出具体出处和影响，不得静默更换产品规则或扩大支持范围。
-- 数据库、前端框架、具体媒体库、依赖版本、通信协议和质量工具尚未确定。实际实施时基于项目证据选取，不能将候选方案当成已确认选型。
+- 技术选型已确认：
+  - 桌面框架：Wails v2 (`v2.15.0`)
+  - 后端：Go 1.27 (`go 1.27.1`)
+  - 前端基座：React 19 + TypeScript + Vite
+  - 样式与组件：Tailwind CSS v4 + Radix UI 原语 (`@radix-ui/react-*`) + Lucide 图标
+  - 交互与过渡动画：`motion` (Framer Motion)
+  - 纯 UI 临时状态：`zustand`（保持 Go 后端为任务状态唯一事实来源）
+  - 提交规范与校验：Conventional Commits (`@commitlint/cli` + `@commitlint/config-conventional` + `.git/hooks/commit-msg`)
+  - 包管理器与运行时：pnpm (`v12.3.4`)，Node.js (`v24.21.0`)
+  - 媒体处理：严格遵循 ADR-0001 原生 Go 媒体处理层
 
 ## 协作与执行边界
 
@@ -95,23 +104,25 @@
 - 测试随真实行为落地，不为凑数量写镜像实现的测试。首次加入业务行为必须建立有效测试入口，不能以无测试时返回成功替代覆盖。
 - 修改后运行与变更相称的检查，报告实际命令、目标范围、结果与未验证部分；未运行、缺 SDK、无目标平台和检查被跳过均不能记为通过。
 
-## 质量检查约束（待工程初始化时落地）
+## 质量检查约束（已落地 Quality Gate）
 
-当前仅记录质量契约：**尚无可执行 Quality Gate、Git hooks 或 CI，也没有已通过的质量检查。** 不得引用虚构命令或将本节描述为已配置的质量系统。
+工程已落地统一的 Check-Only Quality Gate 门禁与提交拦截体系：
 
-- 后续经授权搭建工程时，应提供一个统一的默认 Quality Gate，覆盖桌面后端、前端、扩展及维护的构建配置。具体命令依实际工具链建立后记录于本文件及项目质量文档。
-- 覆盖格式检查、语法/编译、类型检查、lint、编译器警告、弃用 API、静态分析、未使用/不可达/可疑代码、真实测试、构建和依赖/配置一致性；按能力选择最少且有效的工具。
-- 每个重叠规则族与文件范围有明确责任工具；构建成功不等于诊断干净，IDE 或语言服务器的有用诊断应寻找 CLI 等价覆盖并记录残余差距。
-- 默认入口覆盖声明的全部范围，采用 check-only 行为，不自动格式化、修复、改锁文件、更新基线或安装 hooks。快速/受影响范围模式必须独立命名，不能替代默认完整检查。
-- 工具与依赖版本可复现，缺少工具或子命令失败必须清晰失败；不能静默跳过、屏蔽退出码或临时拉取不固定版本来伪造通过。
-- 修改代码后执行适当检查；提交前对最终内容执行 **Implement → Quality Gate → Fix → Quality Gate → Commit**。门禁失败或不可用时报告阻塞，不提交代码或宣称编码任务完成。
-- 修复本次引入的错误、警告和弃用 API 诊断。历史问题须有相同条件下的基线或具体历史证据，不得未经认可加入忽略列表来获取绿色结果。
-- 禁止通过关闭规则、任意 suppression、删除测试、忽略返回值或 `--no-verify` 绕过失败。真实误报或兼容性例外需记录证据、精确范围、理由和复核条件，并按执行确认规则批准。
-- Git hooks 与 CI 复用统一检查任务，实际提交信息及 CI 提交范围纳入同一质量接口验证。提交格式应先检查项目约定，未选定验证器前不声称已有强制规则。
-- 明确本地提交前范围与跨平台 CI 必需范围；本地通过而远端待验必须如实报告。不得把失败项目临时转成 CI-only 或可选检查以允许提交。
-- CI 配置存在不等于远端检查已通过或分支保护已生效。初始化 Git、安装 hooks、添加 CI 或更改远端规则需在相应授权范围内执行。
-- 正式建立质量系统后记录能力、工具/配置、命令、模块/目标、执行阶段与严重性、状态及证据；验证成功与失败均能正确传播。当前所有此类执行验证均待实施。
-- 运行已建立的 Quality Gate 属于常规检查，不等于重新调用 project-quality；该技能仅在用户明确请求时用于搭建、审计或维护质量系统。
+### 1. 质量门禁执行命令
+- **统一门禁入口**：`node scripts/quality-gate.mjs`（亦可通过根目录 `npm run quality` 调用）。
+- **门禁覆盖范围与工具职责**：
+  1. **Go 代码格式检查**：`gofmt -l .`（check-only，发现未格式化代码即失败）。
+  2. **Go 编译与标准静态分析**：`go vet ./...`。
+  3. **Go 单元测试**：`go test ./...`。
+  4. **前端类型检查**：`pnpm --dir frontend typecheck` (`tsc --noEmit`)。
+  5. **前端 Lint 校验**：`pnpm --dir frontend lint` (`eslint .`)。
+  6. **前端格式检查**：`pnpm --dir frontend format:check` (`prettier --check .`)。
+- **退出契约**：全项通过退出码为 0，任一单项失败即非 0 退出，阻断后续流程。
+
+### 2. Git 提交与格式拦截
+- **Pre-commit Hook (`.git/hooks/pre-commit`)**：提交前自动执行统一 Quality Gate，门禁失败则中断提交。
+- **Commit-msg Hook (`.git/hooks/commit-msg`)**：强制遵循 Conventional Commits 规范（`feat:`, `fix:`, `docs:`, `refactor:`, `perf:`, `test:`, `chore:` 等），不合规提交信息将被直接拒绝。
+- 提交前严格遵守 **Implement → Quality Gate → Fix → Quality Gate → Commit** 闭环。
 
 ## Agent skills
 

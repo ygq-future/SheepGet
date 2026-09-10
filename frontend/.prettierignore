@@ -2,3 +2,4 @@ dist
 node_modules
 wailsjs
 src/wailsjs
+pnpm-lock.yaml
