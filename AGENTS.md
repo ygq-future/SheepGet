@@ -106,24 +106,27 @@
 
 ## 质量检查约束（已落地 Quality Gate）
 
-工程已落地统一的 Check-Only Quality Gate 门禁与提交拦截体系：
+工程已建立正式的质量契约，完整能力矩阵与边界说明详见 [docs/agents/quality.md](docs/agents/quality.md)。
 
 ### 1. 质量门禁执行命令
 - **统一门禁入口**：`node scripts/quality-gate.mjs`（亦可通过根目录 `npm run quality` 调用）。
 - **门禁覆盖范围与工具职责**：
   1. **Go 代码格式检查**：`gofmt -l .`（check-only，发现未格式化代码即失败）。
-  2. **Go 编译与标准静态分析**：`go vet ./...`。
-  3. **Go 单元测试**：`go test ./...`。
-  4. **前端类型检查**：`bun --cwd frontend typecheck` (`tsc --noEmit`)。
-  5. **前端 Lint 校验**：`bun --cwd frontend lint` (`eslint .`)。
-  6. **前端格式检查**：`bun --cwd frontend format:check` (`prettier --check .`)。
+  2. **Go 依赖清单校验**：`go mod verify`（检查缓存依赖完整性与哈希一致性）。
+  3. **Go 编译与标准静态分析**：`go vet .`。
+  4. **Go 单元测试**：`go test .`（脚手架阶段已就绪，首期业务行为实施时必须补充测试用例）。
+  5. **前端类型检查**：`bun run --cwd frontend typecheck` (`tsc --noEmit`)。
+  6. **前端 Lint 校验**：`bun run --cwd frontend lint` (`eslint .`)。
+  7. **前端格式检查**：`bun run --cwd frontend format:check` (`prettier --check .`)。
 - **退出契约**：全项通过退出码为 0，任一单项失败即非 0 退出，阻断后续流程。
 
 ### 2. Git 提交与格式拦截
 - **Pre-commit Hook (`.git/hooks/pre-commit`)**：提交前自动执行统一 Quality Gate，门禁失败则中断提交。
 - **Commit-msg Hook (`.git/hooks/commit-msg`)**：强制遵循 Conventional Commits 规范（`feat:`, `fix:`, `docs:`, `refactor:`, `perf:`, `test:`, `chore:` 等），不合规提交信息将被直接拒绝。
-- 提交前严格遵守 **Implement → Quality Gate → Fix → Quality Gate → Commit** 闭环。
 
+### 3. Agent 编码完成规则 (Coding-Completion Rule)
+
+修改代码后，在标记任务完成前运行与变更相称的检查。提交前，必须在最终代码树上执行完整的默认质量门禁：**Implement → Quality Gate → Fix → Quality Gate → Commit**。修复新引入的任何诊断，包括编译错误、警告和废弃 API 调用。若门禁失败或不可用，应立即报告阻塞并停止提交，不得宣称任务已完成。提交时附带符合规范的 commit message。禁止通过关闭规则、随意添加忽略/suppression、删除测试或使用 `--no-verify` 来强行获取通过结果。
 ## Agent skills
 
 ### Issue tracker

@@ -5,9 +5,9 @@
     "check:go:fmt": "bash -c 'test -z \"$(gofmt -l (git ls-files \"*.go\"))\"'",
     "check:go:vet": "go vet ./...",
     "check:go:test": "go test ./...",
-    "check:frontend:typecheck": "bun --cwd frontend run typecheck",
-    "check:frontend:lint": "bun --cwd frontend run lint",
-    "check:frontend:format": "bun --cwd frontend run format:check",
+    "check:frontend:typecheck": "bun run --cwd frontend typecheck",
+    "check:frontend:lint": "bun run --cwd frontend lint",
+    "check:frontend:format": "bun run --cwd frontend format:check",
     "quality": "node scripts/quality-gate.mjs"
   }
 }
