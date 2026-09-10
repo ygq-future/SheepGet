@@ -1,0 +1,13 @@
+{
+  "name": "sheep-get-workspace",
+  "private": true,
+  "scripts": {
+    "check:go:fmt": "bash -c 'test -z \"$(gofmt -l (git ls-files \"*.go\"))\"'",
+    "check:go:vet": "go vet ./...",
+    "check:go:test": "go test ./...",
+    "check:frontend:typecheck": "pnpm --dir frontend typecheck",
+    "check:frontend:lint": "pnpm --dir frontend lint",
+    "check:frontend:format": "pnpm --dir frontend format:check",
+    "quality": "node scripts/quality-gate.mjs"
+  }
+}
