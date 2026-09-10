@@ -30,15 +30,15 @@ const steps = [
   },
   {
     name: "Frontend TypeCheck",
-    run: () => runCmd("pnpm", ["--dir", "frontend", "typecheck"]).status === 0,
+    run: () => runCmd("bun", ["--cwd", "frontend", "typecheck"]).status === 0,
   },
   {
     name: "Frontend Lint",
-    run: () => runCmd("pnpm", ["--dir", "frontend", "lint"]).status === 0,
+    run: () => runCmd("bun", ["--cwd", "frontend", "lint"]).status === 0,
   },
   {
     name: "Frontend Format Check",
-    run: () => runCmd("pnpm", ["--dir", "frontend", "format:check"]).status === 0,
+    run: () => runCmd("bun", ["--cwd", "frontend", "format:check"]).status === 0,
   },
 ];
 

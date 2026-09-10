@@ -2,4 +2,5 @@ dist
 node_modules
 wailsjs
 src/wailsjs
-pnpm-lock.yaml
+bun.lock
+bun.lockb

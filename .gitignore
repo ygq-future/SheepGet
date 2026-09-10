@@ -23,6 +23,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-debug.log*
+bun.report*
+bun.isolate*
 
 # Wails
 frontend/dist/

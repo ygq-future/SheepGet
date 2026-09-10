@@ -5,13 +5,9 @@
     "check:go:fmt": "bash -c 'test -z \"$(gofmt -l (git ls-files \"*.go\"))\"'",
     "check:go:vet": "go vet ./...",
     "check:go:test": "go test ./...",
-    "check:frontend:typecheck": "pnpm --dir frontend typecheck",
-    "check:frontend:lint": "pnpm --dir frontend lint",
-    "check:frontend:format": "pnpm --dir frontend format:check",
+    "check:frontend:typecheck": "bun --cwd frontend run typecheck",
+    "check:frontend:lint": "bun --cwd frontend run lint",
+    "check:frontend:format": "bun --cwd frontend run format:check",
     "quality": "node scripts/quality-gate.mjs"
-  },
-  "devDependencies": {
-    "@commitlint/cli": "^21.2.2",
-    "@commitlint/config-conventional": "^21.2.2"
   }
 }

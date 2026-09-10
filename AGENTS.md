@@ -15,7 +15,7 @@
   - 交互与过渡动画：`motion` (Framer Motion)
   - 纯 UI 临时状态：`zustand`（保持 Go 后端为任务状态唯一事实来源）
   - 提交规范与校验：Conventional Commits (`@commitlint/cli` + `@commitlint/config-conventional` + `.git/hooks/commit-msg`)
-  - 包管理器与运行时：pnpm (`v12.3.4`)，Node.js (`v24.21.0`)
+  - 包管理器与运行时：Bun (`v1.4.0`)，Node.js (`v24.21.0`)
   - 媒体处理：严格遵循 ADR-0001 原生 Go 媒体处理层
 
 ## 协作与执行边界
@@ -114,9 +114,9 @@
   1. **Go 代码格式检查**：`gofmt -l .`（check-only，发现未格式化代码即失败）。
   2. **Go 编译与标准静态分析**：`go vet ./...`。
   3. **Go 单元测试**：`go test ./...`。
-  4. **前端类型检查**：`pnpm --dir frontend typecheck` (`tsc --noEmit`)。
-  5. **前端 Lint 校验**：`pnpm --dir frontend lint` (`eslint .`)。
-  6. **前端格式检查**：`pnpm --dir frontend format:check` (`prettier --check .`)。
+  4. **前端类型检查**：`bun --cwd frontend typecheck` (`tsc --noEmit`)。
+  5. **前端 Lint 校验**：`bun --cwd frontend lint` (`eslint .`)。
+  6. **前端格式检查**：`bun --cwd frontend format:check` (`prettier --check .`)。
 - **退出契约**：全项通过退出码为 0，任一单项失败即非 0 退出，阻断后续流程。
 
 ### 2. Git 提交与格式拦截
