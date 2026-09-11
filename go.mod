@@ -2,7 +2,10 @@ module sheep-get
 
 go 1.27.1
 
-require github.com/wailsapp/wails/v2 v2.15.0
+require (
+	github.com/wailsapp/wails/v2 v2.15.0
+	golang.org/x/sys v0.48.0
+)
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
@@ -31,6 +34,5 @@ require (
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

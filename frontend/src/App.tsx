@@ -1,41 +1,311 @@
-import { useState, type ChangeEvent } from 'react';
-import logo from './assets/images/logo-universal.png';
-import './App.css';
-import { Greet } from '../wailsjs/go/main/App';
+import { useState, useEffect } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import type { task } from '../wailsjs/go/models';
+import {
+  ListTasks,
+  AddTask,
+  PauseTask,
+  ResumeTask,
+  RetryTask,
+  DeleteTask,
+  OpenFile,
+  OpenFolder,
+  GetDefaultDownloadDir,
+} from '../wailsjs/go/main/App';
+import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
+import { TaskItem } from './components/TaskItem';
+import { AddTaskModal } from './components/AddTaskModal';
+import { DeleteConfirmModal } from './components/DeleteConfirmModal';
+import {
+  Plus,
+  DownloadCloud,
+  Layers,
+  CheckCircle2,
+  PauseCircle,
+  AlertCircle,
+  Inbox,
+} from 'lucide-react';
 
-function App() {
-  const [resultText, setResultText] = useState('Please enter your name below 👇');
-  const [name, setName] = useState('');
-  const updateName = (e: ChangeEvent<HTMLInputElement>) => setName(e.target.value);
-  const updateResultText = (result: string) => setResultText(result);
+export function App() {
+  const [tasks, setTasks] = useState<task.Task[]>([]);
+  const [filter, setFilter] = useState<'all' | 'downloading' | 'completed'>('all');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [defaultDir, setDefaultDir] = useState('');
+  const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
 
-  function greet() {
-    Greet(name)
-      .then(updateResultText)
-      .catch((error: unknown) => {
-        setResultText(error instanceof Error ? error.message : 'Unable to complete greeting.');
+  useEffect(() => {
+    let ignore = false;
+    void (async () => {
+      try {
+        const list = await ListTasks();
+        if (!ignore) setTasks(list || []);
+      } catch (err) {
+        console.error('Failed to load tasks:', err);
+      }
+    })();
+
+    void (async () => {
+      try {
+        const dir = await GetDefaultDownloadDir();
+        if (!ignore) setDefaultDir(dir);
+      } catch (err) {
+        console.error('Failed to get download dir:', err);
+      }
+    })();
+
+    const onUpdated = (updated: task.Task) => {
+      setTasks((prev) => {
+        const idx = prev.findIndex((t) => t.id === updated.id);
+        if (idx !== -1) {
+          const next = [...prev];
+          next[idx] = updated;
+          return next;
+        }
+        return [updated, ...prev];
       });
-  }
+    };
+
+    EventsOn('task:updated', onUpdated);
+    return () => {
+      ignore = true;
+      EventsOff('task:updated');
+    };
+  }, []);
+
+  const handleAddTask = async (url: string, dir: string, filename: string, maxConn: number) => {
+    await AddTask(url, dir, filename, maxConn);
+    const list = await ListTasks();
+    setTasks(list || []);
+  };
+
+  const handlePause = (id: string) => {
+    void (async () => {
+      await PauseTask(id);
+      const list = await ListTasks();
+      setTasks(list || []);
+    })();
+  };
+
+  const handleResume = (id: string) => {
+    void (async () => {
+      await ResumeTask(id);
+      const list = await ListTasks();
+      setTasks(list || []);
+    })();
+  };
+
+  const handleRetry = (id: string) => {
+    void (async () => {
+      await RetryTask(id);
+      const list = await ListTasks();
+      setTasks(list || []);
+    })();
+  };
+
+  const handleDeleteRequest = (id: string) => {
+    const target = tasks.find((t) => t.id === id);
+    if (target) {
+      setDeletingTask(target);
+    }
+  };
+
+  const handleConfirmDelete = (deleteDiskFile: boolean) => {
+    if (!deletingTask) return;
+    const targetId = deletingTask.id;
+    void (async () => {
+      await DeleteTask(targetId, deleteDiskFile);
+      setTasks((prev) => prev.filter((t) => t.id !== targetId));
+      setDeletingTask(null);
+    })();
+  };
+
+  const handleOpenFile = (filePath: string) => {
+    void (async () => {
+      await OpenFile(filePath);
+    })();
+  };
+
+  const handleOpenFolder = (folderPath: string) => {
+    void (async () => {
+      await OpenFolder(folderPath);
+    })();
+  };
+
+  const filteredTasks = tasks.filter((t) => {
+    if (filter === 'downloading') return t.status === 'downloading' || t.status === 'queued';
+    if (filter === 'completed') return t.status === 'completed';
+    return true;
+  });
+
+  const counts = {
+    total: tasks.length,
+    downloading: tasks.filter((t) => t.status === 'downloading' || t.status === 'queued').length,
+    paused: tasks.filter((t) => t.status === 'paused').length,
+    completed: tasks.filter((t) => t.status === 'completed').length,
+    error: tasks.filter((t) => t.status === 'error').length,
+  };
+
+  const navItems = [
+    {
+      id: 'all' as const,
+      label: '全部任务',
+      icon: Layers,
+      count: counts.total,
+      color: 'text-zinc-100',
+      badgeColor: 'bg-zinc-800 text-zinc-300',
+    },
+    {
+      id: 'downloading' as const,
+      label: '正在下载',
+      icon: DownloadCloud,
+      count: counts.downloading,
+      color: 'text-sky-400',
+      badgeColor: 'bg-sky-500/20 text-sky-400',
+    },
+    {
+      id: 'completed' as const,
+      label: '已完成',
+      icon: CheckCircle2,
+      count: counts.completed,
+      color: 'text-emerald-400',
+      badgeColor: 'bg-emerald-500/20 text-emerald-400',
+    },
+  ];
 
   return (
-    <div id="App">
-      <img src={logo} id="logo" alt="logo" />
-      <div id="result" className="result">
-        {resultText}
-      </div>
-      <div id="input" className="input-box">
-        <input
-          id="name"
-          className="input"
-          onChange={updateName}
-          autoComplete="off"
-          name="input"
-          type="text"
-        />
-        <button className="btn" onClick={greet}>
-          Greet
+    <div className="flex h-screen w-screen flex-col bg-zinc-950 font-sans text-zinc-100 antialiased select-none">
+      {/* Top Refined Bar */}
+      <header className="z-10 flex h-12 items-center justify-between border-b border-white/[0.06] bg-zinc-950/80 px-5 backdrop-blur-xl">
+        <div className="flex items-center gap-3">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 shadow-inner">
+            <DownloadCloud className="h-4 w-4" />
+          </div>
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-xs font-semibold tracking-tight text-zinc-100">SheepGet</h1>
+            <span className="font-mono text-[10px] text-zinc-500">v0.1.0</span>
+          </div>
+        </div>
+
+        <button
+          onClick={() => setModalOpen(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-zinc-950 shadow-md shadow-emerald-500/10 transition-all hover:bg-emerald-400 active:scale-98"
+        >
+          <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
+          新建任务
         </button>
+      </header>
+
+      {/* Main Container */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left Sidebar with Smooth Active Pill Transition */}
+        <aside className="flex w-52 flex-col justify-between border-r border-white/[0.06] bg-zinc-950/50 p-2.5">
+          <div className="space-y-1">
+            {navItems.map((item) => {
+              const isActive = filter === item.id;
+              const Icon = item.icon;
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setFilter(item.id)}
+                  className="group relative flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium outline-hidden transition-colors select-none"
+                >
+                  {/* Sliding Pill Indicator */}
+                  {isActive && (
+                    <motion.div
+                      layoutId="active-pill"
+                      className="absolute inset-0 rounded-lg bg-white/[0.08] shadow-inner"
+                      transition={{ type: 'spring', stiffness: 350, damping: 32 }}
+                    />
+                  )}
+
+                  <span
+                    className={`relative z-10 flex items-center gap-2 transition-colors ${
+                      isActive ? item.color : 'text-zinc-400 group-hover:text-zinc-200'
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span>{item.label}</span>
+                  </span>
+
+                  <span
+                    className={`py-0.2 relative z-10 rounded-full px-1.5 font-mono text-[10px] transition-colors ${
+                      isActive ? item.badgeColor : 'bg-zinc-800/80 text-zinc-400'
+                    }`}
+                  >
+                    {item.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-2 rounded-xl border border-white/[0.06] bg-zinc-900/40 p-2.5 text-[11px] text-zinc-400">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-zinc-400">
+                <PauseCircle className="h-3 w-3 text-zinc-500" /> 已暂停
+              </span>
+              <span className="font-mono font-medium text-zinc-300">{counts.paused}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-zinc-400">
+                <AlertCircle className="h-3 w-3 text-rose-400" /> 异常状态
+              </span>
+              <span className="font-mono font-medium text-rose-400">{counts.error}</span>
+            </div>
+          </div>
+        </aside>
+
+        {/* Task List Content Area */}
+        <main className="flex-1 overflow-y-auto bg-gradient-to-b from-zinc-950 to-zinc-900/20 p-5">
+          {filteredTasks.length === 0 ? (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex h-full flex-col items-center justify-center text-center"
+            >
+              <div className="rounded-2xl border border-white/[0.06] bg-zinc-900/80 p-5 text-zinc-600 shadow-inner">
+                <Inbox className="h-8 w-8 stroke-1 text-zinc-500" />
+              </div>
+              <p className="mt-3 text-xs font-medium text-zinc-300">暂无下载任务</p>
+              <p className="mt-1 text-[11px] text-zinc-500">点击右上角“新建任务”开始下载</p>
+            </motion.div>
+          ) : (
+            <div className="mx-auto max-w-4xl space-y-2.5">
+              <AnimatePresence mode="popLayout">
+                {filteredTasks.map((t) => (
+                  <TaskItem
+                    key={t.id}
+                    task={t}
+                    onPause={handlePause}
+                    onResume={handleResume}
+                    onRetry={handleRetry}
+                    onDelete={handleDeleteRequest}
+                    onOpenFile={handleOpenFile}
+                    onOpenFolder={handleOpenFolder}
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
+          )}
+        </main>
       </div>
+
+      <AddTaskModal
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+        defaultDir={defaultDir}
+        onAdd={handleAddTask}
+      />
+
+      <DeleteConfirmModal
+        open={Boolean(deletingTask)}
+        onOpenChange={(open) => {
+          if (!open) setDeletingTask(null);
+        }}
+        filename={deletingTask?.filename || ''}
+        onConfirm={handleConfirmDelete}
+      />
     </div>
   );
 }
