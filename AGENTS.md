@@ -15,7 +15,7 @@
   - 交互与过渡动画：`motion` (Framer Motion)
   - 纯 UI 临时状态：`zustand`（保持 Go 后端为任务状态唯一事实来源）
   - 提交规范与校验：Conventional Commits (`@commitlint/cli` + `@commitlint/config-conventional` + `.githooks/commit-msg`)
-  - 包管理器与运行时：Bun (`v1.4.0`)，Node.js (`v24.21.0`)
+  - 包管理器与运行时：Bun (`v1.4.2`)，Node.js (`v24.21.0`)
   - 媒体处理：严格遵循 ADR-0001 原生 Go 媒体处理层
 
 ## 协作与执行边界

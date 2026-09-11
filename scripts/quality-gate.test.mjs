@@ -5,7 +5,6 @@ import { resolve, join, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ESLint } from '../frontend/node_modules/eslint/lib/api.js';
 import * as prettier from '../frontend/node_modules/prettier/index.mjs';
-import ts from '../frontend/node_modules/typescript/lib/typescript.js';
 import { run } from './process.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -43,18 +42,28 @@ test('lint detects hooks, unsafe types, promises and deprecated calls', async ()
   assert.equal(valid[0].errorCount, 0);
 });
 
-test('TypeScript reports actual semantic errors', () => {
-  const file = 'quality-probe.ts';
-  const source = 'const value: number = "wrong"; export { value };';
-  const options = { noEmit: true, strict: true };
-  const host = ts.createCompilerHost(options);
-  const original = host.getSourceFile;
-  host.getSourceFile = (name, ...rest) =>
-    name === file
-      ? ts.createSourceFile(name, source, ts.ScriptTarget.Latest)
-      : original(name, ...rest);
-  const program = ts.createProgram([file], options, host);
-  assert.ok(ts.getPreEmitDiagnostics(program).some((d) => d.code === 2322));
+test('TypeScript 7 rejects semantic errors and accepts valid code', () => {
+  const base = join(root, '.tools');
+  const fixture = mkdtempSync(join(base, 'typescript-probe-'));
+  try {
+    const file = join(fixture, 'probe.ts');
+    const cli = join(root, 'frontend/node_modules/@typescript/native/bin/tsc');
+    writeFileSync(
+      join(fixture, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { noEmit: true, strict: true }, files: ['probe.ts'] }),
+    );
+    writeFileSync(file, 'const value: number = "wrong"; export { value };');
+    const args = [cli, '-p', join(fixture, 'tsconfig.json')];
+    const invalid = exec(process.execPath, args);
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stdout + invalid.stderr, /TS2322/);
+    writeFileSync(file, 'const value: number = 1; export { value };');
+    const valid = exec(process.execPath, args);
+    assert.equal(valid.status, 0, valid.stdout + valid.stderr);
+  } finally {
+    assert.ok(resolve(fixture).startsWith(resolve(base) + sep));
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test('Prettier loads Tailwind stylesheet and sorts cn classes', async () => {

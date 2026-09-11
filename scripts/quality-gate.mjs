@@ -124,7 +124,7 @@ const stages = {
       '--max-warnings',
       '0',
     ]);
-    node('node_modules/typescript/bin/tsc', ['--noEmit', '-p', 'tsconfig.json'], {
+    node('node_modules/@typescript/native/bin/tsc', ['--noEmit', '-p', 'tsconfig.json'], {
       cwd: join(root, 'frontend'),
     });
     node('node_modules/eslint/bin/eslint.js', ['.', '--max-warnings', '0'], {
