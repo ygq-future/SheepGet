@@ -1,0 +1,22 @@
+{
+  "adapters": {
+    "dlv": {
+      "command": "dlv",
+      "args": ["dap"],
+      "connectMode": "socket",
+      "languages": ["go"],
+      "fileTypes": [".go"],
+      "rootMarkers": ["go.mod", "go.sum", "go.work"],
+      "acceptsDirectoryProgram": true,
+      "launchDefaults": {
+        "request": "launch",
+        "mode": "debug",
+        "stopOnEntry": true
+      },
+      "attachDefaults": {
+        "request": "attach",
+        "mode": "local"
+      }
+    }
+  }
+}
