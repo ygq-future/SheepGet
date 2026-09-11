@@ -1,0 +1,27 @@
+{
+  "servers": {
+    "gopls": {
+      "command": "gopls",
+      "args": ["serve"],
+      "fileTypes": [".go", ".mod", ".sum"],
+      "rootMarkers": ["go.mod", "go.work", "go.sum"],
+      "settings": {
+        "gopls": {
+          "analyses": {
+            "unusedparams": true,
+            "shadow": true
+          },
+          "staticcheck": true,
+          "gofumpt": true
+        }
+      }
+    },
+    "typescript-native": {
+      "command": "tsc",
+      "args": ["--lsp", "--stdio"],
+      "fileTypes": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
+      "rootMarkers": ["package.json", "tsconfig.json", "frontend/package.json"]
+    }
+  },
+  "idleTimeoutMs": 300000
+}
