@@ -28,8 +28,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
       - run: node scripts/bootstrap.mjs --ci
-      - name: Check sources and native build
-        run: node scripts/quality-gate.mjs --ci
+      - name: Check sources and validation builds
+        run: node scripts/quality-gate.mjs
         env:
           GOFLAGS: ${{ runner.os == 'Linux' && '-tags=webkit2_41' || '' }}
       - name: Check commit range
@@ -42,12 +42,52 @@ jobs:
             BASE=ROOT
           fi
           node scripts/quality-gate.mjs --range "$BASE" "$HEAD"
+  build:
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.1'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.0'
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+      - run: node scripts/bootstrap.mjs --ci
+      - name: Build frontend assets
+        run: bun run --cwd frontend build
+      - name: Package native application
+        run: node scripts/native-build.mjs
+        env:
+          GOFLAGS: ${{ runner.os == 'Linux' && '-tags=webkit2_41' || '' }}
+      - name: Archive application
+        shell: bash
+        run: tar -czf sheep-get.tar.gz -C build/bin .
+      - name: Upload application
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: sheep-get-${{ runner.os }}-${{ runner.arch }}
+          path: sheep-get.tar.gz
+          if-no-files-found: error
+          retention-days: 14
   required:
     if: always()
-    needs: quality
+    needs: [quality, build]
     runs-on: ubuntu-24.04
     steps:
       - name: Require all platform checks
         env:
-          RESULT: ${{ needs.quality.result }}
-        run: test "$RESULT" = success
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: test "$QUALITY_RESULT" = success && test "$BUILD_RESULT" = success
