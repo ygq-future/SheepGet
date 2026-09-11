@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node scripts/quality-gate.mjs --message "$1"

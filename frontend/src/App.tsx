@@ -10,7 +10,11 @@ function App() {
   const updateResultText = (result: string) => setResultText(result);
 
   function greet() {
-    Greet(name).then(updateResultText);
+    Greet(name)
+      .then(updateResultText)
+      .catch((error: unknown) => {
+        setResultText(error instanceof Error ? error.message : 'Unable to complete greeting.');
+      });
   }
 
   return (

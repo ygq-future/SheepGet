@@ -2,7 +2,7 @@
 
 ## 项目状态与依据
 
-- 项目处于已完成工程脚手架初始化与质量门禁搭建、即将开展 Ticket 01（核心下载引擎与主界面）实施的阶段。
+- 项目处于已完成工程脚手架初始化并配置质量门禁（跨平台 CI 待验证）、即将开展 Ticket 01（核心下载引擎与主界面）实施的阶段。
 - 当前目标为 Windows、macOS、Linux 桌面下载管理器，技术方向为 Wails v2 + Go (1.27) + Web 前端，配套浏览器为 Chrome 和 Edge。
 - 产品范围与验收以 `docs/spec.md` 及 GitHub 母 issue #1 为依据；任务范围以对应实施 issue 为准。原始背景见 `docs/project-desc.md`，讨论依据见 `docs/requirements-discussion.md`。
 - 探索领域前读取 `CONTEXT.md` 和相关 `docs/adr/`。术语表仅记录领域语言，架构决策写入 ADR，功能与验收写入规格。
@@ -14,7 +14,7 @@
   - 样式与组件：Tailwind CSS v4 + Radix UI 原语 (`@radix-ui/react-*`) + Lucide 图标
   - 交互与过渡动画：`motion` (Framer Motion)
   - 纯 UI 临时状态：`zustand`（保持 Go 后端为任务状态唯一事实来源）
-  - 提交规范与校验：Conventional Commits (`@commitlint/cli` + `@commitlint/config-conventional` + `.git/hooks/commit-msg`)
+  - 提交规范与校验：Conventional Commits (`@commitlint/cli` + `@commitlint/config-conventional` + `.githooks/commit-msg`)
   - 包管理器与运行时：Bun (`v1.4.0`)，Node.js (`v24.21.0`)
   - 媒体处理：严格遵循 ADR-0001 原生 Go 媒体处理层
 
@@ -32,6 +32,7 @@
 
 **边界补充（纯文字性/文档性修改豁免）**：
 对于功能实现以外的纯文字性说明（如文档、规则、注释或配置中的文案调整），如果用户已经在指令中明确告知了具体的修改内容或文本，应直接精准执行修改，无需反复确认。
+
 ### 严禁自动提交 Git（验收确认前绝对禁止）
 
 **严禁 Agent 在完成功能或修改后自动执行 `git commit` 或 `git push`。**
@@ -118,39 +119,30 @@
 - 测试随真实行为落地，不为凑数量写镜像实现的测试。首次加入业务行为必须建立有效测试入口，不能以无测试时返回成功替代覆盖。
 - 修改后运行与变更相称的检查，报告实际命令、目标范围、结果与未验证部分；未运行、缺 SDK、无目标平台和检查被跳过均不能记为通过。
 
-## 质量检查约束（已落地 Quality Gate）
+## 质量检查约束
 
-工程已建立正式的质量契约，完整能力矩阵与边界说明详见 [docs/agents/quality.md](docs/agents/quality.md)。
+质量契约、能力矩阵和当前验证限制见 [docs/agents/quality.md](docs/agents/quality.md)。统一入口为 `node scripts/quality-gate.mjs`（或 `bun run quality`）；执行任务的组成以脚本为准，不在此维护另一份命令列表。
 
-### 1. 质量门禁执行命令
-- **统一门禁入口**：`node scripts/quality-gate.mjs`（亦可通过根目录 `bun run quality` 调用）。
-- **门禁覆盖范围与工具职责**：
-  1. **Go 代码格式检查**：`gofmt -l .`（check-only，发现未格式化代码即失败）。
-  2. **Go 依赖清单校验**：`go mod verify`（检查缓存依赖完整性与哈希一致性）。
-  3. **Go 编译与标准静态分析**：`go vet .`。
-  4. **Go 单元测试**：`go test .`（脚手架阶段已就绪，首期业务行为实施时必须补充测试用例）。
-  5. **前端类型检查**：`bun run --cwd frontend typecheck` (`tsc --noEmit`)。
-  6. **前端 Lint 校验**：`bun run --cwd frontend lint` (`eslint .`)。
-  7. **前端格式检查**：`bun run --cwd frontend format:check` (`prettier --check .`)。
-- **退出契约**：全项通过退出码为 0，任一单项失败即非 0 退出，阻断后续流程。
+- 首次克隆使用 `node scripts/bootstrap.mjs` 安装固定工具和本仓库 hooks；门禁本身采用 check-only，不能代替准备操作。
+- 修改代码后执行适当检查；提交前在最终代码树运行完整门禁，修复本次引入的诊断，包括警告与弃用 API。门禁失败或不可用时报告阻塞，不提交或宣称编码任务完成。
+- 质量检查通过后仍须用户验收并明确允许提交，禁止自动 commit/push。
+- 当前是脚手架阶段，Go/前端业务测试尚待首次下载行为落地；该实施必须关闭 scaffoldOnly 豁免并建立真实测试。缺失测试不能标为业务验收通过。
+- 本地提交校验与跨平台 CI 分别报告。macOS/Linux、远端 workflow 和分支保护未经实际验证不能称为已通过。
+- 禁止关闭规则、任意 suppression、删除有效测试或 --no-verify 获取通过。历史问题与误报例外遵循质量契约的证据和批准规则。
 
-### 2. Git 提交与格式拦截
-- **Pre-commit Hook (`.git/hooks/pre-commit`)**：提交前自动执行统一 Quality Gate，门禁失败则中断提交。
-- **Commit-msg Hook (`.git/hooks/commit-msg`)**：强制遵循 Conventional Commits 规范（`feat:`, `fix:`, `docs:`, `refactor:`, `perf:`, `test:`, `chore:` 等），不合规提交信息将被直接拒绝。
-
-### 3. Agent 编码完成规则 (Coding-Completion Rule)
-
-修改代码后，在标记任务完成前运行与变更相称的检查。提交前，必须在最终代码树上执行完整的默认质量门禁：**Implement → Quality Gate → Fix → Quality Gate**；门禁通过后**等待用户验收**，获得明确提交指令后方可执行 **Commit**。修复新引入的任何诊断，包括编译错误、警告和废弃 API 调用。若门禁失败或不可用，应立即报告阻塞并停止提交，不得宣称任务已完成。提交时附带符合规范的 commit message。禁止通过关闭规则、随意添加忽略/suppression、删除测试或使用 `--no-verify` 来强行获取通过结果。
 ## Agent skills
 
 ### Issue tracker
+
 使用 ygq-future/SheepGet 的 GitHub Issues 管理规格与任务。
 详见 docs/agents/issue-tracker.md。
 
 ### Triage labels
+
 采用默认的五种分诊标签。
 详见 docs/agents/triage-labels.md。
 
 ### Domain docs
+
 采用根目录 CONTEXT.md 和 docs/adr/ 的单一上下文布局。
 详见 docs/agents/domain.md。
