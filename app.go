@@ -7,8 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-
+	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
+	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -22,33 +23,50 @@ type FileConflictResult struct {
 
 // App struct
 type App struct {
-	app     *application.App
-	ctx     context.Context
-	manager *engine.Manager
-	store   task.TaskStore
+	app      *application.App
+	ctx      context.Context
+	manager  *engine.Manager
+	store    task.TaskStore
+	storage  *storage.Storage
+	settings *config.SettingsService
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	userConfigDir, err := os.UserConfigDir()
+	storeDir, err := storage.ResolveDataDir("")
 	if err != nil {
-		userConfigDir = "."
+		panic(fmt.Sprintf("failed to resolve storage: %v", err))
 	}
-	appDataDir := filepath.Join(userConfigDir, "SheepGet")
-	storeFile := filepath.Join(appDataDir, "tasks.json")
 
-	store, err := task.NewFileTaskStore(storeFile)
+	store, err := task.NewFileTaskStore(storeDir.TasksDB())
 	if err != nil {
 		panic(fmt.Sprintf("failed to init task store: %v", err))
 	}
 
-	downloader := engine.NewHTTPDownloader(nil)
-	mgr := engine.NewManager(store, downloader, engine.Config{MaxActiveTasks: 3})
+	defaultDownloadDir := getDefaultDownloadDir()
+	defaultTempDir := storeDir.TempDir()
 
 	app := &App{
-		manager: mgr,
 		store:   store,
+		storage: storeDir,
 	}
+
+	settingsSvc := config.NewSettingsService(
+		storeDir.ConfigFile(),
+		defaultDownloadDir,
+		defaultTempDir,
+		func(updated *config.Settings) {
+			app.OnSettingsUpdated(updated)
+		},
+	)
+	app.settings = settingsSvc
+
+	activeSettings := settingsSvc.Get()
+	downloader := engine.NewHTTPDownloader(nil)
+	mgr := engine.NewManager(store, downloader, engine.Config{
+		MaxActiveTasks: activeSettings.Download.MaxConcurrentDownloads,
+	})
+	app.manager = mgr
 
 	return app
 }
@@ -84,15 +102,65 @@ func (a *App) OnTaskUpdated(t *task.Task) {
 	}
 }
 
-// Greet remains for compatibility with existing tests
 func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
+}
+
+// OnSettingsUpdated emits wails event to the frontend whenever settings change
+func (a *App) OnSettingsUpdated(s *config.Settings) {
+	if a.manager != nil && s != nil {
+		a.manager.SetMaxActiveTasks(s.Download.MaxConcurrentDownloads)
+	}
+	if app := a.getApp(); app != nil {
+		app.Event.Emit("settings:updated", s)
+	}
+}
+
+// GetSettings returns current active settings
+func (a *App) GetSettings() config.Settings {
+	if a.settings == nil {
+		return config.DefaultSettings(a.GetDefaultDownloadDir(), "")
+	}
+	return a.settings.Get()
+}
+
+// UpdateSettings persists updated settings and broadcasts to all windows
+func (a *App) UpdateSettings(s config.Settings) (config.Settings, error) {
+	if a.settings == nil {
+		return s, fmt.Errorf("settings service not initialized")
+	}
+	return a.settings.Update(s)
+}
+
+// GetStorageInfo returns current storage mode and directories
+func (a *App) GetStorageInfo() map[string]string {
+	mode := "installed"
+	dataDir := ""
+	if a.storage != nil {
+		mode = string(a.storage.Mode)
+		dataDir = a.storage.DataDir
+	}
+	return map[string]string{
+		"mode":    mode,
+		"dataDir": dataDir,
+	}
+}
+
+// GetDefaultDownloadDir returns the default downloads folder from settings or system fallback
+func (a *App) GetDefaultDownloadDir() string {
+	if a.settings != nil {
+		cfg := a.settings.Get()
+		if cfg.Download.DefaultDirectory != "" {
+			return cfg.Download.DefaultDirectory
+		}
+	}
+	return getDefaultDownloadDir()
 }
 
 // AddTask adds a new download task
 func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
 	if dir == "" {
-		dir = getDefaultDownloadDir()
+		dir = a.GetDefaultDownloadDir()
 	}
 	return a.manager.AddTask(a.ctx, urlStr, dir, filename, maxConn)
 }
@@ -127,11 +195,6 @@ func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 // ListTasks lists all tasks
 func (a *App) ListTasks() ([]*task.Task, error) {
 	return a.manager.List(a.ctx)
-}
-
-// GetDefaultDownloadDir returns the default downloads folder
-func (a *App) GetDefaultDownloadDir() string {
-	return getDefaultDownloadDir()
 }
 
 // OpenFile opens the downloaded file with system default application
@@ -224,7 +287,6 @@ func (a *App) ResetAndDownloadWithNewURL(taskID, newURL string, headers map[stri
 	return a.manager.ResetAndDownloadWithNewURL(a.ctx, taskID, newURL, headers)
 }
 
-// SelectDirectory opens native directory picker dialog.
 func (a *App) SelectDirectory() (string, error) {
 	app := a.getApp()
 	if app == nil {
@@ -236,4 +298,20 @@ func (a *App) SelectDirectory() (string, error) {
 		CanChooseDirectories: true,
 		CanChooseFiles:       false,
 	}).PromptForSingleSelection()
+}
+
+// ValidateDirectory checks whether a directory path exists and is accessible.
+func (a *App) ValidateDirectory(dirPath string) (bool, string) {
+	dirPath = filepath.Clean(dirPath)
+	info, err := os.Stat(dirPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, "目录不存在"
+		}
+		return false, fmt.Sprintf("无法访问目录: %v", err)
+	}
+	if !info.IsDir() {
+		return false, "指定路径不是一个文件夹"
+	}
+	return true, ""
 }

@@ -25,7 +25,11 @@ import {
   PauseCircle,
   AlertCircle,
   Inbox,
+  Settings as SettingsIcon,
 } from 'lucide-react';
+import { useSettingsStore, initSettingsListener } from './stores/settings';
+import { SettingsPanel } from './components/SettingsPanel';
+import { ToastContainer } from './components/ui/Toast';
 
 function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
   return (list || []).filter((t): t is task.Task => t !== null);
@@ -33,12 +37,13 @@ function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[
 
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
-  const [filter, setFilter] = useState<'all' | 'downloading' | 'completed'>('all');
+  const [filter, setFilter] = useState<'all' | 'downloading' | 'completed' | 'settings'>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [defaultDir, setDefaultDir] = useState('');
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
   const [updatingLinkTask, setUpdatingLinkTask] = useState<task.Task | null>(null);
 
+  const { loadSettings } = useSettingsStore();
   const refreshTasks = async () => {
     try {
       const list = await ListTasks();
@@ -49,6 +54,8 @@ export function App() {
   };
 
   useEffect(() => {
+    void loadSettings();
+    const unlistenSettings = initSettingsListener();
     let ignore = false;
     void (async () => {
       try {
@@ -86,8 +93,9 @@ export function App() {
     return () => {
       ignore = true;
       unsubscribe();
+      unlistenSettings();
     };
-  }, []);
+  }, [loadSettings]);
 
   const handlePause = (id: string) => {
     void (async () => {
@@ -165,44 +173,46 @@ export function App() {
       label: '全部任务',
       icon: Layers,
       count: counts.total,
-      color: 'text-zinc-100',
-      badgeColor: 'bg-zinc-800 text-zinc-300',
+      color: 'text-[var(--text-primary)]',
+      badgeColor: 'bg-[var(--bg-subtle)] text-[var(--text-secondary)]',
     },
     {
       id: 'downloading' as const,
       label: '正在下载',
       icon: DownloadCloud,
       count: counts.downloading,
-      color: 'text-sky-400',
-      badgeColor: 'bg-sky-500/20 text-sky-400',
+      color: 'text-sky-500',
+      badgeColor: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
     },
     {
       id: 'completed' as const,
       label: '已完成',
       icon: CheckCircle2,
       count: counts.completed,
-      color: 'text-emerald-400',
-      badgeColor: 'bg-emerald-500/20 text-emerald-400',
+      color: 'text-[var(--accent)]',
+      badgeColor: 'bg-[var(--accent-muted)] text-[var(--accent)]',
     },
   ];
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-zinc-950 font-sans text-zinc-100 antialiased select-none">
+    <div className="flex h-screen w-screen flex-col bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
       {/* Top Refined Bar */}
-      <header className="z-10 flex h-12 items-center justify-between border-b border-white/[0.06] bg-zinc-950/80 px-5 backdrop-blur-xl">
+      <header className="z-10 flex h-12 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/80 px-5 backdrop-blur-xl">
         <div className="flex items-center gap-3">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-emerald-400 shadow-inner">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-focus)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-inner">
             <DownloadCloud className="h-4 w-4" />
           </div>
           <div className="flex items-baseline gap-2">
-            <h1 className="text-xs font-semibold tracking-tight text-zinc-100">SheepGet</h1>
-            <span className="font-mono text-[10px] text-zinc-500">v0.1.0</span>
+            <h1 className="text-xs font-semibold tracking-tight text-[var(--text-primary)]">
+              SheepGet
+            </h1>
+            <span className="font-mono text-[10px] text-[var(--text-muted)]">v0.1.0</span>
           </div>
         </div>
 
         <button
           onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-zinc-950 shadow-md shadow-emerald-500/10 transition-all hover:bg-emerald-400 active:scale-98"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
         >
           <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
           新建任务
@@ -212,7 +222,7 @@ export function App() {
       {/* Main Container */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Sidebar with Smooth Active Pill Transition */}
-        <aside className="flex w-52 flex-col justify-between border-r border-white/[0.06] bg-zinc-950/50 p-2.5">
+        <aside className="flex w-52 flex-col justify-between border-r border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 p-2.5">
           <div className="space-y-1">
             {navItems.map((item) => {
               const isActive = filter === item.id;
@@ -228,14 +238,16 @@ export function App() {
                   {isActive && (
                     <motion.div
                       layoutId="active-pill"
-                      className="absolute inset-0 rounded-lg bg-white/[0.08] shadow-inner"
+                      className="absolute inset-0 rounded-lg bg-[var(--bg-subtle)] shadow-xs"
                       transition={{ type: 'spring', stiffness: 350, damping: 32 }}
                     />
                   )}
 
                   <span
                     className={`relative z-10 flex items-center gap-2 transition-colors ${
-                      isActive ? item.color : 'text-zinc-400 group-hover:text-zinc-200'
+                      isActive
+                        ? item.color
+                        : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5 shrink-0" />
@@ -244,7 +256,7 @@ export function App() {
 
                   <span
                     className={`py-0.2 relative z-10 rounded-full px-1.5 font-mono text-[10px] transition-colors ${
-                      isActive ? item.badgeColor : 'bg-zinc-800/80 text-zinc-400'
+                      isActive ? item.badgeColor : 'bg-[var(--bg-subtle)] text-[var(--text-muted)]'
                     }`}
                   >
                     {item.count}
@@ -254,25 +266,55 @@ export function App() {
             })}
           </div>
 
-          <div className="space-y-2 rounded-xl border border-white/[0.06] bg-zinc-900/40 p-2.5 text-[11px] text-zinc-400">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-zinc-400">
-                <PauseCircle className="h-3 w-3 text-zinc-500" /> 已暂停
+          <div className="space-y-2">
+            {/* Settings Tab Button */}
+            <button
+              onClick={() => setFilter('settings')}
+              className="group relative flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium outline-hidden transition-colors select-none"
+            >
+              {filter === 'settings' && (
+                <motion.div
+                  layoutId="active-pill"
+                  className="absolute inset-0 rounded-lg bg-[var(--bg-subtle)] shadow-xs"
+                  transition={{ type: 'spring', stiffness: 350, damping: 32 }}
+                />
+              )}
+              <span
+                className={`relative z-10 flex items-center gap-2 transition-colors ${
+                  filter === 'settings'
+                    ? 'text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
+                }`}
+              >
+                <SettingsIcon className="h-3.5 w-3.5 shrink-0" />
+                <span>偏好设置</span>
               </span>
-              <span className="font-mono font-medium text-zinc-300">{counts.paused}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-zinc-400">
-                <AlertCircle className="h-3 w-3 text-rose-400" /> 异常状态
-              </span>
-              <span className="font-mono font-medium text-rose-400">{counts.error}</span>
+            </button>
+
+            <div className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 text-[11px] text-[var(--text-secondary)]">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                  <PauseCircle className="h-3 w-3 text-[var(--text-muted)]" /> 已暂停
+                </span>
+                <span className="font-mono font-medium text-[var(--text-primary)]">
+                  {counts.paused}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                  <AlertCircle className="h-3 w-3 text-rose-500" /> 异常状态
+                </span>
+                <span className="font-mono font-medium text-rose-500">{counts.error}</span>
+              </div>
             </div>
           </div>
         </aside>
 
-        {/* Task List Content Area */}
-        <main className="flex-1 overflow-y-auto bg-gradient-to-b from-zinc-950 to-zinc-900/20 p-5">
-          {filteredTasks.length === 0 ? (
+        {/* Main Content Area */}
+        <main className="flex-1 overflow-y-auto bg-[var(--bg-base)] p-5">
+          {filter === 'settings' ? (
+            <SettingsPanel />
+          ) : filteredTasks.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -335,6 +377,8 @@ export function App() {
         filename={deletingTask?.filename || ''}
         onConfirm={handleConfirmDelete}
       />
+
+      <ToastContainer />
     </div>
   );
 }

@@ -61,8 +61,8 @@ export function TaskItem({
     switch (t.status) {
       case task.Status.StatusDownloading:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-400">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent)]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" />
             下载中
           </span>
         );
@@ -75,14 +75,14 @@ export function TaskItem({
         );
       case task.Status.StatusPaused:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
             <Pause className="h-2.5 w-2.5" />
             已暂停
           </span>
         );
       case task.Status.StatusCompleted:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent)]">
             <CheckCircle2 className="h-2.5 w-2.5" />
             已完成
           </span>
@@ -106,25 +106,25 @@ export function TaskItem({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="group relative rounded-xl border border-white/[0.06] bg-zinc-900/50 p-4 shadow-xs backdrop-blur-sm transition-all duration-200 hover:border-white/[0.14] hover:bg-zinc-900/80 hover:shadow-lg hover:shadow-black/40"
+      className="group relative rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 shadow-xs backdrop-blur-sm transition-all duration-200 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/5 bg-zinc-800/80 text-zinc-400 transition-colors group-hover:text-zinc-200">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)] text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-primary)]">
               <HardDrive className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span
-                  className="truncate text-xs font-semibold tracking-tight text-zinc-100"
+                  className="truncate text-xs font-semibold tracking-tight text-[var(--text-primary)]"
                   title={t.filename}
                 >
                   {t.filename}
                 </span>
                 {renderStatusBadge()}
               </div>
-              <div className="flex items-center gap-2 truncate font-mono text-[11px] text-zinc-500">
+              <div className="flex items-center gap-2 truncate font-mono text-[11px] text-[var(--text-muted)]">
                 <div className="group/url flex min-w-0 items-center gap-1 truncate">
                   <span className="truncate" title={t.url}>
                     {t.url}
@@ -162,14 +162,14 @@ export function TaskItem({
             <>
               <button
                 onClick={() => onOpenFile(fullPath)}
-                className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
+                className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
                 title="打开文件"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => onOpenFolder(t.directory)}
-                className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-zinc-200"
+                className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]"
                 title="打开所在文件夹"
               >
                 <FolderOpen className="h-3.5 w-3.5" />
@@ -180,7 +180,7 @@ export function TaskItem({
           {t.status === task.Status.StatusDownloading && (
             <button
               onClick={() => onPause(t.id)}
-              className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-amber-400"
+              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-amber-500/10 hover:text-amber-500"
               title="暂停任务"
             >
               <Pause className="h-3.5 w-3.5" />
@@ -190,7 +190,7 @@ export function TaskItem({
           {(t.status === task.Status.StatusPaused || t.status === task.Status.StatusQueued) && (
             <button
               onClick={() => onResume(t.id)}
-              className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-emerald-400"
+              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
               title="继续下载"
             >
               <Play className="h-3.5 w-3.5" />
@@ -200,7 +200,7 @@ export function TaskItem({
           {t.status === task.Status.StatusError && (
             <button
               onClick={() => onRetry(t.id)}
-              className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-sky-400"
+              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-sky-500/10 hover:text-sky-500"
               title="重试下载"
             >
               <RotateCcw className="h-3.5 w-3.5" />
@@ -210,7 +210,7 @@ export function TaskItem({
             onUpdateLink && (
               <button
                 onClick={() => onUpdateLink(t)}
-                className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-sky-400"
+                className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-sky-500/10 hover:text-sky-500"
                 title="更新链接"
               >
                 <Link2 className="h-3.5 w-3.5" />
@@ -219,7 +219,7 @@ export function TaskItem({
 
           <button
             onClick={() => onDelete(t.id)}
-            className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-rose-500/10 hover:text-rose-400"
+            className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-rose-500/10 hover:text-rose-500"
             title="删除任务"
           >
             <Trash2 className="h-3.5 w-3.5" />
@@ -251,10 +251,10 @@ export function TaskItem({
                   <div
                     className={`h-full rounded-xs transition-all duration-200 ${
                       chunk.completed
-                        ? 'bg-emerald-500 shadow-xs shadow-emerald-500/50'
+                        ? 'bg-[var(--accent)] shadow-xs'
                         : t.status === task.Status.StatusError
                           ? 'bg-rose-500'
-                          : 'bg-sky-400 shadow-xs shadow-sky-400/50'
+                          : 'bg-[var(--accent)] opacity-90 shadow-xs'
                     }`}
                     style={{ width: `${chunkPercent}%` }}
                   />
@@ -264,31 +264,33 @@ export function TaskItem({
           </div>
         ) : (
           // Single Stream Progress Bar
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800/80 p-[1px]">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[1px]">
             <div
               className={`h-full rounded-full transition-all duration-200 ${
                 t.status === task.Status.StatusCompleted
-                  ? 'bg-emerald-500 shadow-xs shadow-emerald-500/50'
+                  ? 'bg-[var(--accent)] shadow-xs'
                   : t.status === task.Status.StatusError
                     ? 'bg-rose-500'
-                    : 'bg-sky-400 shadow-xs shadow-sky-400/50'
+                    : 'bg-[var(--accent)] shadow-xs'
               }`}
               style={{ width: `${percent}%` }}
             />
           </div>
         )}
 
-        <div className="flex items-center justify-between text-[11px] text-zinc-400">
+        <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-zinc-300">
+            <span className="font-mono text-[var(--text-primary)]">
               {formatBytes(t.downloaded)} / {formatBytes(t.totalBytes)}
             </span>
-            {t.totalBytes > 0 && <span className="font-mono text-zinc-500">({percent}%)</span>}
+            {t.totalBytes > 0 && (
+              <span className="font-mono text-[var(--text-muted)]">({percent}%)</span>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
             {t.status === task.Status.StatusDownloading && (
-              <span className="flex items-center gap-1 font-mono font-medium text-sky-400">
+              <span className="flex items-center gap-1 font-mono font-medium text-[var(--accent)]">
                 <ArrowDownCircle className="h-3 w-3" />
                 {formatSpeed(t.speed)}
               </span>
@@ -298,7 +300,7 @@ export function TaskItem({
                 {t.errorMsg}
               </span>
             )}
-            <span className="rounded-md border border-white/5 bg-zinc-800/60 px-1.5 py-0.5 text-[10px] text-zinc-500">
+            <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]">
               {t.maxConcurrency} 通道
             </span>
           </div>

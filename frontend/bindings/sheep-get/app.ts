@@ -15,6 +15,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as application$0 from "../github.com/wailsapp/wails/v3/pkg/application/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as config$0 from "./internal/config/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as engine$0 from "./internal/engine/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -80,8 +83,23 @@ export function GetDefaultDownloadDir(): $CancellablePromise<string> {
 }
 
 /**
- * Greet remains for compatibility with existing tests
+ * GetSettings returns current active settings
  */
+export function GetSettings(): $CancellablePromise<config$0.Settings> {
+    return $Call.ByID(2554697378).then(($result: any) => {
+        return $$createType5($result);
+    });
+}
+
+/**
+ * GetStorageInfo returns current storage mode and directories
+ */
+export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(3330596760).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
 export function Greet(name: string): $CancellablePromise<string> {
     return $Call.ByID(2659711170, name);
 }
@@ -91,8 +109,15 @@ export function Greet(name: string): $CancellablePromise<string> {
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
     return $Call.ByID(3109076673).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType7($result);
     });
+}
+
+/**
+ * OnSettingsUpdated emits wails event to the frontend whenever settings change
+ */
+export function OnSettingsUpdated(s: config$0.Settings | null): $CancellablePromise<void> {
+    return $Call.ByID(3585324432, s);
 }
 
 /**
@@ -128,7 +153,7 @@ export function PauseTask(id: string): $CancellablePromise<void> {
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType9($result);
     });
 }
 
@@ -164,9 +189,6 @@ export function RetryTask(id: string): $CancellablePromise<void> {
     return $Call.ByID(3354333520, id);
 }
 
-/**
- * SelectDirectory opens native directory picker dialog.
- */
 export function SelectDirectory(): $CancellablePromise<string> {
     return $Call.ByID(1735672136);
 }
@@ -188,6 +210,15 @@ export function StartPreDownload(urlStr: string, dir: string, filename: string, 
 }
 
 /**
+ * UpdateSettings persists updated settings and broadcasts to all windows
+ */
+export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
+    return $Call.ByID(2894041249, s).then(($result: any) => {
+        return $$createType5($result);
+    });
+}
+
+/**
  * UpdateTaskURL adopts the refreshed URL and request context, then continues the download.
  */
 export function UpdateTaskURL(taskID: string, newURL: string, headers: { [_ in string]?: string }): $CancellablePromise<task$0.Task | null> {
@@ -196,12 +227,21 @@ export function UpdateTaskURL(taskID: string, newURL: string, headers: { [_ in s
     });
 }
 
+/**
+ * ValidateDirectory checks whether a directory path exists and is accessible.
+ */
+export function ValidateDirectory(dirPath: string): $CancellablePromise<[boolean, string]> {
+    return $Call.ByID(2018273234, dirPath);
+}
+
 // Private type creation functions
 const $$createType0 = task$0.Task.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);
 const $$createType2 = $models.FileConflictResult.createFrom;
 const $$createType3 = engine$0.ConsistencyResult.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = $Create.Array($$createType1);
-const $$createType6 = engine$0.ProbeResult.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
+const $$createType5 = config$0.Settings.createFrom;
+const $$createType6 = $Create.Map($Create.Any, $Create.Any);
+const $$createType7 = $Create.Array($$createType1);
+const $$createType8 = engine$0.ProbeResult.createFrom;
+const $$createType9 = $Create.Nullable($$createType8);

@@ -29,10 +29,10 @@ export function Select<T extends string | number>({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className={`flex w-full items-center justify-between rounded-lg border border-white/10 bg-zinc-900/90 px-3 py-2 text-xs font-medium text-zinc-100 shadow-xs transition-all duration-150 hover:border-white/20 hover:bg-zinc-800/60 focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/20 focus:outline-hidden ${className}`}
+          className={`flex w-full items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-medium text-[var(--text-primary)] shadow-xs transition-all duration-200 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden ${className}`}
         >
           <span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform duration-200" />
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-200" />
         </button>
       </DropdownMenu.Trigger>
 
@@ -40,7 +40,7 @@ export function Select<T extends string | number>({
         <DropdownMenu.Content
           align="start"
           sideOffset={6}
-          className="animate-in fade-in-80 zoom-in-95 z-50 min-w-(--radix-dropdown-menu-trigger-width) overflow-hidden rounded-lg border border-white/10 bg-zinc-900/95 p-1 text-zinc-200 shadow-2xl backdrop-blur-xl"
+          className="animate-in fade-in-80 zoom-in-95 z-50 min-w-(--radix-dropdown-menu-trigger-width) overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-primary)] shadow-2xl backdrop-blur-xl"
         >
           {options.map((opt) => {
             const isSelected = opt.value === value;
@@ -50,19 +50,17 @@ export function Select<T extends string | number>({
                 onSelect={() => onChange(opt.value)}
                 className={`group flex cursor-pointer items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium outline-hidden transition-colors select-none ${
                   isSelected
-                    ? 'bg-emerald-500/10 text-emerald-400'
-                    : 'text-zinc-300 hover:bg-white/10 hover:text-zinc-100'
+                    ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]'
                 }`}
               >
                 <div className="flex flex-col">
                   <span>{opt.label}</span>
                   {opt.description && (
-                    <span className="text-[10px] text-zinc-500 group-hover:text-zinc-400">
-                      {opt.description}
-                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)]">{opt.description}</span>
                   )}
                 </div>
-                {isSelected && <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+                {isSelected && <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />}
               </DropdownMenu.Item>
             );
           })}

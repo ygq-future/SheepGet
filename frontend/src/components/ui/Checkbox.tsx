@@ -31,9 +31,9 @@ export function Checkbox({
           e.stopPropagation();
           onCheckedChange(!checked);
         }}
-        className={`mt-0.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-all duration-150 group-hover:border-white/40 focus:ring-2 focus:ring-emerald-500/20 focus:outline-hidden ${
+        className={`mt-0.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-all duration-150 group-hover:border-white/40 focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden ${
           checked
-            ? 'border-emerald-500 bg-emerald-500 text-zinc-950 shadow-xs'
+            ? 'border-[var(--accent)] bg-[var(--accent)] text-white shadow-xs'
             : 'border-white/20 bg-zinc-900'
         }`}
       >

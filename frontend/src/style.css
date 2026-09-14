@@ -1,25 +1,22 @@
 @import 'tailwindcss';
 
 :root {
-  /* Surface colors */
+  /* Default dark theme */
   --bg-base: #09090b;
   --bg-surface: #121215;
   --bg-surface-hover: #18181c;
   --bg-subtle: #1e1e24;
   --bg-active: rgba(255, 255, 255, 0.08);
 
-  /* Border colors */
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-hover: rgba(255, 255, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.16);
   --border-focus: rgba(16, 185, 129, 0.5);
 
-  /* Text colors */
   --text-primary: #f4f4f5;
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
   --text-dim: #52525b;
 
-  /* Brand and functional colors */
   --accent: #10b981;
   --accent-hover: #34d399;
   --accent-muted: rgba(16, 185, 129, 0.15);
@@ -31,6 +28,38 @@
   --error-muted: rgba(244, 63, 94, 0.15);
 }
 
+:root.light {
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f1f5f9;
+  --bg-subtle: #e2e8f0;
+  --bg-active: rgba(0, 0, 0, 0.06);
+
+  --border-subtle: #e2e8f0;
+  --border-hover: #cbd5e1;
+  --border-focus: rgba(16, 185, 129, 0.5);
+
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
+}
+
+:root.dark {
+  --bg-base: #09090b;
+  --bg-surface: #121215;
+  --bg-surface-hover: #18181c;
+  --bg-subtle: #1e1e24;
+  --bg-active: rgba(255, 255, 255, 0.08);
+
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.16);
+
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-dim: #52525b;
+}
 @layer base {
   * {
     box-sizing: border-box;
