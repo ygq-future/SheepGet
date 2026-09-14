@@ -8,7 +8,7 @@ tasks:
   build:
     desc: Builds the application
     cmds:
-      - go build -tags production{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -ldflags="-w -s" -o {{.BIN_DIR}}/{{.APP_NAME}}{{exeExt}} .
+      - '{{if eq .DEV "true"}}go build{{if .EXTRA_TAGS}} -tags {{.EXTRA_TAGS}}{{end}} -o {{.BIN_DIR}}/{{.APP_NAME}}{{exeExt}} .{{else}}go build -tags production{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -ldflags="-w -s" -o {{.BIN_DIR}}/{{.APP_NAME}}{{exeExt}} .{{end}}'
 
   run:
     desc: Runs the application binary

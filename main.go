@@ -23,6 +23,9 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
+		OnShutdown: func() {
+			app.Shutdown()
+		},
 	})
 
 	app.SetApplication(wailsApp)

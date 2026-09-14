@@ -95,6 +95,13 @@ func (a *App) startup(ctx context.Context) {
 	a.manager.AddListener(a)
 }
 
+// Shutdown is called when the app is terminating to cleanly stop manager and persist state.
+func (a *App) Shutdown() {
+	if a.manager != nil {
+		a.manager.Close()
+	}
+}
+
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
 func (a *App) OnTaskUpdated(t *task.Task) {
 	if app := a.getApp(); app != nil {
