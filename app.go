@@ -14,6 +14,12 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// FileConflictResult represents whether target file exists and suggests an alternative filename.
+type FileConflictResult struct {
+	Exists            bool   `json:"exists"`
+	SuggestedFilename string `json:"suggestedFilename"`
+}
+
 // App struct
 type App struct {
 	ctx     context.Context
@@ -135,4 +141,74 @@ func (a *App) OpenFolder(folderPath string) error {
 		cmd = exec.Command("xdg-open", folderPath)
 	}
 	return cmd.Start()
+}
+
+// ProbeURL inspects the URL metadata and reports whether an existing task already uses the URL.
+func (a *App) ProbeURL(urlStr string) (*engine.ProbeResult, error) {
+	return a.manager.ProbeURL(a.ctx, urlStr)
+}
+
+// CheckFileConflict checks if filename exists in dir and returns conflict status and suggested name.
+func (a *App) CheckFileConflict(dir, filename string) FileConflictResult {
+	if dir == "" {
+		dir = getDefaultDownloadDir()
+	}
+	exists, suggested := engine.CheckFileConflict(dir, filename)
+	return FileConflictResult{
+		Exists:            exists,
+		SuggestedFilename: suggested,
+	}
+}
+
+// ResolveDuplicate resolves a duplicate task using strategies "continue", "redownload", "copy", or "show_completed".
+func (a *App) ResolveDuplicate(taskID, strategy, dir, filename string, maxConn int) (*task.Task, error) {
+	if dir == "" {
+		dir = getDefaultDownloadDir()
+	}
+	return a.manager.ResolveDuplicate(a.ctx, taskID, strategy, dir, filename, maxConn)
+}
+
+// StartPreDownload starts downloading in the background while file info dialog is displayed.
+func (a *App) StartPreDownload(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
+	if dir == "" {
+		dir = getDefaultDownloadDir()
+	}
+	return a.manager.StartPreDownload(a.ctx, urlStr, dir, filename, maxConn)
+}
+
+// ConfirmPreDownload confirms the pre-download task with final user-chosen directory and filename.
+func (a *App) ConfirmPreDownload(taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error) {
+	if finalDir == "" {
+		finalDir = getDefaultDownloadDir()
+	}
+	return a.manager.ConfirmPreDownload(a.ctx, taskID, finalDir, finalFilename, maxConn)
+}
+
+// CancelPreDownload handles cancellation of pre-download dialog.
+func (a *App) CancelPreDownload(taskID string) error {
+	return a.manager.CancelPreDownload(a.ctx, taskID)
+}
+
+// CheckURLConsistency decides whether a refreshed URL still serves the same file, so existing
+// progress can be reused. headers replaces the task request context when non-nil.
+func (a *App) CheckURLConsistency(taskID, newURL string, headers map[string]string) (*engine.ConsistencyResult, error) {
+	return a.manager.CheckURLConsistency(a.ctx, taskID, newURL, headers)
+}
+
+// UpdateTaskURL adopts the refreshed URL and request context, then continues the download.
+func (a *App) UpdateTaskURL(taskID, newURL string, headers map[string]string) (*task.Task, error) {
+	return a.manager.UpdateTaskURL(a.ctx, taskID, newURL, headers)
+}
+
+// ResetAndDownloadWithNewURL discards existing progress and restarts the download from the new URL.
+func (a *App) ResetAndDownloadWithNewURL(taskID, newURL string, headers map[string]string) (*task.Task, error) {
+	return a.manager.ResetAndDownloadWithNewURL(a.ctx, taskID, newURL, headers)
+}
+
+// SelectDirectory opens native directory picker dialog.
+func (a *App) SelectDirectory() (string, error) {
+	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		DefaultDirectory: getDefaultDownloadDir(),
+		Title:            "选择保存目录",
+	})
 }

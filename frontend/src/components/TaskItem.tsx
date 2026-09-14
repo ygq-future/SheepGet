@@ -16,6 +16,7 @@ import {
   ExternalLink,
   Copy,
   Check,
+  Link2,
 } from 'lucide-react';
 
 interface TaskItemProps {
@@ -26,6 +27,7 @@ interface TaskItemProps {
   onDelete: (id: string) => void;
   onOpenFile: (filePath: string) => void;
   onOpenFolder: (folderPath: string) => void;
+  onUpdateLink?: (task: task.Task) => void;
 }
 
 export function TaskItem({
@@ -36,6 +38,7 @@ export function TaskItem({
   onDelete,
   onOpenFile,
   onOpenFolder,
+  onUpdateLink,
 }: TaskItemProps) {
   const [copied, setCopied] = useState(false);
 
@@ -203,6 +206,15 @@ export function TaskItem({
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           )}
+          {(t.status === 'paused' || t.status === 'error') && onUpdateLink && (
+            <button
+              onClick={() => onUpdateLink(t)}
+              className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-sky-400"
+              title="更新链接"
+            >
+              <Link2 className="h-3.5 w-3.5" />
+            </button>
+          )}
 
           <button
             onClick={() => onDelete(t.id)}
@@ -231,7 +243,9 @@ export function TaskItem({
                 <div
                   key={idx}
                   className="relative h-2 overflow-hidden rounded-sm border border-white/5 bg-zinc-800/90 p-[0.5px]"
-                  title={`通道 ${idx + 1}: ${formatBytes(chunk.downloaded)} / ${formatBytes(chunkSize)} (${chunkPercent}%)`}
+                  title={`通道 ${idx + 1}: ${formatBytes(chunk.downloaded)} / ${formatBytes(
+                    chunkSize,
+                  )} (${chunkPercent}%)`}
                 >
                   <div
                     className={`h-full rounded-xs transition-all duration-200 ${

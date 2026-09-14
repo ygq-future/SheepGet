@@ -3,7 +3,6 @@ import { AnimatePresence, motion } from 'motion/react';
 import type { task } from '../wailsjs/go/models';
 import {
   ListTasks,
-  AddTask,
   PauseTask,
   ResumeTask,
   RetryTask,
@@ -14,7 +13,8 @@ import {
 } from '../wailsjs/go/main/App';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 import { TaskItem } from './components/TaskItem';
-import { AddTaskModal } from './components/AddTaskModal';
+import { FileInfoModal } from './components/FileInfoModal';
+import { UpdateLinkModal } from './components/UpdateLinkModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import {
   Plus,
@@ -32,6 +32,16 @@ export function App() {
   const [modalOpen, setModalOpen] = useState(false);
   const [defaultDir, setDefaultDir] = useState('');
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
+  const [updatingLinkTask, setUpdatingLinkTask] = useState<task.Task | null>(null);
+
+  const refreshTasks = async () => {
+    try {
+      const list = await ListTasks();
+      setTasks(list || []);
+    } catch (err) {
+      console.error('Failed to load tasks:', err);
+    }
+  };
 
   useEffect(() => {
     let ignore = false;
@@ -71,12 +81,6 @@ export function App() {
       EventsOff('task:updated');
     };
   }, []);
-
-  const handleAddTask = async (url: string, dir: string, filename: string, maxConn: number) => {
-    await AddTask(url, dir, filename, maxConn);
-    const list = await ListTasks();
-    setTasks(list || []);
-  };
 
   const handlePause = (id: string) => {
     void (async () => {
@@ -283,6 +287,7 @@ export function App() {
                     onDelete={handleDeleteRequest}
                     onOpenFile={handleOpenFile}
                     onOpenFolder={handleOpenFolder}
+                    onUpdateLink={(task) => setUpdatingLinkTask(task)}
                   />
                 ))}
               </AnimatePresence>
@@ -291,11 +296,25 @@ export function App() {
         </main>
       </div>
 
-      <AddTaskModal
+      <FileInfoModal
         open={modalOpen}
         onOpenChange={setModalOpen}
         defaultDir={defaultDir}
-        onAdd={handleAddTask}
+        onTasksChanged={() => {
+          void refreshTasks();
+        }}
+      />
+
+      <UpdateLinkModal
+        key={updatingLinkTask?.id ?? 'none'}
+        open={Boolean(updatingLinkTask)}
+        onOpenChange={(open) => {
+          if (!open) setUpdatingLinkTask(null);
+        }}
+        task={updatingLinkTask}
+        onUpdated={() => {
+          void refreshTasks();
+        }}
       />
 
       <DeleteConfirmModal

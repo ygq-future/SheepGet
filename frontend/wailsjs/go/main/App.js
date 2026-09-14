@@ -6,6 +6,22 @@ export function AddTask(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['AddTask'](arg1, arg2, arg3, arg4);
 }
 
+export function CancelPreDownload(arg1) {
+  return window['go']['main']['App']['CancelPreDownload'](arg1);
+}
+
+export function CheckFileConflict(arg1, arg2) {
+  return window['go']['main']['App']['CheckFileConflict'](arg1, arg2);
+}
+
+export function CheckURLConsistency(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CheckURLConsistency'](arg1, arg2, arg3);
+}
+
+export function ConfirmPreDownload(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ConfirmPreDownload'](arg1, arg2, arg3, arg4);
+}
+
 export function DeleteTask(arg1, arg2) {
   return window['go']['main']['App']['DeleteTask'](arg1, arg2);
 }
@@ -38,10 +54,34 @@ export function PauseTask(arg1) {
   return window['go']['main']['App']['PauseTask'](arg1);
 }
 
+export function ProbeURL(arg1) {
+  return window['go']['main']['App']['ProbeURL'](arg1);
+}
+
+export function ResetAndDownloadWithNewURL(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ResetAndDownloadWithNewURL'](arg1, arg2, arg3);
+}
+
+export function ResolveDuplicate(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['ResolveDuplicate'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function ResumeTask(arg1) {
   return window['go']['main']['App']['ResumeTask'](arg1);
 }
 
 export function RetryTask(arg1) {
   return window['go']['main']['App']['RetryTask'](arg1);
+}
+
+export function SelectDirectory() {
+  return window['go']['main']['App']['SelectDirectory']();
+}
+
+export function StartPreDownload(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartPreDownload'](arg1, arg2, arg3, arg4);
+}
+
+export function UpdateTaskURL(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateTaskURL'](arg1, arg2, arg3);
 }

@@ -47,6 +47,10 @@ type Task struct {
 
 	// Chunks for multi-connection download state
 	Chunks []Chunk `json:"chunks,omitempty"`
+
+	// RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
+	// links whose authorization has expired; applied to every probe and transfer request.
+	RequestHeaders map[string]string `json:"requestHeaders,omitempty"`
 }
 
 // TaskStore defines the storage interface for persisting and querying tasks.

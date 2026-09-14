@@ -81,7 +81,7 @@ func TestHTTPDownloader_ProbeAndDownload(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Test Probe
-	info, err := downloader.Probe(ctx, ts.URL)
+	info, err := downloader.Probe(ctx, ts.URL, nil)
 	if err != nil {
 		t.Fatalf("Probe failed: %v", err)
 	}

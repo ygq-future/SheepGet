@@ -33,11 +33,12 @@ var (
 
 // HTTPProbeInfo holds the result of probing an HTTP/HTTPS resource.
 type HTTPProbeInfo struct {
-	TotalBytes   int64
-	Resumable    bool
-	ETag         string
-	LastModified string
-	Filename     string
+	TotalBytes   int64  `json:"totalBytes"`
+	Resumable    bool   `json:"resumable"`
+	ETag         string `json:"etag"`
+	LastModified string `json:"lastModified"`
+	Filename     string `json:"filename"`
+	ContentType  string `json:"contentType"`
 }
 
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
@@ -72,8 +73,9 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 	return &HTTPDownloader{client: client}
 }
 
-// Probe inspects URL metadata without downloading the body.
-func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string) (*HTTPProbeInfo, error) {
+// Probe inspects URL metadata without downloading the body. headers carries the request
+// context of the task (Referer/Cookie/Authorization) so expired links can be re-checked.
+func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, headers map[string]string) (*HTTPProbeInfo, error) {
 	var resp *http.Response
 	var err error
 
@@ -85,6 +87,7 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string) (*HTTPProbeIn
 		req.Header.Set("Range", "bytes=0-0")
 		req.Header.Set("User-Agent", UserAgentChrome)
 		req.Header.Set("Accept", "*/*")
+		applyRequestHeaders(req, headers)
 		req.Close = true
 
 		resp, err = d.client.Do(req)
@@ -94,14 +97,17 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string) (*HTTPProbeIn
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
+		// Discard the unusable response so an error status is never mistaken for a successful probe.
+		resp = nil
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	if err != nil {
+	if err != nil || resp == nil {
 		headReq, hErr := http.NewRequestWithContext(ctx, http.MethodHead, urlStr, nil)
 		if hErr == nil {
 			headReq.Header.Set("User-Agent", UserAgentChrome)
 			headReq.Header.Set("Accept", "*/*")
+			applyRequestHeaders(headReq, headers)
 			headReq.Close = true
 			resp, err = d.client.Do(headReq)
 		}
@@ -116,10 +122,15 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string) (*HTTPProbeIn
 		}
 	}()
 
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return nil, fmt.Errorf("probe failed: server returned %s", resp.Status)
+	}
+
 	info := &HTTPProbeInfo{
 		TotalBytes:   -1,
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
+		ContentType:  resp.Header.Get("Content-Type"),
 	}
 
 	// Determine resumability and total size
@@ -158,6 +169,15 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string) (*HTTPProbeIn
 	}
 
 	return info, nil
+}
+
+// applyRequestHeaders copies task request context onto an outgoing request. Range, User-Agent
+// and Accept are set by the caller; any header the task carries wins on collision so an updated
+// link can override them.
+func applyRequestHeaders(req *http.Request, headers map[string]string) {
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 }
 
 func parseContentDisposition(cd string) (string, map[string]string, error) {
@@ -212,6 +232,7 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	}
 	req.Header.Set("User-Agent", UserAgentChrome)
 	req.Header.Set("Accept", "*/*")
+	applyRequestHeaders(req, t.RequestHeaders)
 	req.Close = true
 
 	// Single stream non-resumable: always start fresh
@@ -385,6 +406,7 @@ func (d *HTTPDownloader) downloadChunk(
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	req.Header.Set("User-Agent", UserAgentChrome)
 	req.Header.Set("Accept", "*/*")
+	applyRequestHeaders(req, t.RequestHeaders)
 	req.Close = true // Clean single connection per stream
 
 	// Version consistency validation headers
