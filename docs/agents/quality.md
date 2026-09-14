@@ -14,7 +14,7 @@
 
 ## 前置与安装
 
-工具版本的唯一清单为 `scripts/quality-tools.json`；Node 24.21.0、Bun 1.4.2、Go 1.27.1。Go 模块锁定 Wails v2.15.0；根目录和前端分别拥有 Bun 锁文件。
+工具版本的唯一清单为 `scripts/quality-tools.json`；Node 24.21.0、Bun 1.4.2、Go 1.27.1。Go 模块锁定 Wails v3.0.0-beta.20；根目录和前端分别拥有 Bun 锁文件。
 
 首次克隆执行 `node scripts/bootstrap.mjs`：冻结安装两套 JS 依赖，将固定版本 golangci-lint、Wails CLI、actionlint 安装到项目 `.tools`，并仅设置本仓库 hooks 路径。CI 使用 `--ci` 不安装本地 hooks。bootstrap 是有副作用的准备操作，不属于 check-only 门禁。
 
@@ -22,7 +22,7 @@
 
 ## 依赖升级与兼容策略
 
-2026-09-11 核对 npm 官方 registry、Go 模块更新与官方发布资料后，使用 TypeScript 7.0.2、Vite 8.3.0、React 插件 6.1.1 和 Bun 1.4.2。Node 保持 24.21.0 LTS，Go 保持 1.27.1，Wails 保持 v2.15.0。
+2026-09-14 核对依赖与官方发布资料后，使用 TypeScript 7.0.2、Vite 8.3.0、React 插件 6.1.1 和 Bun 1.4.2。Node 保持 24.21.0 LTS，Go 保持 1.27.1，Wails 升级至 v3.0.0-beta.20。
 
 TypeScript 采用[官方并存方案](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/)：@typescript/native 是 typescript 7.0.2 的 npm 别名，负责 tsc 类型检查；typescript 是 @typescript/typescript6 6.0.2 的别名，为 typescript-eslint 提供编译器 API。两者职责分别为类型检查与类型感知 lint；质量自测通过实际 TS 7 进程验证合法/非法输入，不以 TS 6 API 的结果替代 TS 7 检查。[typescript-eslint 的兼容范围](https://typescript-eslint.io/users/dependency-versions/)当前仍为 >=4.8.4 <6.1.0。
 
@@ -79,7 +79,7 @@ CI 使用固定 action 提交、固定工具版本和冻结安装，按以下依
 3. 每个平台仅在本平台打包成功后归档 build/bin 并上传至该次 Actions 运行的 Artifacts。归档使用 tar.gz 保留可执行权限与应用包结构，名称包含系统和架构，保留 14 天；缺少上传文件直接失败。产物是应用构建结果，不包含签名、公证或 GitHub Release 发布。
 4. required 汇总 quality 与 build；只有两组矩阵全部成功（包括上传）才成功。它必须被仓库分支保护设为必需检查才能阻止合并。
 
-Ubuntu 使用 GTK3/WebKitGTK 4.1 和 webkit2_41 标签。远端 workflow 首次执行、实际上传和保护规则仍需用户授权提交/推送后验证。
+Ubuntu 24.04 依赖 GTK4 与 WebKitGTK 6.0（libgtk-4-dev、libwebkitgtk-6.0-dev）。远端 workflow 首次执行、实际上传和保护规则仍需用户授权提交/推送后验证。
 
 ## 验证记录
 

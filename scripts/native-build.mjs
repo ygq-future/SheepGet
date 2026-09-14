@@ -21,19 +21,10 @@ try {
       },
     });
   }
-  run(
-    join(base, 'wails' + (process.platform === 'win32' ? '.exe' : '')),
-    [
-      'build',
-      '-skipbindings',
-      '-skipembedcreate',
-      '-m',
-      '-nosyncgomod',
-      '-s',
-      ...(process.platform === 'linux' ? ['-tags', 'webkit2_41'] : []),
-    ],
-    { cwd: workspace, stdio: 'inherit' },
-  );
+  run(join(base, 'wails3' + (process.platform === 'win32' ? '.exe' : '')), ['build'], {
+    cwd: workspace,
+    stdio: 'inherit',
+  });
   cpSync(join(workspace, 'build/bin'), join(root, 'build/bin'), { recursive: true });
 } finally {
   rmSync(workspace, { recursive: true, force: true });

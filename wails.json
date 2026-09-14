@@ -1,11 +1,12 @@
 {
-  "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "sheep-get",
-  "outputfilename": "sheep-get",
-  "frontend:install": "bun install",
-  "frontend:build": "bun run build",
-  "frontend:dev:watcher": "bun run dev",
-  "frontend:dev:serverUrl": "auto",
+  "frontend": {
+    "dir": "./frontend",
+    "install": "bun install",
+    "build": "bun run build",
+    "dev": "bun run dev",
+    "devServerUrl": "auto"
+  },
   "author": {
     "name": "sheepyu",
     "email": "3029944576@qq.com"

@@ -4,7 +4,7 @@ import hooks from 'eslint-plugin-react-hooks';
 import { defineConfig } from 'eslint/config';
 
 export default defineConfig([
-  { ignores: ['dist/**', 'wailsjs/**', 'node_modules/**'] },
+  { ignores: ['dist/**', 'bindings/**', 'node_modules/**'] },
   { files: ['**/*.{js,mjs}'], extends: [js.configs.recommended] },
   {
     files: ['**/*.{ts,tsx}'],

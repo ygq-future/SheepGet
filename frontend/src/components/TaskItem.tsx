@@ -1,6 +1,6 @@
 import { motion } from 'motion/react';
 import { useState } from 'react';
-import type { task } from '../../wailsjs/go/models';
+import * as task from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed } from '../lib/format';
 import {
   Play,
@@ -59,35 +59,35 @@ export function TaskItem({
 
   const renderStatusBadge = () => {
     switch (t.status) {
-      case 'downloading':
+      case task.Status.StatusDownloading:
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-400">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
             下载中
           </span>
         );
-      case 'queued':
+      case task.Status.StatusQueued:
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
             <Clock className="h-2.5 w-2.5" />
             排队中
           </span>
         );
-      case 'paused':
+      case task.Status.StatusPaused:
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-white/5 bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
             <Pause className="h-2.5 w-2.5" />
             已暂停
           </span>
         );
-      case 'completed':
+      case task.Status.StatusCompleted:
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
             <CheckCircle2 className="h-2.5 w-2.5" />
             已完成
           </span>
         );
-      case 'error':
+      case task.Status.StatusError:
         return (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-400">
             <AlertCircle className="h-2.5 w-2.5" />
@@ -158,7 +158,7 @@ export function TaskItem({
 
         {/* Action Controls */}
         <div className="flex items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100">
-          {t.status === 'completed' && (
+          {t.status === task.Status.StatusCompleted && (
             <>
               <button
                 onClick={() => onOpenFile(fullPath)}
@@ -177,7 +177,7 @@ export function TaskItem({
             </>
           )}
 
-          {t.status === 'downloading' && (
+          {t.status === task.Status.StatusDownloading && (
             <button
               onClick={() => onPause(t.id)}
               className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-amber-400"
@@ -187,7 +187,7 @@ export function TaskItem({
             </button>
           )}
 
-          {(t.status === 'paused' || t.status === 'queued') && (
+          {(t.status === task.Status.StatusPaused || t.status === task.Status.StatusQueued) && (
             <button
               onClick={() => onResume(t.id)}
               className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-emerald-400"
@@ -197,7 +197,7 @@ export function TaskItem({
             </button>
           )}
 
-          {t.status === 'error' && (
+          {t.status === task.Status.StatusError && (
             <button
               onClick={() => onRetry(t.id)}
               className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-sky-400"
@@ -206,15 +206,16 @@ export function TaskItem({
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           )}
-          {(t.status === 'paused' || t.status === 'error') && onUpdateLink && (
-            <button
-              onClick={() => onUpdateLink(t)}
-              className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-sky-400"
-              title="更新链接"
-            >
-              <Link2 className="h-3.5 w-3.5" />
-            </button>
-          )}
+          {(t.status === task.Status.StatusPaused || t.status === task.Status.StatusError) &&
+            onUpdateLink && (
+              <button
+                onClick={() => onUpdateLink(t)}
+                className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-sky-400"
+                title="更新链接"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+              </button>
+            )}
 
           <button
             onClick={() => onDelete(t.id)}
@@ -251,7 +252,7 @@ export function TaskItem({
                     className={`h-full rounded-xs transition-all duration-200 ${
                       chunk.completed
                         ? 'bg-emerald-500 shadow-xs shadow-emerald-500/50'
-                        : t.status === 'error'
+                        : t.status === task.Status.StatusError
                           ? 'bg-rose-500'
                           : 'bg-sky-400 shadow-xs shadow-sky-400/50'
                     }`}
@@ -266,9 +267,9 @@ export function TaskItem({
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800/80 p-[1px]">
             <div
               className={`h-full rounded-full transition-all duration-200 ${
-                t.status === 'completed'
+                t.status === task.Status.StatusCompleted
                   ? 'bg-emerald-500 shadow-xs shadow-emerald-500/50'
-                  : t.status === 'error'
+                  : t.status === task.Status.StatusError
                     ? 'bg-rose-500'
                     : 'bg-sky-400 shadow-xs shadow-sky-400/50'
               }`}
@@ -286,13 +287,13 @@ export function TaskItem({
           </div>
 
           <div className="flex items-center gap-3">
-            {t.status === 'downloading' && (
+            {t.status === task.Status.StatusDownloading && (
               <span className="flex items-center gap-1 font-mono font-medium text-sky-400">
                 <ArrowDownCircle className="h-3 w-3" />
                 {formatSpeed(t.speed)}
               </span>
             )}
-            {t.status === 'error' && t.errorMsg && (
+            {t.status === task.Status.StatusError && t.errorMsg && (
               <span className="max-w-xs truncate font-mono text-rose-400" title={t.errorMsg}>
                 {t.errorMsg}
               </span>

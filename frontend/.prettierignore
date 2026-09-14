@@ -1,6 +1,5 @@
 dist
 node_modules
-wailsjs
-src/wailsjs
+bindings
 bun.lock
 bun.lockb

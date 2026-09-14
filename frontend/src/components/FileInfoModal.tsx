@@ -16,7 +16,8 @@ import {
 import { Select, type SelectOption } from './ui/Select';
 import { Checkbox } from './ui/Checkbox';
 import { formatBytes } from '../lib/format';
-import type { task, engine } from '../../wailsjs/go/models';
+import * as task from '../../bindings/sheep-get/internal/task/models';
+import type * as engine from '../../bindings/sheep-get/internal/engine/models';
 import {
   ProbeURL,
   CheckFileConflict,
@@ -26,8 +27,9 @@ import {
   CancelPreDownload,
   AddTask,
   SelectDirectory,
-} from '../../wailsjs/go/main/App';
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
+} from '../../bindings/sheep-get/app';
+import { Events } from '@wailsio/runtime';
+import { unwrapEventData } from '../lib/utils';
 
 interface FileInfoModalProps {
   open: boolean;
@@ -123,12 +125,13 @@ export function FileInfoModal({
   // Live pre-download progress: the Go backend stays the single source of truth for task state.
   useEffect(() => {
     if (!open) return;
-    const onTaskUpdated = (updatedTask: task.Task) => {
-      if (updatedTask.id === preTask?.id) setPreTask(updatedTask);
+    const onTaskUpdated = (event: unknown) => {
+      const updatedTask = unwrapEventData<task.Task>(event);
+      if (updatedTask && updatedTask.id === preTask?.id) setPreTask(updatedTask);
     };
-    EventsOn('task:updated', onTaskUpdated);
+    const unsubscribe = Events.On('task:updated', onTaskUpdated);
     return () => {
-      EventsOff('task:updated');
+      unsubscribe();
     };
   }, [open, preTask?.id]);
 
@@ -150,8 +153,8 @@ export function FileInfoModal({
         try {
           const result = await ProbeURL(trimmed);
           setProbeResult(result);
-          setDuplicateTask(result.duplicateTask ?? null);
-          setFilename((current) => current || result.filename || '');
+          setDuplicateTask(result?.duplicateTask ?? null);
+          setFilename((current) => current || result?.filename || '');
         } catch (err) {
           // Metadata is optional: an unreachable probe still allows a manual download.
           setProbeResult(null);
@@ -227,11 +230,13 @@ export function FileInfoModal({
         try {
           const result = await ProbeURL(trimmed);
           setProbeResult(result);
-          setDuplicateTask(result.duplicateTask ?? null);
+          setDuplicateTask(result?.duplicateTask ?? null);
           // Follow the probed name so an edited URL never keeps the previous resource's name,
           // unless the user typed a name of their own.
-          if (!nameEditedRef.current) setFilename(result.filename || '');
-          await tryStartPreDownload(result, trimmed, latestRef.current.preDownload);
+          if (!nameEditedRef.current) setFilename(result?.filename || '');
+          if (result) {
+            await tryStartPreDownload(result, trimmed, latestRef.current.preDownload);
+          }
         } catch (err) {
           // Metadata is optional: an unreachable probe still allows a manual download.
           setProbeResult(null);
@@ -424,7 +429,7 @@ export function FileInfoModal({
                 </div>
                 <p className="text-[11px] text-zinc-400">请选择处理方式：</p>
                 <div className="flex flex-wrap items-center gap-2 pt-1">
-                  {duplicateTask.status === 'completed' ? (
+                  {duplicateTask.status === task.Status.StatusCompleted ? (
                     <button
                       type="button"
                       onClick={() => void handleResolveDuplicate('show_completed')}
@@ -601,7 +606,7 @@ export function FileInfoModal({
                   <div className="flex items-center justify-between text-zinc-400">
                     <span className="flex items-center gap-1 text-sky-400">
                       <DownloadCloud className="h-3 w-3 animate-pulse" />
-                      {preTask.status === 'completed' ? '已提前完成' : '后台传输中'}
+                      {preTask.status === task.Status.StatusCompleted ? '已提前完成' : '后台传输中'}
                     </span>
                     <span className="font-mono">
                       {formatBytes(preTask.downloaded)} / {formatBytes(preTask.totalBytes)} (
@@ -633,7 +638,7 @@ export function FileInfoModal({
               >
                 {loading
                   ? '正在处理...'
-                  : preTask?.status === 'completed'
+                  : preTask?.status === task.Status.StatusCompleted
                     ? '确认并使用成品'
                     : '确认下载'}
               </button>

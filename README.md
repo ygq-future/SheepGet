@@ -6,7 +6,7 @@
 
 ## 技术方向
 
-Wails v2.15.0、Go 1.27.1、React 19、TypeScript、Vite、Tailwind CSS v4、Radix UI、Motion 和 Zustand。Go 后端是业务状态唯一事实来源。媒体处理遵循 [ADR-0001](docs/adr/0001-native-go-media-processing.md)。
+Wails v3 Beta (v3.0.0-beta.20)、Go 1.27.1、React 19、TypeScript、Vite、Tailwind CSS v4、Radix UI、Motion 和 Zustand。Go 后端是业务状态唯一事实来源。多原生窗口架构遵循 [ADR-0002](docs/adr/0002-wails-v3-multi-window-architecture.md)，媒体处理遵循 [ADR-0001](docs/adr/0001-native-go-media-processing.md)。
 
 ## 开发准备
 
@@ -20,16 +20,22 @@ node scripts/bootstrap.mjs
 
 该步骤冻结安装根目录及前端依赖，将固定版本工具安装到 .tools，并启用本仓库 .githooks。不会改全局 Git 配置。
 
-开发启动使用项目本地 Wails：
+开发启动可直接运行：
+
+```sh
+bun run dev
+```
+
+或调用项目本地 Wails3 工具：
 
 ```sh
 # Windows PowerShell
-.\.tools\wails.exe dev
+.\.tools\wails3.exe dev
 # macOS / Linux
-./.tools/wails dev
+./.tools/wails3 dev
 ```
 
-生产构建使用同一路径的 Wails CLI 执行 build。平台依赖和 Linux 标签见 [质量契约](docs/agents/quality.md)。
+生产构建使用同一路径的 Wails3 CLI 执行 build。平台依赖见 [质量契约](docs/agents/quality.md)。
 
 ## 质量检查
 

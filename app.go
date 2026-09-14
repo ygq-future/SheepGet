@@ -11,7 +11,7 @@ import (
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
 
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // FileConflictResult represents whether target file exists and suggests an alternative filename.
@@ -22,6 +22,7 @@ type FileConflictResult struct {
 
 // App struct
 type App struct {
+	app     *application.App
 	ctx     context.Context
 	manager *engine.Manager
 	store   task.TaskStore
@@ -52,6 +53,24 @@ func NewApp() *App {
 	return app
 }
 
+// SetApplication sets the Wails application reference
+func (a *App) SetApplication(app *application.App) {
+	a.app = app
+}
+
+func (a *App) getApp() *application.App {
+	if a.app != nil {
+		return a.app
+	}
+	return application.Get()
+}
+
+// ServiceStartup is called when Wails v3 service initializes
+func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
+	a.startup(ctx)
+	return nil
+}
+
 // startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
@@ -60,8 +79,8 @@ func (a *App) startup(ctx context.Context) {
 
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
 func (a *App) OnTaskUpdated(t *task.Task) {
-	if a.ctx != nil && a.ctx.Value("frontend") != nil {
-		wailsRuntime.EventsEmit(a.ctx, "task:updated", t)
+	if app := a.getApp(); app != nil {
+		app.Event.Emit("task:updated", t)
 	}
 }
 
@@ -207,8 +226,14 @@ func (a *App) ResetAndDownloadWithNewURL(taskID, newURL string, headers map[stri
 
 // SelectDirectory opens native directory picker dialog.
 func (a *App) SelectDirectory() (string, error) {
-	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		DefaultDirectory: getDefaultDownloadDir(),
-		Title:            "选择保存目录",
-	})
+	app := a.getApp()
+	if app == nil {
+		return "", fmt.Errorf("application not initialized")
+	}
+	return app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+		Title:                "选择保存目录",
+		Directory:            getDefaultDownloadDir(),
+		CanChooseDirectories: true,
+		CanChooseFiles:       false,
+	}).PromptForSingleSelection()
 }

@@ -3,7 +3,7 @@
 ## 项目状态与依据
 
 - 项目处于已完成工程脚手架初始化并配置质量门禁（跨平台 CI 待验证）、即将开展 Ticket 01（核心下载引擎与主界面）实施的阶段。
-- 当前目标为 Windows、macOS、Linux 桌面下载管理器，技术方向为 Wails v2 + Go (1.27) + Web 前端，配套浏览器为 Chrome 和 Edge。
+- 当前目标为 Windows、macOS、Linux 桌面下载管理器，技术方向为 Wails v3 Beta (`v3.0.0-beta.20`) + Go (1.27) + Web 前端，配套浏览器为 Chrome 和 Edge。
 - 产品范围与验收以 `docs/spec.md` 及 GitHub 母 issue #1 为依据；任务范围以对应实施 issue 为准。原始背景见 `docs/project-desc.md`，讨论依据见 `docs/requirements-discussion.md`。
 - 探索领域前读取 `CONTEXT.md` 和相关 `docs/adr/`。术语表仅记录领域语言，架构决策写入 ADR，功能与验收写入规格。
 - 最新用户明确决定优先于旧文档；发现冲突应指出具体出处和影响，不得静默更换产品规则或扩大支持范围。

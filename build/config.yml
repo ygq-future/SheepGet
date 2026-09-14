@@ -1,0 +1,36 @@
+version: '3'
+
+info:
+  companyName: 'SheepGet'
+  productName: 'SheepGet'
+  productIdentifier: 'com.sheepget.app'
+  description: 'Modern Desktop Download Manager'
+  version: '0.1.0'
+
+dev_mode:
+  root_path: .
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir:
+      - .git
+      - node_modules
+      - frontend
+      - bin
+      - build/bin
+      - .tools
+    file:
+      - .DS_Store
+      - .gitignore
+      - .gitkeep
+      - '*_test.go'
+    watched_extension:
+      - '*.go'
+    git_ignore: true
+  executes:
+    - cmd: node scripts/dev-runner.mjs build DEV=true
+      type: blocking
+    - cmd: node scripts/dev-runner.mjs task dev:frontend
+      type: background
+    - cmd: node scripts/dev-runner.mjs task run
+      type: primary

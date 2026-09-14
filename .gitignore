@@ -28,7 +28,6 @@ bun.isolate*
 
 # Wails
 frontend/dist/
-frontend/src/wailsjs/
 
 # Operating System Files
 .DS_Store

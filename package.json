@@ -2,6 +2,7 @@
   "name": "sheep-get-workspace",
   "private": true,
   "scripts": {
+    "dev": "node scripts/dev-runner.mjs dev",
     "quality": "node scripts/quality-gate.mjs",
     "quality:verify": "node --test scripts/quality-gate.test.mjs",
     "bootstrap": "node scripts/bootstrap.mjs"

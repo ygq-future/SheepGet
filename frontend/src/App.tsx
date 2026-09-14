@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import type { task } from '../wailsjs/go/models';
+import * as task from '../bindings/sheep-get/internal/task/models';
 import {
   ListTasks,
   PauseTask,
@@ -10,8 +10,9 @@ import {
   OpenFile,
   OpenFolder,
   GetDefaultDownloadDir,
-} from '../wailsjs/go/main/App';
-import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
+} from '../bindings/sheep-get/app';
+import { Events } from '@wailsio/runtime';
+import { unwrapEventData } from './lib/utils';
 import { TaskItem } from './components/TaskItem';
 import { FileInfoModal } from './components/FileInfoModal';
 import { UpdateLinkModal } from './components/UpdateLinkModal';
@@ -26,6 +27,10 @@ import {
   Inbox,
 } from 'lucide-react';
 
+function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
+  return (list || []).filter((t): t is task.Task => t !== null);
+}
+
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
   const [filter, setFilter] = useState<'all' | 'downloading' | 'completed'>('all');
@@ -37,7 +42,7 @@ export function App() {
   const refreshTasks = async () => {
     try {
       const list = await ListTasks();
-      setTasks(list || []);
+      setTasks(nonNullTasks(list));
     } catch (err) {
       console.error('Failed to load tasks:', err);
     }
@@ -48,7 +53,7 @@ export function App() {
     void (async () => {
       try {
         const list = await ListTasks();
-        if (!ignore) setTasks(list || []);
+        if (!ignore) setTasks(nonNullTasks(list));
       } catch (err) {
         console.error('Failed to load tasks:', err);
       }
@@ -63,7 +68,9 @@ export function App() {
       }
     })();
 
-    const onUpdated = (updated: task.Task) => {
+    const onUpdated = (event: unknown) => {
+      const updated = unwrapEventData<task.Task>(event);
+      if (!updated || !updated.id) return;
       setTasks((prev) => {
         const idx = prev.findIndex((t) => t.id === updated.id);
         if (idx !== -1) {
@@ -75,10 +82,10 @@ export function App() {
       });
     };
 
-    EventsOn('task:updated', onUpdated);
+    const unsubscribe = Events.On('task:updated', onUpdated);
     return () => {
       ignore = true;
-      EventsOff('task:updated');
+      unsubscribe();
     };
   }, []);
 
@@ -86,7 +93,7 @@ export function App() {
     void (async () => {
       await PauseTask(id);
       const list = await ListTasks();
-      setTasks(list || []);
+      setTasks(nonNullTasks(list));
     })();
   };
 
@@ -94,7 +101,7 @@ export function App() {
     void (async () => {
       await ResumeTask(id);
       const list = await ListTasks();
-      setTasks(list || []);
+      setTasks(nonNullTasks(list));
     })();
   };
 
@@ -102,7 +109,7 @@ export function App() {
     void (async () => {
       await RetryTask(id);
       const list = await ListTasks();
-      setTasks(list || []);
+      setTasks(nonNullTasks(list));
     })();
   };
 
@@ -136,17 +143,20 @@ export function App() {
   };
 
   const filteredTasks = tasks.filter((t) => {
-    if (filter === 'downloading') return t.status === 'downloading' || t.status === 'queued';
-    if (filter === 'completed') return t.status === 'completed';
+    if (filter === 'downloading')
+      return t.status === task.Status.StatusDownloading || t.status === task.Status.StatusQueued;
+    if (filter === 'completed') return t.status === task.Status.StatusCompleted;
     return true;
   });
 
   const counts = {
     total: tasks.length,
-    downloading: tasks.filter((t) => t.status === 'downloading' || t.status === 'queued').length,
-    paused: tasks.filter((t) => t.status === 'paused').length,
-    completed: tasks.filter((t) => t.status === 'completed').length,
-    error: tasks.filter((t) => t.status === 'error').length,
+    downloading: tasks.filter(
+      (t) => t.status === task.Status.StatusDownloading || t.status === task.Status.StatusQueued,
+    ).length,
+    paused: tasks.filter((t) => t.status === task.Status.StatusPaused).length,
+    completed: tasks.filter((t) => t.status === task.Status.StatusCompleted).length,
+    error: tasks.filter((t) => t.status === task.Status.StatusError).length,
   };
 
   const navItems = [

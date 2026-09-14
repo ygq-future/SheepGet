@@ -1,12 +1,12 @@
 import { useState, type SyntheticEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, RefreshCw, AlertTriangle, CheckCircle2, Link2, KeyRound } from 'lucide-react';
-import type { task } from '../../wailsjs/go/models';
+import type * as task from '../../bindings/sheep-get/internal/task/models';
 import {
   CheckURLConsistency,
   UpdateTaskURL,
   ResetAndDownloadWithNewURL,
-} from '../../wailsjs/go/main/App';
+} from '../../bindings/sheep-get/app';
 
 interface UpdateLinkModalProps {
   open: boolean;
@@ -28,9 +28,10 @@ function parseHeaderLines(text: string): Record<string, string> {
   return headers;
 }
 
-function formatHeaderLines(headers?: Record<string, string>): string {
+function formatHeaderLines(headers?: { [_ in string]?: string } | null): string {
   if (!headers) return '';
   return Object.entries(headers)
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
     .map(([name, value]) => `${name}: ${value}`)
     .join('\n');
 }
@@ -67,14 +68,14 @@ export function UpdateLinkModal({
     try {
       const headers = requestHeaders();
       const consistency = await CheckURLConsistency(currentTask.id, newUrl.trim(), headers);
-      if (consistency.consistent) {
+      if (consistency && consistency.consistent) {
         setUpdating(true);
         // Adopting the verified link continues the download from the existing progress.
         await UpdateTaskURL(currentTask.id, newUrl.trim(), headers);
         onOpenChange(false);
         onUpdated?.();
       } else {
-        setInconsistentReason(consistency.reason || '文件版本或大小与原下载不一致');
+        setInconsistentReason(consistency?.reason || '文件版本或大小与原下载不一致');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '检查链接失败');

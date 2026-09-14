@@ -1,7 +1,7 @@
 node_modules
 frontend/node_modules
 frontend/dist
-frontend/wailsjs
+frontend/bindings
 .tools
 build/bin
 bun.lock

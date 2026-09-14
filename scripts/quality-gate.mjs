@@ -21,7 +21,9 @@ const git = (...values) => {
 
 function files(dir, predicate) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    if (['node_modules', '.git', '.tools', 'dist', 'wailsjs', 'bin'].includes(entry.name))
+    if (
+      ['node_modules', '.git', '.tools', 'dist', 'wailsjs', 'bindings', 'bin'].includes(entry.name)
+    )
       return [];
     const path = join(dir, entry.name);
     return entry.isDirectory() ? files(path, predicate) : predicate(path) ? [path] : [];
@@ -45,7 +47,7 @@ function versions() {
     ['bun', ['--version'], tools.bun],
     ['go', ['version'], 'go' + tools.go],
     [exe('golangci-lint'), ['version'], 'version ' + tools.golangci],
-    [exe('wails'), ['version'], tools.wails],
+    [exe('wails3'), ['tool', 'buildinfo'], tools.wails3],
     [exe('actionlint'), ['-version'], tools.actionlint],
   ]) {
     if (!run(command, values).includes(expected)) throw new Error(`Unexpected version: ${command}`);

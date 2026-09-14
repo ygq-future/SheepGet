@@ -16,7 +16,7 @@ try {
     ['install', 'github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v' + tools.golangci],
     { env, stdio: 'inherit' },
   );
-  run('go', ['install', 'github.com/wailsapp/wails/v2/cmd/wails@v' + tools.wails], {
+  run('go', ['install', 'github.com/wailsapp/wails/v3/cmd/wails3@v' + tools.wails3], {
     env,
     stdio: 'inherit',
   });

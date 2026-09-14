@@ -1,0 +1,22 @@
+version: '3'
+
+vars:
+  APP_NAME: 'sheep-get'
+  BIN_DIR: 'build/bin'
+
+tasks:
+  build:
+    desc: Builds the application
+    cmds:
+      - go build -tags production{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -ldflags="-w -s" -o {{.BIN_DIR}}/{{.APP_NAME}}{{exeExt}} .
+
+  run:
+    desc: Runs the application binary
+    cmds:
+      - '{{.BIN_DIR}}/{{.APP_NAME}}{{exeExt}}'
+
+  dev:frontend:
+    desc: Runs the frontend dev server
+    dir: frontend
+    cmds:
+      - bun run dev --port {{.WAILS_VITE_PORT | default 9245}}

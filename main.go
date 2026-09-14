@@ -3,9 +3,7 @@ package main
 import (
 	"embed"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 //go:embed all:frontend/dist
@@ -16,20 +14,34 @@ func main() {
 	app := NewApp()
 
 	// Create application with options
-	err := wails.Run(&options.App{
-		Title:  "sheep-get",
-		Width:  1024,
-		Height: 768,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
+	wailsApp := application.New(application.Options{
+		Name:        "sheep-get",
+		Description: "Modern Desktop Download Manager",
+		Services: []application.Service{
+			application.NewService(app),
 		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        app.startup,
-		Bind: []interface{}{
-			app,
+		Assets: application.AssetOptions{
+			Handler: application.AssetFileServerFS(assets),
 		},
 	})
 
+	app.SetApplication(wailsApp)
+
+	// Create main window
+	wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:  "sheep-get",
+		Width:  1024,
+		Height: 768,
+		BackgroundColour: application.RGBA{
+			Red:   27,
+			Green: 38,
+			Blue:  54,
+			Alpha: 255,
+		},
+		URL: "/",
+	})
+
+	err := wailsApp.Run()
 	if err != nil {
 		println("Error:", err.Error())
 	}
