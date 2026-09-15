@@ -44,7 +44,7 @@ export function FileInfoView() {
   const [url, setUrl] = useState('');
   const [filename, setFilename] = useState('');
   const [directory, setDirectory] = useState('');
-  const [maxConn, setMaxConn] = useState(4);
+  const [maxConn, setMaxConn] = useState(8);
   const [preDownload, setPreDownload] = useState(false);
   const [duplicateStrategy, setDuplicateStrategy] = useState<string | undefined>(undefined);
   const [dupFileExists, setDupFileExists] = useState(false);
@@ -106,7 +106,7 @@ export function FileInfoView() {
     setUrl(item.url || '');
     setFilename(chosenName);
     setDirectory(dir);
-    setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 4);
+    setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8);
     setPreDownload(item.preDownload ?? !!currentSettings?.download?.preDownload);
     setDupFileExists(dupExistsOnDisk);
     setFileConflict(dupExistsOnDisk ? false : !!item.fileConflict);
@@ -296,7 +296,7 @@ export function FileInfoView() {
       }
       setLoading(true);
       setError(null);
-      const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 4));
+      const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 8));
 
       try {
         await SubmitFileInfo({
