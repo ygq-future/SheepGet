@@ -40,3 +40,18 @@ func getDefaultDownloadDir() string {
 
 	return downloads
 }
+
+// isSystemDarkMode detects whether Windows is currently using dark theme for apps.
+func isSystemDarkMode() bool {
+	if runtime.GOOS == "windows" {
+		key, err := registry.OpenKey(registry.CURRENT_USER, `SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
+		if err == nil {
+			defer func() { _ = key.Close() }()
+			val, _, err := key.GetIntegerValue("AppsUseLightTheme")
+			if err == nil {
+				return val == 0
+			}
+		}
+	}
+	return false
+}

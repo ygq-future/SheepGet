@@ -48,6 +48,7 @@ export function FileInfoView() {
   const [preDownload, setPreDownload] = useState(false);
   const [duplicateStrategy, setDuplicateStrategy] = useState<string | undefined>(undefined);
   const [dupFileExists, setDupFileExists] = useState(false);
+  const [slideDirection, setSlideDirection] = useState(0);
 
   // Conflict & probe states
   const [probing, setProbing] = useState(false);
@@ -405,6 +406,7 @@ export function FileInfoView() {
               type="button"
               disabled={activeItem.queueIndex <= 1}
               onClick={() => {
+                setSlideDirection(-1);
                 void SwitchFileInfoActive(activeItem.queueIndex - 2);
               }}
               className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[var(--text-muted)] transition-all hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] hover:shadow-xs active:scale-95 disabled:pointer-events-none disabled:opacity-20"
@@ -419,6 +421,7 @@ export function FileInfoView() {
               type="button"
               disabled={activeItem.queueIndex >= activeItem.queueTotal}
               onClick={() => {
+                setSlideDirection(1);
                 void SwitchFileInfoActive(activeItem.queueIndex);
               }}
               className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[var(--text-muted)] transition-all hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] hover:shadow-xs active:scale-95 disabled:pointer-events-none disabled:opacity-20"
@@ -456,13 +459,14 @@ export function FileInfoView() {
         className="flex-1 overflow-x-hidden overflow-y-hidden p-3 [&::-webkit-scrollbar]:hidden"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
-        <AnimatePresence mode="wait" initial={false}>
+        <AnimatePresence mode="popLayout" custom={slideDirection} initial={false}>
           <motion.div
-            key={activeItem?.id || 'empty'}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
+            key={activeItem?.id || 'default'}
+            custom={slideDirection}
+            initial={{ opacity: 0, x: slideDirection * 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: slideDirection * -24 }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
             className="space-y-2 overflow-hidden"
           >
             <div className="space-y-0.5">

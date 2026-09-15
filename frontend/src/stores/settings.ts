@@ -53,11 +53,22 @@ export function injectThemeAndAccentCSS(settings: configModels.Settings) {
     theme === configModels.ThemeMode.ThemeDark ||
     (theme === configModels.ThemeMode.ThemeSystem && prefersDark);
 
+  const isFileInfo =
+    root.classList.contains('window-fileinfo') ||
+    new URLSearchParams(window.location.search).get('window') === 'fileinfo';
+
   const bgApp = isDark ? '#0c0e12' : '#f1f5f9';
   root.style.setProperty('--bg-app', bgApp);
-  root.style.backgroundColor = bgApp;
-  if (document.body) {
-    document.body.style.backgroundColor = bgApp;
+  if (!isFileInfo) {
+    root.style.backgroundColor = bgApp;
+    if (document.body) {
+      document.body.style.backgroundColor = bgApp;
+    }
+  } else {
+    root.style.backgroundColor = 'transparent';
+    if (document.body) {
+      document.body.style.backgroundColor = 'transparent';
+    }
   }
 
   if (isDark) {

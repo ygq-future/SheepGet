@@ -40,16 +40,28 @@ type wailsWindowView struct {
 	getSettings func() config.Settings
 }
 
+func getThemeRGBA(s config.Settings) application.RGBA {
+	isDark := false
+	switch s.Appearance.Theme {
+	case config.ThemeDark:
+		isDark = true
+	case config.ThemeLight:
+		isDark = false
+	default:
+		isDark = isSystemDarkMode()
+	}
+
+	if isDark {
+		return application.RGBA{Red: 12, Green: 14, Blue: 18, Alpha: 255}
+	}
+	return application.RGBA{Red: 241, Green: 245, Blue: 249, Alpha: 255}
+}
+
 func (w *wailsWindowView) Show() {
 	if app := w.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(w.name); ok {
-			if w.getSettings != nil {
-				s := w.getSettings()
-				if s.Appearance.Theme == config.ThemeLight {
-					win.SetBackgroundColour(application.RGBA{Red: 241, Green: 245, Blue: 249, Alpha: 255})
-				} else {
-					win.SetBackgroundColour(application.RGBA{Red: 12, Green: 14, Blue: 18, Alpha: 255})
-				}
+			if w.name != "fileinfo" && w.getSettings != nil {
+				win.SetBackgroundColour(getThemeRGBA(w.getSettings()))
 			}
 			win.Show()
 		}
