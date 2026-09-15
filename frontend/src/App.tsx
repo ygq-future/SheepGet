@@ -51,6 +51,21 @@ export function App() {
   const [filter, setFilter] = useState<'all' | 'downloading' | 'completed' | 'settings'>('all');
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
   const [updatingLinkTask, setUpdatingLinkTask] = useState<task.Task | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('sheep_sidebar_collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('sheep_sidebar_collapsed', String(sidebarCollapsed));
+    } catch {
+      // ignore
+    }
+  }, [sidebarCollapsed]);
 
   const { loadSettings } = useSettingsStore();
   const refreshTasks = async () => {
@@ -229,12 +244,19 @@ export function App() {
   return (
     <div className="flex h-screen w-screen flex-col bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
       {/* Top Refined Bar */}
-      <header className="z-10 flex h-12 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/80 px-5 backdrop-blur-xl">
-        <div className="flex items-center gap-3">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-focus)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-inner">
-            <DownloadCloud className="h-4 w-4" />
+      <header className="z-10 flex h-12 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/80 pr-5 backdrop-blur-xl">
+        <div className="flex items-center">
+          <div className="flex h-12 w-14 shrink-0 items-center justify-center">
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed((prev) => !prev)}
+              title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+              className="group flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border border-[var(--border-focus)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-inner transition-transform hover:scale-105 active:scale-95"
+            >
+              <DownloadCloud className="h-4 w-4 transition-transform group-hover:rotate-6" />
+            </button>
           </div>
-          <div className="flex items-baseline gap-2">
+          <div className="flex items-baseline gap-2 pl-1">
             <h1 className="text-xs font-semibold tracking-tight text-[var(--text-primary)]">
               SheepGet
             </h1>
@@ -253,9 +275,13 @@ export function App() {
 
       {/* Main Container */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar with Smooth Active Pill Transition */}
-        <aside className="flex w-52 flex-col justify-between border-r border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 p-2.5">
-          <div className="space-y-1">
+        {/* Left Sidebar */}
+        <aside
+          className={`flex flex-col justify-between border-r border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 p-2.5 transition-all duration-200 ease-in-out ${
+            sidebarCollapsed ? 'w-14 items-center' : 'w-52'
+          }`}
+        >
+          <div className="w-full space-y-1">
             {navItems.map((item) => {
               const isActive = filter === item.id;
               const Icon = item.icon;
@@ -264,81 +290,105 @@ export function App() {
                 <button
                   key={item.id}
                   onClick={() => setFilter(item.id)}
-                  className="group relative flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium outline-hidden transition-colors select-none"
+                  title={item.label}
+                  className={`group relative flex w-full items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
+                    sidebarCollapsed ? 'justify-center px-0 py-2' : 'justify-between px-2.5 py-1.5'
+                  } ${
+                    isActive
+                      ? 'bg-[var(--bg-subtle)] shadow-xs'
+                      : 'hover:bg-[var(--bg-surface-hover)]'
+                  }`}
                 >
-                  {/* Sliding Pill Indicator */}
-                  {isActive && (
-                    <motion.div
-                      layoutId="active-pill"
-                      className="absolute inset-0 rounded-lg bg-[var(--bg-subtle)] shadow-xs"
-                      transition={{ type: 'spring', stiffness: 350, damping: 32 }}
-                    />
-                  )}
-
                   <span
-                    className={`relative z-10 flex items-center gap-2 transition-colors ${
+                    className={`flex items-center gap-2 transition-colors ${
                       isActive
                         ? item.color
                         : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
                     }`}
                   >
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    <span>{item.label}</span>
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {!sidebarCollapsed && <span>{item.label}</span>}
                   </span>
 
-                  <span
-                    className={`py-0.2 relative z-10 rounded-full px-1.5 font-mono text-[10px] transition-colors ${
-                      isActive ? item.badgeColor : 'bg-[var(--bg-subtle)] text-[var(--text-muted)]'
-                    }`}
-                  >
-                    {item.count}
-                  </span>
+                  {!sidebarCollapsed && (
+                    <span
+                      className={`py-0.2 rounded-full px-1.5 font-mono text-[10px] transition-colors ${
+                        isActive
+                          ? item.badgeColor
+                          : 'bg-[var(--bg-subtle)] text-[var(--text-muted)]'
+                      }`}
+                    >
+                      {item.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </div>
 
-          <div className="space-y-2">
+          <div className="w-full space-y-2">
             {/* Settings Tab Button */}
             <button
               onClick={() => setFilter('settings')}
-              className="group relative flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium outline-hidden transition-colors select-none"
+              title="偏好设置"
+              className={`group relative flex w-full items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
+                sidebarCollapsed ? 'justify-center px-0 py-2' : 'justify-between px-2.5 py-1.5'
+              } ${
+                filter === 'settings'
+                  ? 'bg-[var(--bg-subtle)] text-[var(--text-primary)] shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+              }`}
             >
-              {filter === 'settings' && (
-                <motion.div
-                  layoutId="active-pill"
-                  className="absolute inset-0 rounded-lg bg-[var(--bg-subtle)] shadow-xs"
-                  transition={{ type: 'spring', stiffness: 350, damping: 32 }}
-                />
-              )}
               <span
-                className={`relative z-10 flex items-center gap-2 transition-colors ${
+                className={`flex items-center gap-2 transition-colors ${
                   filter === 'settings'
                     ? 'text-[var(--text-primary)]'
                     : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
                 }`}
               >
-                <SettingsIcon className="h-3.5 w-3.5 shrink-0" />
-                <span>偏好设置</span>
+                <SettingsIcon className="h-4 w-4 shrink-0" />
+                {!sidebarCollapsed && <span>偏好设置</span>}
               </span>
             </button>
 
-            <div className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 text-[11px] text-[var(--text-secondary)]">
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-                  <PauseCircle className="h-3 w-3 text-[var(--text-muted)]" /> 已暂停
-                </span>
-                <span className="font-mono font-medium text-[var(--text-primary)]">
-                  {counts.paused}
-                </span>
+            {sidebarCollapsed ? (
+              <div className="flex w-full flex-col items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] py-2 text-[10px]">
+                <div
+                  className="flex flex-col items-center gap-0.5"
+                  title={`已暂停: ${counts.paused}`}
+                >
+                  <PauseCircle className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                  <span className="font-mono font-medium text-[var(--text-primary)]">
+                    {counts.paused}
+                  </span>
+                </div>
+                <div className="h-px w-4 bg-[var(--border-subtle)]" />
+                <div
+                  className="flex flex-col items-center gap-0.5"
+                  title={`异常状态: ${counts.error}`}
+                >
+                  <AlertCircle className="h-3.5 w-3.5 text-rose-500" />
+                  <span className="font-mono font-medium text-rose-500">{counts.error}</span>
+                </div>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-                  <AlertCircle className="h-3 w-3 text-rose-500" /> 异常状态
-                </span>
-                <span className="font-mono font-medium text-rose-500">{counts.error}</span>
+            ) : (
+              <div className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 text-[11px] text-[var(--text-secondary)]">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                    <PauseCircle className="h-3 w-3 text-[var(--text-muted)]" /> 已暂停
+                  </span>
+                  <span className="font-mono font-medium text-[var(--text-primary)]">
+                    {counts.paused}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                    <AlertCircle className="h-3 w-3 text-rose-500" /> 异常状态
+                  </span>
+                  <span className="font-mono font-medium text-rose-500">{counts.error}</span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </aside>
 
@@ -361,7 +411,7 @@ export function App() {
               </p>
             </motion.div>
           ) : (
-            <div className="mx-auto w-full max-w-4xl min-w-0 space-y-2.5">
+            <div className="w-full min-w-0 space-y-2.5">
               <AnimatePresence mode="popLayout">
                 {filteredTasks.map((t) => (
                   <TaskItem
