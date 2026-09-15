@@ -10,9 +10,11 @@ import {
   OpenFile,
   OpenFolder,
   OpenNewDownload,
+  TriggerDownload,
 } from '../bindings/sheep-get/app';
-import { Events } from '@wailsio/runtime';
+import { Clipboard, Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
+import { DownloadRequest } from '../bindings/sheep-get/internal/window/models';
 import { TaskItem } from './components/TaskItem';
 import { UpdateLinkModal } from './components/UpdateLinkModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
@@ -28,10 +30,20 @@ import {
 } from 'lucide-react';
 import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { SettingsPanel } from './components/SettingsPanel';
-import { ToastContainer } from './components/ui/Toast';
-
+import { ToastContainer, showToast } from './components/ui/Toast';
 function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
   return (list || []).filter((t): t is task.Task => t !== null);
+}
+
+function sortTasks(taskList: task.Task[]): task.Task[] {
+  return [...taskList].sort((a, b) => {
+    const timeA = new Date(a.createdAt || 0).getTime();
+    const timeB = new Date(b.createdAt || 0).getTime();
+    if (timeA !== timeB) {
+      return timeB - timeA;
+    }
+    return b.id.localeCompare(a.id);
+  });
 }
 
 export function App() {
@@ -44,7 +56,7 @@ export function App() {
   const refreshTasks = async () => {
     try {
       const list = await ListTasks();
-      setTasks(nonNullTasks(list));
+      setTasks(sortTasks(nonNullTasks(list)));
     } catch (err) {
       console.error('Failed to load tasks:', err);
     }
@@ -57,7 +69,7 @@ export function App() {
     void (async () => {
       try {
         const list = await ListTasks();
-        if (!ignore) setTasks(nonNullTasks(list));
+        if (!ignore) setTasks(sortTasks(nonNullTasks(list)));
       } catch (err) {
         console.error('Failed to load tasks:', err);
       }
@@ -68,12 +80,14 @@ export function App() {
       if (!updated || !updated.id) return;
       setTasks((prev) => {
         const idx = prev.findIndex((t) => t.id === updated.id);
+        let next: task.Task[];
         if (idx !== -1) {
-          const next = [...prev];
+          next = [...prev];
           next[idx] = updated;
-          return next;
+        } else {
+          next = [updated, ...prev];
         }
-        return [updated, ...prev];
+        return sortTasks(next);
       });
     };
 
@@ -89,7 +103,7 @@ export function App() {
     void (async () => {
       await PauseTask(id);
       const list = await ListTasks();
-      setTasks(nonNullTasks(list));
+      setTasks(sortTasks(nonNullTasks(list)));
     })();
   };
 
@@ -97,7 +111,7 @@ export function App() {
     void (async () => {
       await ResumeTask(id);
       const list = await ListTasks();
-      setTasks(nonNullTasks(list));
+      setTasks(sortTasks(nonNullTasks(list)));
     })();
   };
 
@@ -105,7 +119,7 @@ export function App() {
     void (async () => {
       await RetryTask(id);
       const list = await ListTasks();
-      setTasks(nonNullTasks(list));
+      setTasks(sortTasks(nonNullTasks(list)));
     })();
   };
 
@@ -128,7 +142,12 @@ export function App() {
 
   const handleOpenFile = (filePath: string) => {
     void (async () => {
-      await OpenFile(filePath);
+      try {
+        await OpenFile(filePath);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        showToast(msg || '文件不存在或已被移动/删除', 'error', '无法打开文件');
+      }
     })();
   };
 
@@ -136,6 +155,31 @@ export function App() {
     void (async () => {
       await OpenFolder(folderPath);
     })();
+  };
+
+  const handleNewDownload = async () => {
+    try {
+      let clipText = '';
+      try {
+        clipText = await Clipboard.Text();
+      } catch {
+        clipText = await navigator.clipboard.readText().catch(() => '');
+      }
+
+      const trimmed = (clipText || '').trim();
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        try {
+          new URL(trimmed);
+          await TriggerDownload(new DownloadRequest({ url: trimmed }));
+          return;
+        } catch {
+          // Not a valid URL, fall through
+        }
+      }
+    } catch (err) {
+      console.error('Failed to read clipboard for new download:', err);
+    }
+    await OpenNewDownload();
   };
 
   const filteredTasks = tasks.filter((t) => {
@@ -199,8 +243,8 @@ export function App() {
         </div>
 
         <button
-          onClick={() => void OpenNewDownload()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
+          onClick={() => void handleNewDownload()}
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
         >
           <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
           新建任务
@@ -299,23 +343,25 @@ export function App() {
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto bg-[var(--bg-base)] p-5">
+        <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-5">
           {filter === 'settings' ? (
             <SettingsPanel />
           ) : filteredTasks.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="flex h-full flex-col items-center justify-center text-center"
+              className="flex flex-1 flex-col items-center justify-center text-center select-none"
             >
-              <div className="rounded-2xl border border-white/[0.06] bg-zinc-900/80 p-5 text-zinc-600 shadow-inner">
-                <Inbox className="h-8 w-8 stroke-1 text-zinc-500" />
+              <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-[var(--text-muted)] shadow-xs">
+                <Inbox className="h-8 w-8 stroke-1 text-[var(--text-muted)]" />
               </div>
-              <p className="mt-3 text-xs font-medium text-zinc-300">暂无下载任务</p>
-              <p className="mt-1 text-[11px] text-zinc-500">点击右上角“新建任务”开始下载</p>
+              <p className="mt-3 text-xs font-medium text-[var(--text-primary)]">暂无下载任务</p>
+              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                点击右上角“新建任务”开始下载
+              </p>
             </motion.div>
           ) : (
-            <div className="mx-auto max-w-4xl space-y-2.5">
+            <div className="mx-auto w-full max-w-4xl min-w-0 space-y-2.5">
               <AnimatePresence mode="popLayout">
                 {filteredTasks.map((t) => (
                   <TaskItem

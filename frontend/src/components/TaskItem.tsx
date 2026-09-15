@@ -106,7 +106,7 @@ export function TaskItem({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.96 }}
       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="group relative rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 shadow-xs backdrop-blur-sm transition-all duration-200 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] hover:shadow-md"
+      className="group relative min-w-0 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 shadow-xs backdrop-blur-sm transition-all duration-200 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1 space-y-1.5">

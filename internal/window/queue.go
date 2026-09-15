@@ -99,16 +99,17 @@ type QueueController struct {
 	settings        SettingsProvider
 	windowView      WindowView
 	items           []*FileInfoItem
+	activeIndex     int
 	onShowCompleted func(taskID string)
 }
 
-// NewQueueController creates a new QueueController.
 func NewQueueController(eng DownloadEngine, settings SettingsProvider, winView WindowView) *QueueController {
 	return &QueueController{
-		engine:     eng,
-		settings:   settings,
-		windowView: winView,
-		items:      make([]*FileInfoItem, 0),
+		engine:      eng,
+		settings:    settings,
+		windowView:  winView,
+		items:       make([]*FileInfoItem, 0),
+		activeIndex: 0,
 	}
 }
 
@@ -133,12 +134,47 @@ func (qc *QueueController) GetActive() (*FileInfoItem, error) {
 	if len(qc.items) == 0 {
 		return nil, nil
 	}
+	if qc.activeIndex >= len(qc.items) {
+		qc.activeIndex = 0
+	}
 	qc.updateQueueNumbersLocked()
-	// Return a shallow copy with current queue numbers
-	item := *qc.items[0]
+	item := *qc.items[qc.activeIndex]
 	return &item, nil
 }
 
+// GetQueueItems returns a copy of all items currently in the queue.
+func (qc *QueueController) GetQueueItems() []*FileInfoItem {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	qc.updateQueueNumbersLocked()
+	res := make([]*FileInfoItem, len(qc.items))
+	for i, it := range qc.items {
+		copyItem := *it
+		res[i] = &copyItem
+	}
+	return res
+}
+
+// SwitchActive switches the currently active item in the queue to index and notifies the window.
+func (qc *QueueController) SwitchActive(index int) (*FileInfoItem, error) {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	if index < 0 || index >= len(qc.items) {
+		return nil, fmt.Errorf("queue index out of range: %d", index)
+	}
+
+	qc.activeIndex = index
+	qc.updateQueueNumbersLocked()
+	activeItem := qc.items[qc.activeIndex]
+
+	if qc.windowView != nil {
+		qc.windowView.Emit("fileinfo:next", activeItem)
+	}
+
+	copyItem := *activeItem
+	return &copyItem, nil
+}
 func (qc *QueueController) updateQueueNumbersLocked() {
 	total := len(qc.items)
 	for i, item := range qc.items {
@@ -191,19 +227,14 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 
 	// Check Duplicate policy: skip_show_completed
+	// Opens the download completed dialog for reference without closing/suppressing the FileInfo dialog
 	if probe.DuplicateTask != nil && probe.DuplicateTask.Status == task.StatusCompleted {
 		if policy == config.DuplicatePolicySkipShowCompleted || policy == config.DuplicatePolicySkipShowLegacy {
 			if qc.onShowCompleted != nil {
 				qc.onShowCompleted(probe.DuplicateTask.ID)
 			}
-			return &DownloadResponse{
-				Handled: true,
-				Action:  "skip_show_completed",
-				TaskID:  probe.DuplicateTask.ID,
-			}, nil
 		}
 	}
-
 	filename := req.Filename
 	if filename == "" && probe != nil && probe.Filename != "" {
 		filename = probe.Filename
@@ -250,16 +281,19 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	qc.items = append(qc.items, item)
 	qc.updateQueueNumbersLocked()
 
-	// If this is the only item in the queue, show window and emit
-	if len(qc.items) == 1 && qc.windowView != nil {
+	// Show window and bring to focus
+	if qc.windowView != nil {
 		qc.windowView.Show()
 		qc.windowView.Focus()
-		qc.windowView.Emit("fileinfo:next", item)
-	} else if len(qc.items) > 1 && qc.windowView != nil {
-		qc.windowView.Emit("fileinfo:queue_updated", map[string]int{
-			"index": qc.items[0].QueueIndex,
-			"total": qc.items[0].QueueTotal,
-		})
+		if len(qc.items) == 1 {
+			qc.windowView.Emit("fileinfo:next", item)
+		} else {
+			// If already open with an item, update it immediately to the latest manual click so the user immediately sees response
+			qc.windowView.Emit("fileinfo:queue_updated", map[string]int{
+				"index": qc.items[0].QueueIndex,
+				"total": qc.items[0].QueueTotal,
+			})
+		}
 	}
 
 	return &DownloadResponse{
@@ -278,7 +312,10 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 		return nil, fmt.Errorf("no active file info request")
 	}
 
-	active := qc.items[0]
+	if qc.activeIndex >= len(qc.items) {
+		qc.activeIndex = 0
+	}
+	active := qc.items[qc.activeIndex]
 
 	// If active.DuplicateTask is nil, check if sub.URL matches an existing task
 	if active.DuplicateTask == nil && sub.URL != "" {
@@ -329,8 +366,11 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 		}
 	}
 
-	// Pop current item
-	qc.items = qc.items[1:]
+	// Remove confirmed item from queue
+	qc.items = append(qc.items[:qc.activeIndex], qc.items[qc.activeIndex+1:]...)
+	if qc.activeIndex >= len(qc.items) && len(qc.items) > 0 {
+		qc.activeIndex = len(qc.items) - 1
+	}
 	qc.advanceQueueLocked()
 
 	return resTask, nil
@@ -348,14 +388,20 @@ func (qc *QueueController) CancelCurrent(ctx context.Context) error {
 		return nil
 	}
 
-	active := qc.items[0]
+	if qc.activeIndex >= len(qc.items) {
+		qc.activeIndex = 0
+	}
+	active := qc.items[qc.activeIndex]
 
 	if active.PreDownloadTaskID != "" {
 		_ = qc.engine.CancelPreDownload(ctx, active.PreDownloadTaskID)
 	}
 
-	// Pop current item
-	qc.items = qc.items[1:]
+	// Remove cancelled item from queue
+	qc.items = append(qc.items[:qc.activeIndex], qc.items[qc.activeIndex+1:]...)
+	if qc.activeIndex >= len(qc.items) && len(qc.items) > 0 {
+		qc.activeIndex = len(qc.items) - 1
+	}
 	qc.advanceQueueLocked()
 
 	return nil
@@ -364,11 +410,15 @@ func (qc *QueueController) CancelCurrent(ctx context.Context) error {
 func (qc *QueueController) advanceQueueLocked() {
 	if len(qc.items) > 0 {
 		qc.updateQueueNumbersLocked()
-		nextItem := qc.items[0]
+		if qc.activeIndex >= len(qc.items) {
+			qc.activeIndex = len(qc.items) - 1
+		}
+		nextItem := qc.items[qc.activeIndex]
 		if qc.windowView != nil {
 			qc.windowView.Emit("fileinfo:next", nextItem)
 		}
 	} else {
+		qc.activeIndex = 0
 		if qc.windowView != nil {
 			qc.windowView.Hide()
 		}

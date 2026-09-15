@@ -19,6 +19,7 @@ const windowType = params.get('window');
 
 let ViewComponent = App;
 if (windowType === 'fileinfo') {
+  document.documentElement.classList.add('window-fileinfo');
   ViewComponent = FileInfoView;
 } else if (windowType === 'progress') {
   ViewComponent = ProgressView;

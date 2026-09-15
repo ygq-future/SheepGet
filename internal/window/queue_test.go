@@ -244,7 +244,7 @@ func TestQueueController_DuplicatePolicy_SkipShowCompleted(t *testing.T) {
 	})
 
 	// Enqueue same URL
-	resp, err := qc.Enqueue(ctx, DownloadRequest{
+	_, err := qc.Enqueue(ctx, DownloadRequest{
 		URL:       targetURL,
 		Directory: tmpDir,
 	})
@@ -252,21 +252,15 @@ func TestQueueController_DuplicatePolicy_SkipShowCompleted(t *testing.T) {
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	// Must skip window!
-	if resp.Action != "skip_show_completed" {
-		t.Fatalf("expected action skip_show_completed, got %s", resp.Action)
-	}
-	if resp.TaskID != completedTask.ID {
-		t.Fatalf("expected task ID %s, got %s", completedTask.ID, resp.TaskID)
-	}
-	if winView.shown {
-		t.Fatalf("fileinfo window should NOT be shown when skip_show_completed matches")
-	}
+	// Opens completed dialog and enqueues FileInfo without suppressing window
 	if showCompletedTarget != completedTask.ID {
 		t.Fatalf("expected onShowCompleted callback with %s, got %s", completedTask.ID, showCompletedTarget)
 	}
-	if qc.QueueLength() != 0 {
-		t.Fatalf("queue should remain empty")
+	if !winView.shown {
+		t.Fatalf("fileinfo window should be shown so user can re-download if desired")
+	}
+	if qc.QueueLength() != 1 {
+		t.Fatalf("queue should contain 1 item, got %d", qc.QueueLength())
 	}
 }
 

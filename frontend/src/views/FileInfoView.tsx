@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef, useCallback, type SyntheticEvent } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   Folder,
   DownloadCloud,
   AlertCircle,
   Copy,
   RotateCcw,
-  CheckCircle2,
-  AlertTriangle,
-  Loader2,
-  X,
   Minus,
+  X,
+  Loader2,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
-import { Badge } from '../components/ui/Badge';
 import { formatBytes } from '../lib/format';
 import {
   GetActiveFileInfo,
@@ -24,11 +26,12 @@ import {
   SelectDirectory,
   ProbeURL,
   CheckFileConflict,
+  CheckURLFilesExist,
   ShowProgressWindow,
+  SwitchFileInfoActive,
 } from '../../bindings/sheep-get/app';
 import type * as windowModels from '../../bindings/sheep-get/internal/window/models';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
-import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
 import { useSettingsStore } from '../stores/settings';
@@ -44,6 +47,7 @@ export function FileInfoView() {
   const [maxConn, setMaxConn] = useState(4);
   const [preDownload, setPreDownload] = useState(false);
   const [duplicateStrategy, setDuplicateStrategy] = useState<string | undefined>(undefined);
+  const [dupFileExists, setDupFileExists] = useState(false);
 
   // Conflict & probe states
   const [probing, setProbing] = useState(false);
@@ -54,29 +58,58 @@ export function FileInfoView() {
   // Status states
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const nameEditedRef = useRef(false);
+  const originalFilenameRef = useRef('');
   const probeSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const initItem = useCallback((item: windowModels.FileInfoItem) => {
+  const initItem = useCallback(async (item: windowModels.FileInfoItem) => {
     const currentSettings = useSettingsStore.getState().settings;
-    const currentPolicy = item.duplicatePolicy || currentSettings?.download?.duplicateUrlPolicy;
+    const currentPolicy =
+      item.duplicatePolicy ||
+      currentSettings?.download?.duplicateUrlPolicy ||
+      configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
+
+    const dir = item.directory || currentSettings?.download?.defaultDirectory || '';
+    const initialName = item.filename || '';
+    originalFilenameRef.current = initialName;
+
     let initialStrategy: string | undefined = undefined;
-    if (item.duplicateTask) {
-      if (currentPolicy === configModels.DuplicateURLPolicy.DuplicatePolicyOverwrite) {
-        initialStrategy = 'continue_overwrite';
-      } else if (currentPolicy === configModels.DuplicateURLPolicy.DuplicatePolicyNumberedCopy) {
-        initialStrategy = 'copy';
+    let dupExistsOnDisk = false;
+    let chosenName = initialName;
+    // Check duplicate URL and disk existence
+    if (item.duplicateTask && dir && initialName) {
+      const conf = await CheckURLFilesExist(item.url || '', dir, initialName);
+      dupExistsOnDisk = conf.exists;
+
+      // Handle duplicate policies
+      const policyStr = String(currentPolicy);
+      if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
+        // Automatically show completed progress window, keep current file info open
+        if (item.duplicateTask.id) {
+          void ShowProgressWindow(item.duplicateTask.id);
+        }
+      } else if (dupExistsOnDisk) {
+        if (policyStr === 'continue_overwrite' || policyStr === 'overwrite') {
+          initialStrategy = 'continue_overwrite';
+        } else if (policyStr === 'numbered_copy') {
+          initialStrategy = 'copy';
+          chosenName = conf.suggestedFilename;
+        }
       }
     }
-    setActiveItem(item);
+    setActiveItem((prev) => ({
+      ...item,
+      queueIndex: item.queueIndex || prev?.queueIndex || 1,
+      queueTotal: item.queueTotal || prev?.queueTotal || 1,
+    }));
     setUrl(item.url || '');
-    setFilename(item.filename || '');
-    setDirectory(item.directory || currentSettings?.download?.defaultDirectory || '');
+    setFilename(chosenName);
+    setDirectory(dir);
     setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 4);
     setPreDownload(item.preDownload ?? !!currentSettings?.download?.preDownload);
-    setFileConflict(!!item.fileConflict);
+    setDupFileExists(dupExistsOnDisk);
+    setFileConflict(dupExistsOnDisk ? false : !!item.fileConflict);
     setSuggestedFilename(item.suggestedFilename || '');
     setDuplicateStrategy(initialStrategy);
     setOverwriteConflict(false);
@@ -93,7 +126,7 @@ export function FileInfoView() {
       try {
         const item = await GetActiveFileInfo();
         if (item) {
-          initItem(item);
+          await initItem(item);
         }
       } catch (err) {
         console.error('Failed to get active file info:', err);
@@ -104,7 +137,7 @@ export function FileInfoView() {
     const unlistenNext = Events.On('fileinfo:next', (ev: unknown) => {
       const item = unwrapEventData<windowModels.FileInfoItem>(ev);
       if (item) {
-        initItem(item);
+        void initItem(item);
       } else {
         setActiveItem(null);
       }
@@ -152,29 +185,36 @@ export function FileInfoView() {
 
       let chosenName =
         !nameEditedRef.current && result.filename ? result.filename : filename || result.filename;
+      originalFilenameRef.current = result.filename || filename;
       let initStrategy: string | undefined = undefined;
-
-      // Check conflict
+      let dupExistsOnDisk = false;
       if (directory && chosenName) {
-        const conf = await CheckFileConflict(directory, chosenName);
-        setFileConflict(conf.exists);
-        setSuggestedFilename(conf.suggestedFilename);
-
         if (result.duplicateTask) {
-          if (currentPolicy === configModels.DuplicateURLPolicy.DuplicatePolicyNumberedCopy) {
-            initStrategy = 'copy';
-            // Dual check: only add (n) if file actually exists on disk!
-            if (conf.exists) {
-              chosenName = conf.suggestedFilename;
-              setFileConflict(false);
+          const conf = await CheckURLFilesExist(trimmed, directory, chosenName);
+          dupExistsOnDisk = conf.exists;
+          const policyStr = String(currentPolicy);
+          if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
+            // Auto open completed progress window, do NOT close file info dialog
+            if (result.duplicateTask.id) {
+              void ShowProgressWindow(result.duplicateTask.id);
             }
-          } else if (currentPolicy === configModels.DuplicateURLPolicy.DuplicatePolicyOverwrite) {
-            initStrategy = 'continue_overwrite';
+          } else if (dupExistsOnDisk) {
+            if (policyStr === 'continue_overwrite' || policyStr === 'overwrite') {
+              initStrategy = 'continue_overwrite';
+            } else if (policyStr === 'numbered_copy') {
+              initStrategy = 'copy';
+              chosenName = conf.suggestedFilename;
+            }
           }
+          setSuggestedFilename(conf.suggestedFilename);
+        } else {
+          const conf = await CheckFileConflict(directory, chosenName);
+          setFileConflict(conf.exists);
+          setSuggestedFilename(conf.suggestedFilename);
         }
       }
-
       setFilename(chosenName);
+      setDupFileExists(dupExistsOnDisk);
       setDuplicateStrategy(initStrategy);
 
       setActiveItem((prev) => {
@@ -206,9 +246,15 @@ export function FileInfoView() {
       if (selected) {
         setDirectory(selected);
         if (filename) {
-          const conf = await CheckFileConflict(selected, filename);
-          setFileConflict(conf.exists);
-          setSuggestedFilename(conf.suggestedFilename);
+          if (activeItem?.duplicateTask) {
+            const conf = await CheckURLFilesExist(url, selected, filename);
+            setDupFileExists(conf.exists);
+            setSuggestedFilename(conf.suggestedFilename);
+          } else {
+            const conf = await CheckFileConflict(selected, filename);
+            setFileConflict(conf.exists);
+            setSuggestedFilename(conf.suggestedFilename);
+          }
         }
       }
     } catch (err) {
@@ -233,6 +279,13 @@ export function FileInfoView() {
       }
 
       const effectiveStrategy = strategyOverride ?? duplicateStrategy;
+
+      // Duplicate URL + file exists on disk: user MUST choose one of the three options!
+      if (activeItem?.duplicateTask && dupFileExists && !effectiveStrategy) {
+        setError('已有相同的下载链接和文件，请确认处理方式');
+        return;
+      }
+
       const isOverwrite =
         effectiveStrategy === 'continue_overwrite' || effectiveStrategy === 'redownload';
 
@@ -266,6 +319,7 @@ export function FileInfoView() {
     [
       activeItem,
       directory,
+      dupFileExists,
       duplicateStrategy,
       fileConflict,
       filename,
@@ -327,10 +381,11 @@ export function FileInfoView() {
   return (
     <div
       ref={containerRef}
-      className="flex flex-col overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-base)] font-sans text-[var(--text-primary)] shadow-2xl select-none"
+      className="flex flex-col overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-base)] font-sans text-[var(--text-primary)] shadow-2xl select-none [&::-webkit-scrollbar]:hidden"
+      style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
     >
       <header
-        className="flex h-8 shrink-0 cursor-default items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 select-none"
+        className="relative flex h-8 shrink-0 cursor-default items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 select-none"
         style={{ ['--wails-draggable' as string]: 'drag' }}
       >
         <div className="pointer-events-none flex items-center gap-1.5">
@@ -338,12 +393,41 @@ export function FileInfoView() {
           <span className="text-[11px] font-semibold tracking-wide text-[var(--text-primary)]">
             新建下载
           </span>
-          {activeItem && activeItem.queueTotal > 1 && (
-            <Badge variant="accent">
-              {activeItem.queueIndex} / {activeItem.queueTotal}
-            </Badge>
-          )}
         </div>
+
+        {/* Centered Floating Queue Switcher Pill */}
+        {activeItem && activeItem.queueTotal > 1 && (
+          <div
+            className="absolute top-1/2 left-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/90 px-1.5 py-0.5 shadow-xs backdrop-blur-md"
+            style={{ ['--wails-draggable' as string]: 'no-drag' }}
+          >
+            <button
+              type="button"
+              disabled={activeItem.queueIndex <= 1}
+              onClick={() => {
+                void SwitchFileInfoActive(activeItem.queueIndex - 2);
+              }}
+              className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[var(--text-muted)] transition-all hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] hover:shadow-xs active:scale-95 disabled:pointer-events-none disabled:opacity-20"
+              title="上一条待下载任务"
+            >
+              <ChevronLeft className="h-3.5 w-3.5 stroke-[2.5]" />
+            </button>
+            <span className="font-mono text-[10px] font-bold tracking-tight text-[var(--accent)] select-none">
+              {activeItem.queueIndex} / {activeItem.queueTotal}
+            </span>
+            <button
+              type="button"
+              disabled={activeItem.queueIndex >= activeItem.queueTotal}
+              onClick={() => {
+                void SwitchFileInfoActive(activeItem.queueIndex);
+              }}
+              className="flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[var(--text-muted)] transition-all hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] hover:shadow-xs active:scale-95 disabled:pointer-events-none disabled:opacity-20"
+              title="下一条待下载任务"
+            >
+              <ChevronRight className="h-3.5 w-3.5 stroke-[2.5]" />
+            </button>
+          </div>
+        )}
         <div
           className="flex items-center gap-1"
           style={{ ['--wails-draggable' as string]: 'no-drag' }}
@@ -367,251 +451,308 @@ export function FileInfoView() {
         </div>
       </header>
 
-      {/* Main Content (compact form with NO scrollbars and stable initial paint) */}
-      <main className="flex-1 space-y-2 overflow-hidden p-3">
-        {/* URL Input */}
-        <div className="space-y-0.5">
-          <label className="text-[11px] font-medium text-[var(--text-secondary)]">下载链接</label>
-          <div className="relative">
-            <Input
-              value={url}
-              error={Boolean(error && error === '请输入下载链接')}
-              onChange={(e) => {
-                setUrl(e.target.value);
-                if (error) setError(null);
-                void probeManualURL(e.target.value);
-              }}
-              placeholder="https://..."
-            />
-            {probing && (
-              <div className="absolute top-2 right-2.5">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--accent)]" />
-              </div>
-            )}
-          </div>
-          {error && (
-            <p className="mt-0.5 text-[10px] leading-tight text-red-500 dark:text-red-400">
-              {error}
-            </p>
-          )}
-        </div>
-
-        {/* Compact Resource Meta Line */}
-        <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
-          <span>
-            预估大小:{' '}
-            <span className="font-medium text-[var(--text-secondary)]">
-              {activeItem && activeItem.totalBytes > 0
-                ? formatBytes(activeItem.totalBytes)
-                : '未知大小'}
-            </span>
-          </span>
-          <span>
-            续传支持:{' '}
-            <span
-              className={
-                activeItem?.resumable
-                  ? 'font-medium text-emerald-600 dark:text-emerald-400'
-                  : 'text-[var(--text-muted)]'
-              }
-            >
-              {activeItem?.resumable ? '支持' : '不支持 / 未知'}
-            </span>
-          </span>
-        </div>
-
-        {/* Duplicate Task Alert */}
-        {activeItem?.duplicateTask && (
-          <div className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] font-medium text-amber-950 dark:text-amber-100">
-            <div className="flex items-center gap-1.5">
-              <AlertTriangle className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400" />
-              <span>已存在相同链接任务</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5 pt-0.5">
-              {activeItem.duplicateTask.status === taskModels.Status.StatusCompleted && (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    setDuplicateStrategy('show_completed');
-                    if (activeItem.duplicateTask?.id) {
-                      void ShowProgressWindow(activeItem.duplicateTask.id);
-                    }
-                    void handleCancel();
+      {/* Main Content (strictly localized scrollbar suppression and smooth item transition) */}
+      <main
+        className="flex-1 overflow-x-hidden overflow-y-hidden p-3 [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+      >
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={activeItem?.id || 'empty'}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+            className="space-y-2 overflow-hidden"
+          >
+            <div className="space-y-0.5">
+              <label className="text-[11px] font-medium text-[var(--text-secondary)]">
+                下载链接
+              </label>
+              <div className="relative">
+                <Input
+                  value={url}
+                  error={Boolean(error && error === '请输入下载链接')}
+                  onChange={(e) => {
+                    setUrl(e.target.value);
+                    if (error) setError(null);
+                    void probeManualURL(e.target.value);
                   }}
-                  className={`h-6 px-2 text-[10px] ${
-                    duplicateStrategy === 'show_completed'
-                      ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
-                      : ''
-                  }`}
-                >
-                  <CheckCircle2 className="h-2.5 w-2.5" />
-                  <span>跳过并查看完成</span>
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  setDuplicateStrategy('continue_overwrite');
-                  void handleConfirm('continue_overwrite');
-                }}
-                className={`h-6 px-2 text-[10px] ${
-                  duplicateStrategy === 'continue_overwrite'
-                    ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
-                    : ''
-                }`}
-              >
-                <RotateCcw className="h-2.5 w-2.5" />
-                <span>继续下载并覆盖</span>
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  setDuplicateStrategy('copy');
-                  void (async () => {
-                    if (directory && filename) {
-                      const conf = await CheckFileConflict(
-                        directory,
-                        activeItem?.filename || filename,
-                      );
-                      if (conf.exists) {
-                        setFilename(conf.suggestedFilename);
-                        setFileConflict(false);
-                      }
-                    }
-                  })();
-                }}
-                className={`h-6 px-2 text-[10px] ${
-                  duplicateStrategy === 'copy'
-                    ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
-                    : ''
-                }`}
-              >
-                <Copy className="h-2.5 w-2.5" />
-                <span>序号副本</span>
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* File Conflict Alert */}
-        {fileConflict &&
-          duplicateStrategy !== 'continue_overwrite' &&
-          duplicateStrategy !== 'redownload' && (
-            <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] font-medium text-amber-950 dark:text-amber-100">
-              <div className="flex items-center gap-1.5">
-                <AlertCircle className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400" />
-                <span>目标目录存在同名文件: {filename}</span>
-              </div>
-              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => setOverwriteConflict(true)}
-                  className={`h-6 px-2 text-[10px] ${
-                    overwriteConflict
-                      ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
-                      : ''
-                  }`}
-                >
-                  覆盖现有
-                </Button>
-                {suggestedFilename && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      setFilename(suggestedFilename);
-                      setFileConflict(false);
-                      setOverwriteConflict(false);
-                    }}
-                    className="h-6 px-2 text-[10px]"
-                  >
-                    使用序号: {suggestedFilename}
-                  </Button>
+                  placeholder="https://..."
+                />
+                {probing && (
+                  <div className="absolute top-2 right-2.5">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--accent)]" />
+                  </div>
                 )}
               </div>
+              {error && (
+                <p className="mt-0.5 text-[10px] leading-tight text-red-500 dark:text-red-400">
+                  {error}
+                </p>
+              )}
             </div>
-          )}
-        {/* Filename & Concurrency (Same row, equal height h-8) */}
-        <div className="flex items-end gap-2">
-          <div className="flex-1 space-y-0.5">
-            <label className="text-[11px] font-medium text-[var(--text-secondary)]">文件名</label>
-            <Input
-              value={filename}
-              onChange={(e) => {
-                nameEditedRef.current = true;
-                setFilename(e.target.value);
-                if (directory) {
-                  void (async () => {
-                    const conf = await CheckFileConflict(directory, e.target.value);
-                    setFileConflict(conf.exists);
-                    setSuggestedFilename(conf.suggestedFilename);
-                  })();
-                }
-              }}
-            />
-          </div>
 
-          <div className="w-20 shrink-0 space-y-0.5">
-            <label className="text-[11px] font-medium text-[var(--text-secondary)]">并发数</label>
-            <Input
-              type="text"
-              inputMode="numeric"
-              value={maxConn}
-              onChange={(e) => {
-                const cleaned = e.target.value.replace(/[^\d]/g, '');
-                if (cleaned === '') {
-                  setMaxConn(0);
-                } else {
-                  const val = parseInt(cleaned, 10);
-                  setMaxConn(Math.min(32, Math.max(1, val)));
-                }
-              }}
-              onBlur={() => {
-                if (!maxConn || Number(maxConn) < 1) {
-                  setMaxConn(1);
-                }
-              }}
-              className="text-center font-mono"
-            />
-          </div>
-        </div>
+            {/* Compact Resource Meta Line */}
+            <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
+              <span>
+                预估大小:{' '}
+                <span className="font-medium text-[var(--text-secondary)]">
+                  {activeItem && activeItem.totalBytes > 0
+                    ? formatBytes(activeItem.totalBytes)
+                    : '未知大小'}
+                </span>
+              </span>
+              <span>
+                续传支持:{' '}
+                <span
+                  className={
+                    activeItem?.resumable
+                      ? 'font-medium text-emerald-600 dark:text-emerald-400'
+                      : 'text-[var(--text-muted)]'
+                  }
+                >
+                  {activeItem?.resumable ? '支持' : '不支持 / 未知'}
+                </span>
+              </span>
+            </div>
 
-        {/* Save Directory */}
-        <div className="space-y-0.5">
-          <label className="text-[11px] font-medium text-[var(--text-secondary)]">保存目录</label>
-          <div className="flex gap-1.5">
-            <Input
-              value={directory}
-              onChange={(e) => {
-                const newDir = e.target.value;
-                setDirectory(newDir);
-                if (filename) {
-                  void (async () => {
-                    const conf = await CheckFileConflict(newDir, filename);
-                    setFileConflict(conf.exists);
-                    setSuggestedFilename(conf.suggestedFilename);
-                  })();
-                }
-              }}
-              className="flex-1"
-            />
-            <Button
-              size="md"
-              variant="secondary"
-              onClick={() => void handleSelectDir()}
-              className="shrink-0 gap-1"
-            >
-              <Folder className="h-3.5 w-3.5" />
-              <span>浏览</span>
-            </Button>
-          </div>
-        </div>
+            {/* Duplicate Task Alert */}
+            {/* Duplicate Task Alert - Linear/Raycast refined segmented banner */}
+            {activeItem?.duplicateTask && (
+              <div className="space-y-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 shadow-xs">
+                {dupFileExists ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        </div>
+                        <span className="text-[11px] font-semibold tracking-tight text-[var(--text-primary)]">
+                          已有相同下载链接与同名文件
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-[var(--text-muted)]">请选择处理方式</span>
+                    </div>
+
+                    {/* Refined Segmented Control */}
+                    <div className="grid grid-cols-3 gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/70 p-1 select-none">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDuplicateStrategy('show_completed');
+                          if (activeItem.duplicateTask?.id) {
+                            void ShowProgressWindow(activeItem.duplicateTask.id);
+                          }
+                          // Keep window open as requested by user
+                        }}
+                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
+                          duplicateStrategy === 'show_completed'
+                            ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
+                            : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
+                        <span>查看已完成</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDuplicateStrategy('continue_overwrite');
+                          if (error) setError(null);
+                          if (originalFilenameRef.current) {
+                            setFilename(originalFilenameRef.current);
+                          }
+                        }}
+                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
+                          duplicateStrategy === 'continue_overwrite'
+                            ? 'bg-[var(--bg-surface)] text-[var(--accent)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
+                            : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        <RotateCcw className="h-3 w-3 shrink-0" />
+                        <span>继续覆盖</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDuplicateStrategy('copy');
+                          if (error) setError(null);
+                          void (async () => {
+                            const baseName =
+                              originalFilenameRef.current || activeItem?.filename || filename;
+                            if (directory && baseName) {
+                              const conf = await CheckURLFilesExist(url, directory, baseName);
+                              if (conf.suggestedFilename) {
+                                setFilename(conf.suggestedFilename);
+                              }
+                            }
+                          })();
+                        }}
+                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
+                          duplicateStrategy === 'copy'
+                            ? 'bg-[var(--bg-surface)] text-[var(--accent)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
+                            : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        <Copy className="h-3 w-3 shrink-0" />
+                        <span>序号副本</span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span className="text-[11px] font-medium text-[var(--text-secondary)]">
+                        此前已下载过此链接，当前目录下无同名文件
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (activeItem.duplicateTask?.id) {
+                          void ShowProgressWindow(activeItem.duplicateTask.id);
+                        }
+                      }}
+                      className="flex items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)]"
+                    >
+                      <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                      <span>查看完成记录</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* File Conflict Alert */}
+            {fileConflict &&
+              !activeItem?.duplicateTask &&
+              duplicateStrategy !== 'continue_overwrite' &&
+              duplicateStrategy !== 'redownload' && (
+                <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] font-medium text-amber-950 dark:text-amber-100">
+                  <div className="flex items-center gap-1.5 text-amber-900 dark:text-amber-200">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <span className="font-semibold text-amber-950 dark:text-amber-100">
+                      目标目录存在同名文件: {filename}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setOverwriteConflict(true)}
+                      className={`h-6 px-2 text-[10px] ${
+                        overwriteConflict
+                          ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
+                          : ''
+                      }`}
+                    >
+                      覆盖现有
+                    </Button>
+                    {suggestedFilename && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          setFilename(suggestedFilename);
+                          setFileConflict(false);
+                          setOverwriteConflict(false);
+                        }}
+                        className="h-6 px-2 text-[10px]"
+                      >
+                        使用序号: {suggestedFilename}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            {/* Filename & Concurrency (Same row, equal height h-8) */}
+            <div className="flex items-end gap-2">
+              <div className="flex-1 space-y-0.5">
+                <label className="text-[11px] font-medium text-[var(--text-secondary)]">
+                  文件名
+                </label>
+                <Input
+                  value={filename}
+                  onChange={(e) => {
+                    nameEditedRef.current = true;
+                    setFilename(e.target.value);
+                    if (directory) {
+                      void (async () => {
+                        const conf = await CheckFileConflict(directory, e.target.value);
+                        setFileConflict(conf.exists);
+                        setSuggestedFilename(conf.suggestedFilename);
+                      })();
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="w-20 shrink-0 space-y-0.5">
+                <label className="text-[11px] font-medium text-[var(--text-secondary)]">
+                  并发数
+                </label>
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  value={maxConn}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/[^\d]/g, '');
+                    if (cleaned === '') {
+                      setMaxConn(0);
+                    } else {
+                      const val = parseInt(cleaned, 10);
+                      setMaxConn(Math.min(32, Math.max(1, val)));
+                    }
+                  }}
+                  onBlur={() => {
+                    if (!maxConn || Number(maxConn) < 1) {
+                      setMaxConn(1);
+                    }
+                  }}
+                  className="text-center font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Save Directory */}
+            <div className="space-y-0.5">
+              <label className="text-[11px] font-medium text-[var(--text-secondary)]">
+                保存目录
+              </label>
+              <div className="flex gap-1.5">
+                <Input
+                  value={directory}
+                  onChange={(e) => {
+                    const newDir = e.target.value;
+                    setDirectory(newDir);
+                    if (filename) {
+                      void (async () => {
+                        const conf = await CheckFileConflict(newDir, filename);
+                        setFileConflict(conf.exists);
+                        setSuggestedFilename(conf.suggestedFilename);
+                      })();
+                    }
+                  }}
+                  className="flex-1"
+                />
+                <Button
+                  size="md"
+                  variant="secondary"
+                  onClick={() => void handleSelectDir()}
+                  className="shrink-0 gap-1"
+                >
+                  <Folder className="h-3.5 w-3.5" />
+                  <span>浏览</span>
+                </Button>
+              </div>
+            </div>
+          </motion.div>
+        </AnimatePresence>
       </main>
-
       {/* Compact Footer */}
       <footer className="flex h-10 shrink-0 items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3">
         <Button size="sm" variant="ghost" onClick={() => void handleCancel()}>

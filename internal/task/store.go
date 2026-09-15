@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 )
 
@@ -129,6 +130,14 @@ func (s *FileTaskStore) List(_ context.Context) ([]*Task, error) {
 		cloned := *t
 		list = append(list, &cloned)
 	}
+
+	sort.SliceStable(list, func(i, j int) bool {
+		if !list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].CreatedAt.After(list[j].CreatedAt)
+		}
+		return list[i].ID > list[j].ID
+	})
+
 	return list, nil
 }
 

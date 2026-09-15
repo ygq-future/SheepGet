@@ -73,6 +73,15 @@ export function CheckURLConsistency(taskID: string, newURL: string, headers: { [
 }
 
 /**
+ * CheckURLFilesExist checks if any file previously downloaded with urlStr (or filename variants) exists in dir.
+ */
+export function CheckURLFilesExist(urlStr: string, dir: string, filename: string): $CancellablePromise<$models.FileConflictResult> {
+    return $Call.ByID(3122187214, urlStr, dir, filename).then(($result: any) => {
+        return $$createType2($result);
+    });
+}
+
+/**
  * ConfirmPreDownload confirms the pre-download task with final user-chosen directory and filename.
  */
 export function ConfirmPreDownload(taskID: string, finalDir: string, finalFilename: string, maxConn: number): $CancellablePromise<task$0.Task | null> {
@@ -102,6 +111,15 @@ export function GetDefaultDownloadDir(): $CancellablePromise<string> {
 }
 
 /**
+ * GetFileInfoQueueItems returns all currently enqueued items in the file info window.
+ */
+export function GetFileInfoQueueItems(): $CancellablePromise<(window$0.FileInfoItem | null)[]> {
+    return $Call.ByID(1664868488).then(($result: any) => {
+        return $$createType7($result);
+    });
+}
+
+/**
  * GetFileInfoQueueLength returns the number of requests currently waiting in the queue.
  */
 export function GetFileInfoQueueLength(): $CancellablePromise<number> {
@@ -113,7 +131,7 @@ export function GetFileInfoQueueLength(): $CancellablePromise<number> {
  */
 export function GetSettings(): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -122,7 +140,7 @@ export function GetSettings(): $CancellablePromise<config$0.Settings> {
  */
 export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }> {
     return $Call.ByID(3330596760).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -135,7 +153,7 @@ export function Greet(name: string): $CancellablePromise<string> {
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
     return $Call.ByID(3109076673).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
@@ -161,7 +179,7 @@ export function OnTaskUpdated(t: task$0.Task | null): $CancellablePromise<void> 
 }
 
 /**
- * OpenFile opens the downloaded file with system default application
+ * OpenFile opens the downloaded file with system default application after verifying existence
  */
 export function OpenFile(filePath: string): $CancellablePromise<void> {
     return $Call.ByID(1958968983, filePath);
@@ -179,7 +197,7 @@ export function OpenFolder(folderPath: string): $CancellablePromise<void> {
  */
 export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(3018225713).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -195,7 +213,7 @@ export function PauseTask(id: string): $CancellablePromise<void> {
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType14($result);
     });
 }
 
@@ -289,11 +307,20 @@ export function SubmitFileInfo(sub: window$0.FileInfoSubmission): $CancellablePr
 }
 
 /**
+ * SwitchFileInfoActive switches the active file info dialog item to index.
+ */
+export function SwitchFileInfoActive(index: number): $CancellablePromise<window$0.FileInfoItem | null> {
+    return $Call.ByID(2168286885, index).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
+/**
  * TriggerDownload requests a new download, dispatching to FileInfo window queue or duplicate skip policy.
  */
 export function TriggerDownload(req: window$0.DownloadRequest): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(2473743423, req).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -302,7 +329,7 @@ export function TriggerDownload(req: window$0.DownloadRequest): $CancellableProm
  */
 export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2894041249, s).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
@@ -330,10 +357,11 @@ const $$createType3 = engine$0.ConsistencyResult.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
 const $$createType5 = window$0.FileInfoItem.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = config$0.Settings.createFrom;
-const $$createType8 = $Create.Map($Create.Any, $Create.Any);
-const $$createType9 = $Create.Array($$createType1);
-const $$createType10 = window$0.DownloadResponse.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = engine$0.ProbeResult.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = config$0.Settings.createFrom;
+const $$createType9 = $Create.Map($Create.Any, $Create.Any);
+const $$createType10 = $Create.Array($$createType1);
+const $$createType11 = window$0.DownloadResponse.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = engine$0.ProbeResult.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);

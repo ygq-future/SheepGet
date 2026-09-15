@@ -258,8 +258,15 @@ func (a *App) ListTasks() ([]*task.Task, error) {
 	return a.manager.List(a.ctx)
 }
 
-// OpenFile opens the downloaded file with system default application
+// OpenFile opens the downloaded file with system default application after verifying existence
 func (a *App) OpenFile(filePath string) error {
+	if _, err := os.Stat(filePath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("文件不存在或已被删除: %s", filePath)
+		}
+		return fmt.Errorf("无法访问文件: %w", err)
+	}
+
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
@@ -299,6 +306,45 @@ func (a *App) CheckFileConflict(dir, filename string) FileConflictResult {
 	exists, suggested := engine.CheckFileConflict(dir, filename)
 	return FileConflictResult{
 		Exists:            exists,
+		SuggestedFilename: suggested,
+	}
+}
+
+// CheckURLFilesExist checks if any file previously downloaded with urlStr (or filename variants) exists in dir.
+func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResult {
+	if dir == "" {
+		dir = getDefaultDownloadDir()
+	}
+
+	// 1. First check if the provided filename exists
+	exists, suggested := engine.CheckFileConflict(dir, filename)
+	if exists {
+		return FileConflictResult{
+			Exists:            true,
+			SuggestedFilename: suggested,
+		}
+	}
+
+	// 2. Check all tasks associated with this URL
+	if a.manager != nil && urlStr != "" {
+		if tasks, err := a.manager.List(a.ctx); err == nil {
+			for _, t := range tasks {
+				if t.URL == urlStr && t.Filename != "" {
+					targetPath := filepath.Join(dir, t.Filename)
+					if info, err := os.Stat(targetPath); err == nil && !info.IsDir() {
+						_, sugg := engine.CheckFileConflict(dir, t.Filename)
+						return FileConflictResult{
+							Exists:            true,
+							SuggestedFilename: sugg,
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return FileConflictResult{
+		Exists:            false,
 		SuggestedFilename: suggested,
 	}
 }
@@ -420,6 +466,22 @@ func (a *App) GetFileInfoQueueLength() int {
 		return 0
 	}
 	return a.windowQueue.QueueLength()
+}
+
+// GetFileInfoQueueItems returns all currently enqueued items in the file info window.
+func (a *App) GetFileInfoQueueItems() []*window.FileInfoItem {
+	if a.windowQueue == nil {
+		return nil
+	}
+	return a.windowQueue.GetQueueItems()
+}
+
+// SwitchFileInfoActive switches the active file info dialog item to index.
+func (a *App) SwitchFileInfoActive(index int) (*window.FileInfoItem, error) {
+	if a.windowQueue == nil {
+		return nil, fmt.Errorf("window queue not initialized")
+	}
+	return a.windowQueue.SwitchActive(index)
 }
 
 // ShowMainWindow makes the main window visible and brings it to focus.

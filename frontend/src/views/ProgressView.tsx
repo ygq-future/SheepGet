@@ -4,6 +4,7 @@ import { unwrapEventData } from '../lib/utils';
 import { DownloadCloud, CheckCircle2, Folder, ExternalLink, X } from 'lucide-react';
 import { useSettingsStore } from '../stores/settings';
 import { ListTasks, OpenFile, OpenFolder } from '../../bindings/sheep-get/app';
+import { ToastContainer, showToast } from '../components/ui/Toast';
 import type * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes } from '../lib/format';
 
@@ -50,13 +51,27 @@ export function ProgressView() {
   const handleOpenFile = () => {
     if (completedTask) {
       const fullPath = `${completedTask.directory}/${completedTask.filename}`.replace(/\\/g, '/');
-      void OpenFile(fullPath);
+      void (async () => {
+        try {
+          await OpenFile(fullPath);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          showToast(msg || '文件不存在或已被移动/删除', 'error', '无法打开文件');
+        }
+      })();
     }
   };
 
   const handleOpenFolder = () => {
     if (completedTask) {
-      void OpenFolder(completedTask.directory);
+      void (async () => {
+        try {
+          await OpenFolder(completedTask.directory);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          showToast(msg || '文件夹不存在或无法访问', 'error', '无法打开文件夹');
+        }
+      })();
     }
   };
 
@@ -128,6 +143,7 @@ export function ProgressView() {
           <p>当前没有正在进行的传输任务</p>
         </div>
       </main>
+      <ToastContainer />
     </div>
   );
 }

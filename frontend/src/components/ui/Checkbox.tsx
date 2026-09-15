@@ -31,20 +31,20 @@ export function Checkbox({
           e.stopPropagation();
           onCheckedChange(!checked);
         }}
-        className={`mt-0.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-all duration-150 group-hover:border-white/40 focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden ${
+        className={`mt-0.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-md border transition-all duration-150 group-hover:border-[var(--border-focus)] focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden ${
           checked
             ? 'border-[var(--accent)] bg-[var(--accent)] text-white shadow-xs'
-            : 'border-white/20 bg-zinc-900'
+            : 'border-[var(--border-subtle)] bg-[var(--bg-surface)]'
         }`}
       >
         {checked && <Check className="h-3 w-3 stroke-[3]" />}
       </button>
 
       <div className="flex flex-col">
-        <span className="text-xs font-medium text-zinc-200 transition-colors group-hover:text-zinc-100">
+        <span className="text-xs font-medium text-[var(--text-primary)] transition-colors">
           {label}
         </span>
-        {description && <span className="text-[11px] text-zinc-500">{description}</span>}
+        {description && <span className="text-[11px] text-[var(--text-muted)]">{description}</span>}
       </div>
     </div>
   );

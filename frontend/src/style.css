@@ -76,4 +76,19 @@
     background-color: var(--bg-base);
     color: var(--text-primary);
   }
+
+  /* FileInfo window: strictly scoped to auxiliary dialog viewport to eliminate native scrollbar flashing */
+  html.window-fileinfo,
+  html.window-fileinfo body {
+    overflow: hidden !important;
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  html.window-fileinfo::-webkit-scrollbar,
+  html.window-fileinfo body::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
 }
