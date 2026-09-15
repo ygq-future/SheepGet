@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useSettingsStore } from '../stores/settings';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Select } from './ui/Select';
+import { Input } from './ui/Input';
+import { Button } from './ui/Button';
 import { Switch } from './ui/Switch';
 import { Slider } from './ui/Slider';
 import { showToast } from './ui/Toast';
@@ -292,7 +294,7 @@ export function SettingsPanel() {
                     className="h-7 w-7 cursor-pointer appearance-none rounded-lg border border-[var(--border-subtle)] bg-transparent p-0"
                     title="选择自定义颜色"
                   />
-                  <input
+                  <Input
                     type="text"
                     value={customColor || appearance.accentColor || ''}
                     placeholder="#10b981"
@@ -302,7 +304,7 @@ export function SettingsPanel() {
                         void handleAccentChange(customColor);
                       }
                     }}
-                    className="w-20 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-base)] px-2 py-1 font-mono text-[11px] text-[var(--text-primary)] transition-all duration-200 focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden"
+                    className="w-20 font-mono text-[11px]"
                   />
                 </div>
               </div>
@@ -323,7 +325,7 @@ export function SettingsPanel() {
               </p>
 
               <div className="mt-2.5 flex items-center gap-2">
-                <input
+                <Input
                   type="text"
                   value={dirInput}
                   onChange={(e) => {
@@ -338,21 +340,22 @@ export function SettingsPanel() {
                       void handleCommitDirectory(dirInput);
                     }
                   }}
-                  className="flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] transition-all duration-200 focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden"
                   placeholder="请输入有效目录路径"
+                  className="flex-1 font-mono text-xs"
                 />
-                <button
+                <Button
+                  variant="secondary"
+                  size="md"
                   onClick={() => {
                     void handleSelectDefaultDir();
                   }}
-                  className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-3 py-2 text-xs font-medium text-[var(--text-primary)] transition-colors hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] active:scale-98"
+                  className="shrink-0 gap-1.5"
                 >
                   <Folder className="h-3.5 w-3.5" />
-                  浏览选择
-                </button>
+                  <span>浏览选择</span>
+                </Button>
               </div>
             </div>
-
             {/* Concurrency & Connections */}
             <div className="grid grid-cols-2 gap-4">
               <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">

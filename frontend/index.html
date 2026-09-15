@@ -4,6 +4,37 @@
     <meta charset="UTF-8" />
     <meta content="width=device-width, initial-scale=1.0" name="viewport" />
     <title>sheep-get</title>
+    <script>
+      (function () {
+        try {
+          const theme = localStorage.getItem('sheepget_theme') || 'system';
+          const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          const isDark = theme === 'dark' || (theme === 'system' && prefersDark);
+          const bg = isDark ? '#0c0e12' : '#f1f5f9';
+          document.documentElement.classList.add(isDark ? 'dark' : 'light');
+          document.documentElement.style.backgroundColor = bg;
+        } catch {
+          // Fallback if localStorage or matchMedia is inaccessible
+        }
+      })();
+    </script>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body {
+          background-color: #0c0e12;
+        }
+      }
+      @media (prefers-color-scheme: light) {
+        html,
+        body {
+          background-color: #f1f5f9;
+        }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

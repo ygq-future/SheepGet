@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sheep-get/internal/engine"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
+	"sheep-get/internal/window"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -23,12 +25,57 @@ type FileConflictResult struct {
 
 // App struct
 type App struct {
-	app      *application.App
-	ctx      context.Context
-	manager  *engine.Manager
-	store    task.TaskStore
-	storage  *storage.Storage
-	settings *config.SettingsService
+	app         *application.App
+	ctx         context.Context
+	manager     *engine.Manager
+	store       task.TaskStore
+	storage     *storage.Storage
+	settings    *config.SettingsService
+	windowQueue *window.QueueController
+}
+
+type wailsWindowView struct {
+	getApp      func() *application.App
+	name        string
+	getSettings func() config.Settings
+}
+
+func (w *wailsWindowView) Show() {
+	if app := w.getApp(); app != nil {
+		if win, ok := app.Window.GetByName(w.name); ok {
+			if w.getSettings != nil {
+				s := w.getSettings()
+				if s.Appearance.Theme == config.ThemeLight {
+					win.SetBackgroundColour(application.RGBA{Red: 241, Green: 245, Blue: 249, Alpha: 255})
+				} else {
+					win.SetBackgroundColour(application.RGBA{Red: 12, Green: 14, Blue: 18, Alpha: 255})
+				}
+			}
+			win.Show()
+		}
+	}
+}
+
+func (w *wailsWindowView) Hide() {
+	if app := w.getApp(); app != nil {
+		if win, ok := app.Window.GetByName(w.name); ok {
+			win.Hide()
+		}
+	}
+}
+
+func (w *wailsWindowView) Focus() {
+	if app := w.getApp(); app != nil {
+		if win, ok := app.Window.GetByName(w.name); ok {
+			win.Focus()
+		}
+	}
+}
+
+func (w *wailsWindowView) Emit(event string, data any) {
+	if app := w.getApp(); app != nil {
+		app.Event.Emit(event, data)
+	}
 }
 
 // NewApp creates a new App application struct
@@ -68,6 +115,13 @@ func NewApp() *App {
 	})
 	app.manager = mgr
 
+	winView := &wailsWindowView{
+		getApp:      app.getApp,
+		name:        "fileinfo",
+		getSettings: settingsSvc.Get,
+	}
+	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
+	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
 	return app
 }
 
@@ -321,4 +375,110 @@ func (a *App) ValidateDirectory(dirPath string) (bool, string) {
 		return false, "指定路径不是一个文件夹"
 	}
 	return true, ""
+}
+
+// TriggerDownload requests a new download, dispatching to FileInfo window queue or duplicate skip policy.
+func (a *App) TriggerDownload(req window.DownloadRequest) (*window.DownloadResponse, error) {
+	if a.windowQueue == nil {
+		return nil, fmt.Errorf("window queue not initialized")
+	}
+	return a.windowQueue.Enqueue(a.ctx, req)
+}
+
+// OpenNewDownload opens the FileInfo window with an empty/manual request.
+func (a *App) OpenNewDownload() (*window.DownloadResponse, error) {
+	return a.TriggerDownload(window.DownloadRequest{})
+}
+
+// GetActiveFileInfo returns the active item currently shown in the FileInfo window.
+func (a *App) GetActiveFileInfo() (*window.FileInfoItem, error) {
+	if a.windowQueue == nil {
+		return nil, fmt.Errorf("window queue not initialized")
+	}
+	return a.windowQueue.GetActive()
+}
+
+// SubmitFileInfo confirms the active FileInfo request with user selections.
+func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) {
+	if a.windowQueue == nil {
+		return nil, fmt.Errorf("window queue not initialized")
+	}
+	return a.windowQueue.Submit(a.ctx, sub)
+}
+
+// CancelCurrentFileInfo cancels the active FileInfo request and advances the queue.
+func (a *App) CancelCurrentFileInfo() error {
+	if a.windowQueue == nil {
+		return nil
+	}
+	return a.windowQueue.CancelCurrent(a.ctx)
+}
+
+// GetFileInfoQueueLength returns the number of requests currently waiting in the queue.
+func (a *App) GetFileInfoQueueLength() int {
+	if a.windowQueue == nil {
+		return 0
+	}
+	return a.windowQueue.QueueLength()
+}
+
+// ShowMainWindow makes the main window visible and brings it to focus.
+func (a *App) ShowMainWindow() {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("main"); ok {
+			win.Show()
+			win.Focus()
+		}
+	}
+}
+
+// MinimiseFileInfoWindow minimises the file info window.
+func (a *App) MinimiseFileInfoWindow() {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("fileinfo"); ok {
+			win.Minimise()
+		}
+	}
+}
+
+// SetFileInfoWindowHeight dynamically adjusts the fileinfo window's height to wrap its content.
+func (a *App) SetFileInfoWindowHeight(height int) {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("fileinfo"); ok {
+			if height < 240 {
+				height = 240
+			}
+			if height > 700 {
+				height = 700
+			}
+			win.SetSize(460, height)
+		}
+	}
+}
+
+// ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
+func (a *App) ShowProgressWindow(taskID string) {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("progress"); ok {
+			win.Show()
+			win.Focus()
+			app.Event.Emit("progress:focus_completed", taskID)
+			return
+		}
+		progWin := app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name:   "progress",
+			Title:  "下载进度 - SheepGet",
+			Width:  560,
+			Height: 520,
+			BackgroundColour: application.RGBA{
+				Red:   27,
+				Green: 38,
+				Blue:  54,
+				Alpha: 255,
+			},
+			URL: fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
+		})
+		progWin.Focus()
+		app.Event.Emit("progress:focus_completed", taskID)
+	}
 }

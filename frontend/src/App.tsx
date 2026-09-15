@@ -9,12 +9,11 @@ import {
   DeleteTask,
   OpenFile,
   OpenFolder,
-  GetDefaultDownloadDir,
+  OpenNewDownload,
 } from '../bindings/sheep-get/app';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
 import { TaskItem } from './components/TaskItem';
-import { FileInfoModal } from './components/FileInfoModal';
 import { UpdateLinkModal } from './components/UpdateLinkModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import {
@@ -38,8 +37,6 @@ function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
   const [filter, setFilter] = useState<'all' | 'downloading' | 'completed' | 'settings'>('all');
-  const [modalOpen, setModalOpen] = useState(false);
-  const [defaultDir, setDefaultDir] = useState('');
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
   const [updatingLinkTask, setUpdatingLinkTask] = useState<task.Task | null>(null);
 
@@ -63,15 +60,6 @@ export function App() {
         if (!ignore) setTasks(nonNullTasks(list));
       } catch (err) {
         console.error('Failed to load tasks:', err);
-      }
-    })();
-
-    void (async () => {
-      try {
-        const dir = await GetDefaultDownloadDir();
-        if (!ignore) setDefaultDir(dir);
-      } catch (err) {
-        console.error('Failed to get download dir:', err);
       }
     })();
 
@@ -211,7 +199,7 @@ export function App() {
         </div>
 
         <button
-          onClick={() => setModalOpen(true)}
+          onClick={() => void OpenNewDownload()}
           className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
         >
           <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
@@ -347,15 +335,6 @@ export function App() {
           )}
         </main>
       </div>
-
-      <FileInfoModal
-        open={modalOpen}
-        onOpenChange={setModalOpen}
-        defaultDir={defaultDir}
-        onTasksChanged={() => {
-          void refreshTasks();
-        }}
-      />
 
       <UpdateLinkModal
         key={updatingLinkTask?.id ?? 'none'}

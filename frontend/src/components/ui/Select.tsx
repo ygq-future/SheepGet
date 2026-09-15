@@ -29,7 +29,7 @@ export function Select<T extends string | number>({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className={`flex w-full items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs font-medium text-[var(--text-primary)] shadow-xs transition-all duration-200 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--border-focus)] focus:outline-hidden ${className}`}
+          className={`flex w-full items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] shadow-xs transition-all duration-150 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--border-focus)]/40 focus:outline-hidden ${className || 'h-9 py-2'}`}
         >
           <span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-200" />

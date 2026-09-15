@@ -86,10 +86,19 @@ export enum DuplicateURLPolicy {
      */
     $zero = "",
 
-    DuplicatePolicyAsk = "ask",
-    DuplicatePolicySkipShowDone = "skip_show_done",
-    DuplicatePolicyOverwrite = "overwrite",
+    DuplicatePolicyPrompt = "prompt",
+    DuplicatePolicySkipShowCompleted = "skip_show_completed",
+    DuplicatePolicyContinueOverwrite = "continue_overwrite",
     DuplicatePolicyNumberedCopy = "numbered_copy",
+
+    /**
+     * Aliases maintained for backwards compatibility
+     */
+    DuplicatePolicyAsk = "prompt",
+    DuplicatePolicySkipShowDone = "skip_show_completed",
+    DuplicatePolicyOverwrite = "continue_overwrite",
+    DuplicatePolicySkipShowLegacy = "skip_show_done",
+    DuplicatePolicyOverwriteLegacy = "overwrite",
 };
 
 /**

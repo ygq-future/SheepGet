@@ -2,6 +2,7 @@
 
 :root {
   /* Default dark theme */
+  --bg-app: #0c0e12;
   --bg-base: #09090b;
   --bg-surface: #121215;
   --bg-surface-hover: #18181c;
@@ -29,6 +30,7 @@
 }
 
 :root.light {
+  --bg-app: #f1f5f9;
   --bg-base: #f8fafc;
   --bg-surface: #ffffff;
   --bg-surface-hover: #f1f5f9;
@@ -46,6 +48,7 @@
 }
 
 :root.dark {
+  --bg-app: #0c0e12;
   --bg-base: #09090b;
   --bg-surface: #121215;
   --bg-surface-hover: #18181c;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -63,10 +64,18 @@ func CheckFileConflict(dir, filename string) (bool, string) {
 	})
 }
 
+var numberedSuffixRegex = regexp.MustCompile(`^(.*) \(\d+\)$`)
+
 // numberedName returns the first "name (n).ext" variant not rejected by taken.
 func numberedName(filename string, taken func(string) bool) string {
 	ext := filepath.Ext(filename)
 	stem := strings.TrimSuffix(filename, ext)
+	if m := numberedSuffixRegex.FindStringSubmatch(stem); len(m) == 2 {
+		stem = m[1]
+	}
+	if !taken(filename) {
+		return filename
+	}
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s (%d)%s", stem, i, ext)
 		if !taken(candidate) {
@@ -234,7 +243,7 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		if dir == "" {
 			dir = t.Directory
 		}
-		filename, err = m.numberedCopyName(ctx, dir, filename)
+		filename, err = m.NumberedCopyName(ctx, dir, filename)
 		if err != nil {
 			return nil, err
 		}
@@ -271,9 +280,8 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 	}
 }
 
-// numberedCopyName returns the first "name (n).ext" variant free on disk and in the task list.
-// numberedCopyName returns the first numbered variant that is free both on disk and in the task list.
-func (m *Manager) numberedCopyName(ctx context.Context, dir, filename string) (string, error) {
+// NumberedCopyName returns the first "name (n).ext" variant free on disk and in the task list.
+func (m *Manager) NumberedCopyName(ctx context.Context, dir, filename string) (string, error) {
 	existingList, err := m.store.List(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to read task list: %w", err)
@@ -293,7 +301,12 @@ func (m *Manager) numberedCopyName(ctx context.Context, dir, filename string) (s
 
 // StartPreDownload creates a task that begins transferring while the file info dialog is still open.
 func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error) {
-	info, err := m.downloader.Probe(ctx, urlStr, nil)
+	return m.StartPreDownloadWithHeaders(ctx, urlStr, dir, filename, maxConn, nil)
+}
+
+// StartPreDownloadWithHeaders creates a pre-download task with optional request headers.
+func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
+	info, err := m.downloader.Probe(ctx, urlStr, headers)
 	if err != nil {
 		// As per A03: a probe failure on a confirmed manual download still keeps a visible task.
 		t := &task.Task{
@@ -305,6 +318,7 @@ func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename st
 			Status:         task.StatusError,
 			ErrorMsg:       err.Error(),
 			MaxConcurrency: maxConn,
+			RequestHeaders: headers,
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
 		}
@@ -337,6 +351,7 @@ func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename st
 		Resumable:      info.Resumable,
 		ETag:           info.ETag,
 		LastModified:   info.LastModified,
+		RequestHeaders: headers,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -595,6 +610,11 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 
 // AddTask probes the URL, checks duplicates, creates a task in queued or paused state, and triggers queue scheduling.
 func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error) {
+	return m.AddTaskWithHeaders(ctx, urlStr, dir, filename, maxConn, nil)
+}
+
+// AddTaskWithHeaders creates a task carrying optional request headers context.
+func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
 	// Check duplicate URL in existing tasks
 	existingList, _ := m.store.List(ctx)
 	for _, ext := range existingList {
@@ -602,7 +622,7 @@ func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, max
 			return nil, fmt.Errorf("该下载链接已存在于任务列表中（状态：%s），请勿重复添加", ext.Status)
 		}
 	}
-	info, err := m.downloader.Probe(ctx, urlStr, nil)
+	info, err := m.downloader.Probe(ctx, urlStr, headers)
 	if err != nil {
 		// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
 		t := &task.Task{
@@ -614,6 +634,7 @@ func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, max
 			Status:         task.StatusError,
 			ErrorMsg:       err.Error(),
 			MaxConcurrency: maxConn,
+			RequestHeaders: headers,
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
 		}
@@ -644,10 +665,10 @@ func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, max
 		Resumable:      info.Resumable,
 		ETag:           info.ETag,
 		LastModified:   info.LastModified,
+		RequestHeaders: headers,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
-
 	if err := m.store.Save(ctx, t); err != nil {
 		return nil, err
 	}

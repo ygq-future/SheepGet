@@ -19,10 +19,17 @@ const (
 type DuplicateURLPolicy string
 
 const (
-	DuplicatePolicyAsk          DuplicateURLPolicy = "ask"
-	DuplicatePolicySkipShowDone DuplicateURLPolicy = "skip_show_done"
-	DuplicatePolicyOverwrite    DuplicateURLPolicy = "overwrite"
-	DuplicatePolicyNumberedCopy DuplicateURLPolicy = "numbered_copy"
+	DuplicatePolicyPrompt            DuplicateURLPolicy = "prompt"
+	DuplicatePolicySkipShowCompleted DuplicateURLPolicy = "skip_show_completed"
+	DuplicatePolicyContinueOverwrite DuplicateURLPolicy = "continue_overwrite"
+	DuplicatePolicyNumberedCopy      DuplicateURLPolicy = "numbered_copy"
+
+	// Aliases maintained for backwards compatibility
+	DuplicatePolicyAsk             DuplicateURLPolicy = DuplicatePolicyPrompt
+	DuplicatePolicySkipShowDone    DuplicateURLPolicy = DuplicatePolicySkipShowCompleted
+	DuplicatePolicyOverwrite       DuplicateURLPolicy = DuplicatePolicyContinueOverwrite
+	DuplicatePolicySkipShowLegacy  DuplicateURLPolicy = "skip_show_done"
+	DuplicatePolicyOverwriteLegacy DuplicateURLPolicy = "overwrite"
 )
 
 const (
@@ -90,7 +97,13 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 
 	// Validate DuplicateURLPolicy
 	switch s.Download.DuplicateURLPolicy {
-	case DuplicatePolicyAsk, DuplicatePolicySkipShowDone, DuplicatePolicyOverwrite, DuplicatePolicyNumberedCopy:
+	case DuplicatePolicyPrompt, DuplicatePolicySkipShowDone, DuplicatePolicyOverwrite, DuplicatePolicyNumberedCopy:
+	case "ask":
+		s.Download.DuplicateURLPolicy = DuplicatePolicyPrompt
+	case "skip_show_done":
+		s.Download.DuplicateURLPolicy = DuplicatePolicySkipShowDone
+	case "overwrite":
+		s.Download.DuplicateURLPolicy = DuplicatePolicyOverwrite
 	default:
 		s.Download.DuplicateURLPolicy = defaults.Download.DuplicateURLPolicy
 	}

@@ -243,7 +243,7 @@ export function TaskItem({
               return (
                 <div
                   key={idx}
-                  className="relative h-2 overflow-hidden rounded-sm border border-white/5 bg-zinc-800/90 p-[0.5px]"
+                  className="relative h-2 overflow-hidden rounded-sm border border-[var(--border-subtle)] bg-[var(--bg-subtle)] p-[0.5px]"
                   title={`通道 ${idx + 1}: ${formatBytes(chunk.downloaded)} / ${formatBytes(
                     chunkSize,
                   )} (${chunkPercent}%)`}

@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
+	"sheep-get/internal/window"
 )
 
 // serveRangedPayload stands in for a remote resource: it honours Range requests and, when referer
@@ -80,7 +82,24 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 2})
 	t.Cleanup(mgr.Close)
 
-	app := &App{manager: mgr, store: store}
+	settingsSvc := config.NewSettingsService(
+		filepath.Join(tmpDir, "config.json"),
+		tmpDir,
+		filepath.Join(tmpDir, "temp"),
+		nil,
+	)
+	app := &App{
+		manager:  mgr,
+		store:    store,
+		settings: settingsSvc,
+	}
+	winView := &wailsWindowView{
+		getApp:      app.getApp,
+		name:        "fileinfo",
+		getSettings: settingsSvc.Get,
+	}
+	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
+	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
 	app.startup(context.Background())
 	return app, store, tmpDir
 }
@@ -326,5 +345,59 @@ func TestApp_ExpiredLinkRecovery(t *testing.T) {
 	}
 	if string(content) != string(payload) {
 		t.Fatalf("recovered download does not match the served resource")
+	}
+}
+
+func TestApp_WindowQueue_Lifecycle(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	payload := []byte("window queue lifecycle payload")
+	ts := serveRangedPayload(payload, "", 0)
+	defer ts.Close()
+
+	// 1. Trigger download via queue
+	resp, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       ts.URL + "/queue_item.bin",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+	if !resp.Handled || resp.Action != "enqueued" {
+		t.Fatalf("expected enqueued response, got %+v", resp)
+	}
+	if app.GetFileInfoQueueLength() != 1 {
+		t.Fatalf("expected queue length 1, got %d", app.GetFileInfoQueueLength())
+	}
+
+	active, err := app.GetActiveFileInfo()
+	if err != nil || active == nil {
+		t.Fatalf("expected active file info, got %v, err: %v", active, err)
+	}
+	if active.Filename != "flow.bin" {
+		t.Errorf("expected filename flow.bin from Content-Disposition, got %s", active.Filename)
+	}
+
+	// 2. Submit active file info
+	submittedTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   4,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	if submittedTask == nil {
+		t.Fatalf("expected created task from submission")
+	}
+	if app.GetFileInfoQueueLength() != 0 {
+		t.Fatalf("queue should be empty after submission, got %d", app.GetFileInfoQueueLength())
+	}
+
+	// 3. Wait for completed task
+	done := waitAppTask(t, store, submittedTask.ID, task.StatusCompleted)
+	if done == nil || done.Downloaded != int64(len(payload)) {
+		t.Fatalf("expected completed task with payload length %d, got %v", len(payload), done)
 	}
 }

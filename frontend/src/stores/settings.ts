@@ -42,11 +42,23 @@ export function injectThemeAndAccentCSS(settings: configModels.Settings) {
   const theme = settings.appearance?.theme || configModels.ThemeMode.ThemeSystem;
   const accent = settings.appearance?.accentColor || '#10b981';
 
+  try {
+    localStorage.setItem('sheepget_theme', theme);
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
   // Apply dark / light class to root
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   const isDark =
     theme === configModels.ThemeMode.ThemeDark ||
     (theme === configModels.ThemeMode.ThemeSystem && prefersDark);
+
+  const bgApp = isDark ? '#0c0e12' : '#f1f5f9';
+  root.style.setProperty('--bg-app', bgApp);
+  root.style.backgroundColor = bgApp;
+  if (document.body) {
+    document.body.style.backgroundColor = bgApp;
+  }
 
   if (isDark) {
     root.classList.add('dark');

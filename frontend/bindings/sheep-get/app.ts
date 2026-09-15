@@ -22,6 +22,9 @@ import * as engine$0 from "./internal/engine/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as task$0 from "./internal/task/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as window$0 from "./internal/window/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -34,6 +37,13 @@ export function AddTask(urlStr: string, dir: string, filename: string, maxConn: 
     return $Call.ByID(571013529, urlStr, dir, filename, maxConn).then(($result: any) => {
         return $$createType1($result);
     });
+}
+
+/**
+ * CancelCurrentFileInfo cancels the active FileInfo request and advances the queue.
+ */
+export function CancelCurrentFileInfo(): $CancellablePromise<void> {
+    return $Call.ByID(3773381186);
 }
 
 /**
@@ -76,10 +86,26 @@ export function DeleteTask(id: string, deleteDiskFile: boolean): $CancellablePro
 }
 
 /**
- * GetDefaultDownloadDir returns the default downloads folder
+ * GetActiveFileInfo returns the active item currently shown in the FileInfo window.
+ */
+export function GetActiveFileInfo(): $CancellablePromise<window$0.FileInfoItem | null> {
+    return $Call.ByID(1899710323).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
+/**
+ * GetDefaultDownloadDir returns the default downloads folder from settings or system fallback
  */
 export function GetDefaultDownloadDir(): $CancellablePromise<string> {
     return $Call.ByID(658010303);
+}
+
+/**
+ * GetFileInfoQueueLength returns the number of requests currently waiting in the queue.
+ */
+export function GetFileInfoQueueLength(): $CancellablePromise<number> {
+    return $Call.ByID(2016201816);
 }
 
 /**
@@ -87,7 +113,7 @@ export function GetDefaultDownloadDir(): $CancellablePromise<string> {
  */
 export function GetSettings(): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType7($result);
     });
 }
 
@@ -96,7 +122,7 @@ export function GetSettings(): $CancellablePromise<config$0.Settings> {
  */
 export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }> {
     return $Call.ByID(3330596760).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType8($result);
     });
 }
 
@@ -109,8 +135,15 @@ export function Greet(name: string): $CancellablePromise<string> {
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
     return $Call.ByID(3109076673).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType9($result);
     });
+}
+
+/**
+ * MinimiseFileInfoWindow minimises the file info window.
+ */
+export function MinimiseFileInfoWindow(): $CancellablePromise<void> {
+    return $Call.ByID(760188354);
 }
 
 /**
@@ -142,6 +175,15 @@ export function OpenFolder(folderPath: string): $CancellablePromise<void> {
 }
 
 /**
+ * OpenNewDownload opens the FileInfo window with an empty/manual request.
+ */
+export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse | null> {
+    return $Call.ByID(3018225713).then(($result: any) => {
+        return $$createType11($result);
+    });
+}
+
+/**
  * PauseTask pauses an active or queued task
  */
 export function PauseTask(id: string): $CancellablePromise<void> {
@@ -153,7 +195,7 @@ export function PauseTask(id: string): $CancellablePromise<void> {
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType13($result);
     });
 }
 
@@ -201,6 +243,34 @@ export function SetApplication(app: application$0.App | null): $CancellablePromi
 }
 
 /**
+ * SetFileInfoWindowHeight dynamically adjusts the fileinfo window's height to wrap its content.
+ */
+export function SetFileInfoWindowHeight(height: number): $CancellablePromise<void> {
+    return $Call.ByID(2015656026, height);
+}
+
+/**
+ * ShowMainWindow makes the main window visible and brings it to focus.
+ */
+export function ShowMainWindow(): $CancellablePromise<void> {
+    return $Call.ByID(3189675457);
+}
+
+/**
+ * ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
+ */
+export function ShowProgressWindow(taskID: string): $CancellablePromise<void> {
+    return $Call.ByID(593856943, taskID);
+}
+
+/**
+ * Shutdown is called when the app is terminating to cleanly stop manager and persist state.
+ */
+export function Shutdown(): $CancellablePromise<void> {
+    return $Call.ByID(2987688963);
+}
+
+/**
  * StartPreDownload starts downloading in the background while file info dialog is displayed.
  */
 export function StartPreDownload(urlStr: string, dir: string, filename: string, maxConn: number): $CancellablePromise<task$0.Task | null> {
@@ -210,11 +280,29 @@ export function StartPreDownload(urlStr: string, dir: string, filename: string, 
 }
 
 /**
+ * SubmitFileInfo confirms the active FileInfo request with user selections.
+ */
+export function SubmitFileInfo(sub: window$0.FileInfoSubmission): $CancellablePromise<task$0.Task | null> {
+    return $Call.ByID(915235023, sub).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * TriggerDownload requests a new download, dispatching to FileInfo window queue or duplicate skip policy.
+ */
+export function TriggerDownload(req: window$0.DownloadRequest): $CancellablePromise<window$0.DownloadResponse | null> {
+    return $Call.ByID(2473743423, req).then(($result: any) => {
+        return $$createType11($result);
+    });
+}
+
+/**
  * UpdateSettings persists updated settings and broadcasts to all windows
  */
 export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2894041249, s).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType7($result);
     });
 }
 
@@ -240,8 +328,12 @@ const $$createType1 = $Create.Nullable($$createType0);
 const $$createType2 = $models.FileConflictResult.createFrom;
 const $$createType3 = engine$0.ConsistencyResult.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = config$0.Settings.createFrom;
-const $$createType6 = $Create.Map($Create.Any, $Create.Any);
-const $$createType7 = $Create.Array($$createType1);
-const $$createType8 = engine$0.ProbeResult.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
+const $$createType5 = window$0.FileInfoItem.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = config$0.Settings.createFrom;
+const $$createType8 = $Create.Map($Create.Any, $Create.Any);
+const $$createType9 = $Create.Array($$createType1);
+const $$createType10 = window$0.DownloadResponse.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = engine$0.ProbeResult.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);

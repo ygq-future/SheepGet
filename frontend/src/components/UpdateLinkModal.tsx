@@ -2,6 +2,8 @@ import { useState, type SyntheticEvent } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X, RefreshCw, AlertTriangle, CheckCircle2, Link2, KeyRound } from 'lucide-react';
 import type * as task from '../../bindings/sheep-get/internal/task/models';
+import { Input } from './ui/Input';
+import { Button } from './ui/Button';
 import {
   CheckURLConsistency,
   UpdateTaskURL,
@@ -148,12 +150,10 @@ export function UpdateLinkModal({
                 <Link2 className="h-3.5 w-3.5 text-zinc-500" />
                 新下载链接 (URL)
               </label>
-              <input
-                type="text"
+              <Input
                 value={newUrl}
                 onChange={(e) => setNewUrl(e.target.value)}
                 placeholder="请输入有效的新下载链接"
-                className="w-full rounded-xl border border-white/10 bg-zinc-900/80 px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:border-sky-500/50 focus:ring-2 focus:ring-sky-500/20 focus:outline-hidden"
                 autoFocus
               />
             </div>
@@ -210,17 +210,13 @@ export function UpdateLinkModal({
 
             {!inconsistentReason && (
               <div className="flex items-center justify-end gap-2.5 border-t border-white/[0.06] pt-3">
-                <button
-                  type="button"
-                  onClick={() => onOpenChange(false)}
-                  className="rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-white/5 hover:text-zinc-100"
-                >
+                <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
                   取消
-                </button>
-                <button
+                </Button>
+                <Button
                   type="submit"
+                  variant="primary"
                   disabled={checking || updating || !newUrl.trim()}
-                  className="flex items-center gap-1.5 rounded-xl bg-sky-500 px-5 py-2 text-xs font-semibold text-zinc-950 shadow-lg shadow-sky-500/20 hover:bg-sky-400 disabled:opacity-50"
                 >
                   {checking ? (
                     '正在校验一致性...'
@@ -232,7 +228,7 @@ export function UpdateLinkModal({
                       校验并更新
                     </>
                   )}
-                </button>
+                </Button>
               </div>
             )}
           </form>
