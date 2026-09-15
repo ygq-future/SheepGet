@@ -147,7 +147,7 @@ export function SettingsPanel() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-4xl flex-col p-6 font-sans">
+    <div className="flex h-full w-full min-w-0 flex-col font-sans">
       <div className="mb-6 flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
         <div>
           <h2 className="text-base font-semibold text-[var(--text-primary)]">偏好设置</h2>
