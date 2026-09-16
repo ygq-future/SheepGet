@@ -33,7 +33,7 @@ import {
 import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed } from '../lib/format';
-import { mergeProgressSegments } from '../lib/progress';
+import { calculateChunkProgress, calculateChunkDividers } from '../lib/progress';
 
 /**
  * Sort active (non-completed) tasks:
@@ -629,46 +629,68 @@ export function ProgressView() {
                           </div>
                         </div>
 
-                        {/* Unified Merged Progress Bar */}
+                        {/* Seamless Multi-Chunk Progress Bar with In-place Split Dividers */}
                         <div className="mt-1.5 space-y-1">
                           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[0.5px]">
                             {isUnknownSize && t.status === taskModels.Status.StatusDownloading ? (
                               <div className="animate-indeterminate h-full w-2/5 rounded-full bg-[var(--accent)]" />
-                            ) : (
+                            ) : t.chunks && t.chunks.length > 1 ? (
                               (() => {
-                                const segments = mergeProgressSegments(
-                                  t.chunks,
-                                  t.totalBytes,
-                                  t.downloaded,
-                                );
-                                if (segments.length > 0) {
-                                  return segments.map((seg, idx) => (
-                                    <div
-                                      key={idx}
-                                      className={`absolute top-0 bottom-0 rounded-full transition-all duration-200 ${
-                                        t.status === taskModels.Status.StatusError
-                                          ? 'bg-rose-500'
-                                          : 'bg-[var(--accent)]'
-                                      }`}
-                                      style={{
-                                        left: `${seg.startPercent}%`,
-                                        width: `${seg.widthPercent}%`,
-                                      }}
-                                      title={`已下载: ${formatBytes(seg.start)} - ${formatBytes(seg.end)}`}
-                                    />
-                                  ));
-                                }
+                                const chunkItems = calculateChunkProgress(t.chunks, t.totalBytes);
+                                const dividers = calculateChunkDividers(t.chunks, t.totalBytes);
                                 return (
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-200 ${
-                                      t.status === taskModels.Status.StatusError
-                                        ? 'bg-rose-500'
-                                        : 'bg-[var(--accent)]'
-                                    }`}
-                                    style={{ width: `${percent}%` }}
-                                  />
+                                  <>
+                                    {/* Active / Completed Chunk Fills */}
+                                    {chunkItems.map((item) => {
+                                      if (item.downloadedPercent <= 0) return null;
+                                      return (
+                                        <div
+                                          key={item.id}
+                                          className={`absolute top-0 bottom-0 transition-[width] duration-200 ease-linear ${
+                                            t.status === taskModels.Status.StatusError
+                                              ? 'bg-rose-500'
+                                              : item.completed
+                                                ? 'bg-[var(--accent)]'
+                                                : 'bg-[var(--accent)]/90'
+                                          }`}
+                                          style={{
+                                            left: `${item.startPercent}%`,
+                                            width: `${item.downloadedPercent}%`,
+                                          }}
+                                          title={`通道 ${item.index + 1}${item.assisted ? ' (动态协助)' : ''}: ${formatBytes(
+                                            item.downloaded,
+                                          )} / ${formatBytes(item.chunkSize)} (${Math.round(
+                                            (item.downloaded / item.chunkSize) * 100,
+                                          )}%)`}
+                                        />
+                                      );
+                                    })}
+
+                                    {/* In-place Spatial Chunk Dividers */}
+                                    {dividers.map((div) => (
+                                      <div
+                                        key={div.id}
+                                        className={`pointer-events-none absolute top-0 bottom-0 z-10 w-[1px] ${
+                                          div.assisted
+                                            ? 'bg-amber-400/80 shadow-[0_0_2px_rgba(251,191,36,0.8)]'
+                                            : 'bg-[var(--bg-surface)]/80'
+                                        }`}
+                                        style={{ left: `${div.positionPercent}%` }}
+                                        title={div.assisted ? '慢块就地协助切分点' : '分块边界'}
+                                      />
+                                    ))}
+                                  </>
                                 );
                               })()
+                            ) : (
+                              <div
+                                className={`h-full rounded-full transition-[width] duration-200 ease-linear ${
+                                  t.status === taskModels.Status.StatusError
+                                    ? 'bg-rose-500'
+                                    : 'bg-[var(--accent)]'
+                                }`}
+                                style={{ width: `${percent}%` }}
+                              />
                             )}
                           </div>
 

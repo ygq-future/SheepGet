@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { sortActiveTasks } from './views/ProgressView';
-import { mergeProgressSegments } from './lib/progress';
+import {
+  mergeProgressSegments,
+  calculateChunkProgress,
+  calculateChunkDividers,
+} from './lib/progress';
 import * as taskModels from '../bindings/sheep-get/internal/task/models';
 
 describe('ProgressView active task sorting and rules (Ticket 03)', () => {
@@ -209,5 +213,110 @@ describe('mergeProgressSegments algorithm', () => {
     expect(segments[0].end).toBe(999);
     expect(segments[0].startPercent).toBe(0);
     expect(segments[0].widthPercent).toBe(100);
+  });
+});
+
+describe('calculateChunkProgress and calculateChunkDividers algorithm', () => {
+  it('returns empty array when chunks are undefined, empty, or totalBytes <= 0', () => {
+    expect(calculateChunkProgress(undefined, 1000)).toEqual([]);
+    expect(calculateChunkProgress([], 1000)).toEqual([]);
+    expect(calculateChunkProgress([], 0)).toEqual([]);
+    expect(calculateChunkDividers(undefined, 1000)).toEqual([]);
+    expect(calculateChunkDividers([], 1000)).toEqual([]);
+    expect(calculateChunkDividers([], 0)).toEqual([]);
+  });
+
+  it('correctly calculates chunk progress percentages with stable keys', () => {
+    const chunks: taskModels.Chunk[] = [
+      new taskModels.Chunk({ index: 0, start: 0, end: 499, downloaded: 250, completed: false }),
+      new taskModels.Chunk({ index: 1, start: 500, end: 999, downloaded: 500, completed: true }),
+    ];
+    const items = calculateChunkProgress(chunks, 1000);
+    expect(items).toHaveLength(2);
+
+    expect(items[0].id).toBe('chunk-0');
+    expect(items[0].startPercent).toBe(0);
+    expect(items[0].widthPercent).toBe(50);
+    expect(items[0].downloadedPercent).toBe(25);
+    expect(items[0].completed).toBe(false);
+
+    expect(items[1].id).toBe('chunk-1');
+    expect(items[1].startPercent).toBe(50);
+    expect(items[1].widthPercent).toBe(50);
+    expect(items[1].downloadedPercent).toBe(50);
+    expect(items[1].completed).toBe(true);
+  });
+
+  it('generates spatial dividers in ascending order even when dynamic split chunks are appended out of order', () => {
+    // Simulates a slow chunk (originally index 1: 500..999) dynamically split into:
+    // index 1: 500..749
+    // index 2 (newly appended assisted chunk): 750..999
+    const chunks: taskModels.Chunk[] = [
+      new taskModels.Chunk({ index: 0, start: 0, end: 499, downloaded: 500, completed: true }),
+      new taskModels.Chunk({ index: 1, start: 500, end: 749, downloaded: 100, completed: false }),
+      new taskModels.Chunk({
+        index: 2,
+        start: 750,
+        end: 999,
+        downloaded: 0,
+        completed: false,
+        assisted: true,
+      }),
+    ];
+
+    const dividers = calculateChunkDividers(chunks, 1000);
+    expect(dividers).toHaveLength(2);
+
+    // Divider 1 between chunk 0 and chunk 1 at 50%
+    expect(dividers[0].positionPercent).toBe(50);
+    expect(dividers[0].assisted).toBe(false);
+    expect(dividers[0].targetChunkIndex).toBe(1);
+
+    // Divider 2 (in-place dynamic split) at 75%
+    expect(dividers[1].positionPercent).toBe(75);
+    expect(dividers[1].assisted).toBe(true);
+    expect(dividers[1].targetChunkIndex).toBe(2);
+  });
+
+  it('handles disordered chunk arrays and correctly sorts dividers spatially', () => {
+    // Chunks appended out of order: chunk 2 (start: 500) appended before chunk 1 (start: 250)
+    const chunks: taskModels.Chunk[] = [
+      new taskModels.Chunk({ index: 0, start: 0, end: 249, downloaded: 250, completed: true }),
+      new taskModels.Chunk({
+        index: 2,
+        start: 500,
+        end: 999,
+        downloaded: 0,
+        completed: false,
+        assisted: true,
+      }),
+      new taskModels.Chunk({ index: 1, start: 250, end: 499, downloaded: 100, completed: false }),
+    ];
+
+    const dividers = calculateChunkDividers(chunks, 1000);
+    expect(dividers).toHaveLength(2);
+    expect(dividers[0].positionPercent).toBe(25);
+    expect(dividers[0].assisted).toBe(false);
+    expect(dividers[1].positionPercent).toBe(50);
+    expect(dividers[1].assisted).toBe(true);
+  });
+
+  it('clamps downloaded bytes to chunk boundary and preserves assisted flag', () => {
+    const chunks: taskModels.Chunk[] = [
+      new taskModels.Chunk({
+        index: 3,
+        start: 600,
+        end: 799,
+        downloaded: 9999, // overflow
+        completed: false,
+        assisted: true,
+      }),
+    ];
+    const items = calculateChunkProgress(chunks, 1000);
+    expect(items).toHaveLength(1);
+    expect(items[0].startPercent).toBe(60);
+    expect(items[0].widthPercent).toBe(20);
+    expect(items[0].downloadedPercent).toBe(20); // clamped to widthPercent
+    expect(items[0].assisted).toBe(true);
   });
 });

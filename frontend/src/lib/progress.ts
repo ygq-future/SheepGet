@@ -7,6 +7,97 @@ export interface MergedSegment {
   widthPercent: number;
 }
 
+export interface ChunkProgressItem {
+  id: string;
+  index: number;
+  start: number;
+  end: number;
+  chunkSize: number;
+  startPercent: number;
+  widthPercent: number;
+  downloadedPercent: number;
+  downloaded: number;
+  completed: boolean;
+  assisted: boolean;
+}
+
+export interface ChunkDivider {
+  id: string;
+  positionPercent: number;
+  assisted: boolean;
+  targetChunkIndex: number;
+}
+
+/**
+ * Calculates progress items for each individual chunk with stable keys and physical positions,
+ * ensuring zero layout jumps or misattributed animations when chunks progress or merge.
+ */
+export function calculateChunkProgress(
+  chunks: taskModels.Chunk[] | undefined,
+  totalBytes: number,
+): ChunkProgressItem[] {
+  if (!chunks || chunks.length === 0 || totalBytes <= 0) {
+    return [];
+  }
+
+  return chunks.map((chunk) => {
+    const chunkSize = Math.max(1, chunk.end - chunk.start + 1);
+    const startPercent = Math.max(0, Math.min(100, (chunk.start / totalBytes) * 100));
+    const widthPercent = Math.max(0, Math.min(100 - startPercent, (chunkSize / totalBytes) * 100));
+    const validDownloaded = chunk.completed
+      ? chunkSize
+      : Math.min(chunkSize, Math.max(0, chunk.downloaded));
+    const downloadedPercent = Math.max(
+      0,
+      Math.min(widthPercent, (validDownloaded / totalBytes) * 100),
+    );
+
+    return {
+      id: `chunk-${chunk.index}`,
+      index: chunk.index,
+      start: chunk.start,
+      end: chunk.end,
+      chunkSize,
+      startPercent,
+      widthPercent,
+      downloadedPercent,
+      downloaded: validDownloaded,
+      completed: chunk.completed,
+      assisted: !!chunk.assisted,
+    };
+  });
+}
+
+/**
+ * Calculates physical chunk boundary dividers in spatial ascending order,
+ * clearly marking split points including dynamic assisted slow chunk splits in-place.
+ */
+export function calculateChunkDividers(
+  chunks: taskModels.Chunk[] | undefined,
+  totalBytes: number,
+): ChunkDivider[] {
+  if (!chunks || chunks.length <= 1 || totalBytes <= 0) {
+    return [];
+  }
+
+  // Sort chunks by start position ascending so dividers match spatial sequence regardless of array append order
+  const sorted = [...chunks].sort((a, b) => a.start - b.start);
+  const dividers: ChunkDivider[] = [];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const c = sorted[i];
+    const positionPercent = Math.max(0, Math.min(100, (c.start / totalBytes) * 100));
+    dividers.push({
+      id: `divider-${c.index}-${c.start}`,
+      positionPercent,
+      assisted: !!c.assisted,
+      targetChunkIndex: c.index,
+    });
+  }
+
+  return dividers;
+}
+
 /**
  * Merges continuous or overlapping downloaded ranges across multiple chunks,
  * producing a unified progress track where adjacent completed/downloaded chunks seamlessly merge.
