@@ -165,6 +165,20 @@ export function MinimiseFileInfoWindow(): $CancellablePromise<void> {
 }
 
 /**
+ * MinimiseProgressWindow minimises the progress window.
+ */
+export function MinimiseProgressWindow(): $CancellablePromise<void> {
+    return $Call.ByID(3189823907);
+}
+
+/**
+ * HideProgressWindow hides the progress window.
+ */
+export function HideProgressWindow(): $CancellablePromise<void> {
+    return $Call.ByID(3377482730);
+}
+
+/**
  * OnSettingsUpdated emits wails event to the frontend whenever settings change
  */
 export function OnSettingsUpdated(s: config$0.Settings | null): $CancellablePromise<void> {
@@ -254,6 +268,13 @@ export function SelectDirectory(): $CancellablePromise<string> {
 }
 
 /**
+ * RetryProcessingTask retries media processing for a task
+ */
+export function RetryProcessingTask(id: string): $CancellablePromise<void> {
+    return $Call.ByID(2793104495, id);
+}
+
+/**
  * SetApplication sets the Wails application reference
  */
 export function SetApplication(app: application$0.App | null): $CancellablePromise<void> {
@@ -265,6 +286,13 @@ export function SetApplication(app: application$0.App | null): $CancellablePromi
  */
 export function SetFileInfoWindowHeight(height: number): $CancellablePromise<void> {
     return $Call.ByID(2015656026, height);
+}
+
+/**
+ * SetProgressWindowHeight dynamically adjusts the progress window's height between minHeight and maxHeight.
+ */
+export function SetProgressWindowHeight(height: number): $CancellablePromise<void> {
+    return $Call.ByID(2403510243, height);
 }
 
 /**

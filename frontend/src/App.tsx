@@ -11,6 +11,7 @@ import {
   OpenFolder,
   OpenNewDownload,
   TriggerDownload,
+  ShowProgressWindow,
 } from '../bindings/sheep-get/app';
 import { Clipboard, Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
@@ -27,6 +28,7 @@ import {
   AlertCircle,
   Inbox,
   Settings as SettingsIcon,
+  Activity,
 } from 'lucide-react';
 import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -264,13 +266,36 @@ export function App() {
           </div>
         </div>
 
-        <button
-          onClick={() => void handleNewDownload()}
-          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
-        >
-          <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
-          新建任务
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const hasActive = tasks.some(
+                (t) =>
+                  t.status === task.Status.StatusDownloading ||
+                  t.status === task.Status.StatusProcessing ||
+                  t.status === task.Status.StatusQueued,
+              );
+              if (!hasActive) {
+                showToast('当前没有正在进行的下载任务', 'info', '进度窗口');
+                return;
+              }
+              void ShowProgressWindow('');
+            }}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] shadow-xs transition-colors hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)] active:scale-98"
+            title="打开共享下载进度窗口"
+          >
+            <Activity className="h-3.5 w-3.5 text-[var(--accent)]" />
+            <span className="hidden sm:inline">进度窗口</span>
+          </button>
+          <button
+            onClick={() => void handleNewDownload()}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
+          >
+            <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
+            新建任务
+          </button>
+        </div>
       </header>
 
       {/* Main Container */}
@@ -424,6 +449,7 @@ export function App() {
                     onOpenFile={handleOpenFile}
                     onOpenFolder={handleOpenFolder}
                     onUpdateLink={(task) => setUpdatingLinkTask(task)}
+                    onShowProgress={(id) => void ShowProgressWindow(id)}
                   />
                 ))}
               </AnimatePresence>

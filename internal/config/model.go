@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 )
@@ -52,6 +53,35 @@ type DownloadConfig struct {
 	DefaultConnectionsPerTask int                `json:"defaultConnectionsPerTask"`
 	DefaultDirectory          string             `json:"defaultDirectory"`
 	TempDirectory             string             `json:"tempDirectory"`
+	ShowProgressWindow        bool               `json:"showProgressWindow"`
+	KeepCompletedInfo         bool               `json:"keepCompletedInfo"`
+	AutoRemoveCompletedOnOpen bool               `json:"autoRemoveCompletedOnOpen"`
+}
+
+// UnmarshalJSON customizes unmarshaling to ensure showProgressWindow and keepCompletedInfo default to true when omitted.
+func (d *DownloadConfig) UnmarshalJSON(data []byte) error {
+	type alias DownloadConfig
+	aux := &struct {
+		ShowProgressWindow *bool `json:"showProgressWindow"`
+		KeepCompletedInfo  *bool `json:"keepCompletedInfo"`
+		*alias
+	}{
+		alias: (*alias)(d),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.ShowProgressWindow == nil {
+		d.ShowProgressWindow = true
+	} else {
+		d.ShowProgressWindow = *aux.ShowProgressWindow
+	}
+	if aux.KeepCompletedInfo == nil {
+		d.KeepCompletedInfo = true
+	} else {
+		d.KeepCompletedInfo = *aux.KeepCompletedInfo
+	}
+	return nil
 }
 
 // Settings represents the root settings structure.
@@ -74,6 +104,9 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			DefaultConnectionsPerTask: 8,
 			DefaultDirectory:          defaultDownloadDir,
 			TempDirectory:             defaultTempDir,
+			ShowProgressWindow:        true,
+			KeepCompletedInfo:         true,
+			AutoRemoveCompletedOnOpen: false,
 		},
 	}
 }

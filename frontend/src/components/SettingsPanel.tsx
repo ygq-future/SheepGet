@@ -145,6 +145,32 @@ export function SettingsPanel() {
       }),
     });
   };
+  const handleShowProgressWindowChange = async (showProgressWindow: boolean) => {
+    await updateSettings({
+      download: new configModels.DownloadConfig({
+        ...download,
+        showProgressWindow,
+      }),
+    });
+  };
+
+  const handleKeepCompletedInfoChange = async (keepCompletedInfo: boolean) => {
+    await updateSettings({
+      download: new configModels.DownloadConfig({
+        ...download,
+        keepCompletedInfo,
+      }),
+    });
+  };
+
+  const handleAutoRemoveCompletedChange = async (autoRemoveCompletedOnOpen: boolean) => {
+    await updateSettings({
+      download: new configModels.DownloadConfig({
+        ...download,
+        autoRemoveCompletedOnOpen,
+      }),
+    });
+  };
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col font-sans">
@@ -463,6 +489,64 @@ export function SettingsPanel() {
                     checked={!!download.preDownload}
                     onCheckedChange={(checked) => {
                       void handlePreDownloadChange(checked);
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Progress Window & Completed Info Settings */}
+            <div className="space-y-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-xs font-semibold text-[var(--text-primary)]">
+                    自动显示下载进度窗口
+                  </label>
+                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                    开始下载任务时自动唤起共享下载进度窗口
+                  </p>
+                </div>
+                <Switch
+                  checked={download.showProgressWindow ?? true}
+                  onCheckedChange={(checked) => {
+                    void handleShowProgressWindowChange(checked);
+                  }}
+                />
+              </div>
+
+              <div className="border-t border-[var(--border-subtle)] pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-semibold text-[var(--text-primary)]">
+                      保留完成信息
+                    </label>
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      任务下载完成后在进度窗口顶部保留该条完成记录与操作
+                    </p>
+                  </div>
+                  <Switch
+                    checked={download.keepCompletedInfo ?? true}
+                    onCheckedChange={(checked) => {
+                      void handleKeepCompletedInfoChange(checked);
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-[var(--border-subtle)] pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-semibold text-[var(--text-primary)]">
+                      打开后自动移除完成信息
+                    </label>
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      在进度窗口点击打开文件或打开文件夹后，自动移除该条完成信息
+                    </p>
+                  </div>
+                  <Switch
+                    checked={!!download.autoRemoveCompletedOnOpen}
+                    onCheckedChange={(checked) => {
+                      void handleAutoRemoveCompletedChange(checked);
                     }}
                   />
                 </div>

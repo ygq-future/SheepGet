@@ -43,6 +43,9 @@ export class DownloadConfig {
     "defaultConnectionsPerTask": number;
     "defaultDirectory": string;
     "tempDirectory": string;
+    "showProgressWindow": boolean;
+    "keepCompletedInfo": boolean;
+    "autoRemoveCompletedOnOpen": boolean;
 
     /** Creates a new DownloadConfig instance. */
     constructor($$source: Partial<DownloadConfig> = {}) {
@@ -64,7 +67,15 @@ export class DownloadConfig {
         if (!("tempDirectory" in $$source)) {
             this["tempDirectory"] = "";
         }
-
+        if (!("showProgressWindow" in $$source)) {
+            this["showProgressWindow"] = true;
+        }
+        if (!("keepCompletedInfo" in $$source)) {
+            this["keepCompletedInfo"] = true;
+        }
+        if (!("autoRemoveCompletedOnOpen" in $$source)) {
+            this["autoRemoveCompletedOnOpen"] = false;
+        }
         Object.assign(this, $$source);
     }
 

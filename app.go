@@ -15,6 +15,7 @@ import (
 	"sheep-get/internal/window"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // FileConflictResult represents whether target file exists and suggests an alternative filename.
@@ -253,6 +254,11 @@ func (a *App) RetryTask(id string) error {
 	return a.manager.Retry(a.ctx, id)
 }
 
+// RetryProcessingTask retries media processing for a task.
+func (a *App) RetryProcessingTask(id string) error {
+	return a.manager.RetryProcessing(a.ctx, id)
+}
+
 func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 	if deleteDiskFile {
 		t, err := a.store.Get(a.ctx, id)
@@ -461,7 +467,20 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 	if a.windowQueue == nil {
 		return nil, fmt.Errorf("window queue not initialized")
 	}
-	return a.windowQueue.Submit(a.ctx, sub)
+	t, err := a.windowQueue.Submit(a.ctx, sub)
+	if err != nil {
+		return nil, err
+	}
+	if t != nil && a.settings != nil {
+		st := a.settings.Get()
+		if st.Download.ShowProgressWindow {
+			if app := a.getApp(); app != nil {
+				app.Event.Emit("progress:clear_viewed")
+			}
+			a.ShowProgressWindow(t.ID)
+		}
+	}
+	return t, nil
 }
 
 // CancelCurrentFileInfo cancels the active FileInfo request and advances the queue.
@@ -530,29 +549,73 @@ func (a *App) SetFileInfoWindowHeight(height int) {
 	}
 }
 
+// SetProgressWindowHeight dynamically adjusts the progress window's height between minHeight and maxHeight.
+func (a *App) SetProgressWindowHeight(height int) {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("progress"); ok {
+			if height < 160 {
+				height = 160
+			}
+			if height > 640 {
+				height = 640
+			}
+			win.SetSize(560, height)
+		}
+	}
+}
+
 // ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
 func (a *App) ShowProgressWindow(taskID string) {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName("progress"); ok {
 			win.Show()
 			win.Focus()
-			app.Event.Emit("progress:focus_completed", taskID)
+			if taskID != "" {
+				app.Event.Emit("progress:focus_completed", taskID)
+				app.Event.Emit("progress:focus_task", taskID)
+			}
 			return
 		}
 		progWin := app.Window.NewWithOptions(application.WebviewWindowOptions{
-			Name:   "progress",
-			Title:  "下载进度 - SheepGet",
-			Width:  560,
-			Height: 520,
-			BackgroundColour: application.RGBA{
-				Red:   27,
-				Green: 38,
-				Blue:  54,
-				Alpha: 255,
-			},
-			URL: fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
+			Name:           "progress",
+			Title:          "下载进度 - SheepGet",
+			Width:          560,
+			Height:         160,
+			MinWidth:       560,
+			MaxWidth:       560,
+			MinHeight:      160,
+			MaxHeight:      640,
+			Frameless:      true,
+			BackgroundType: application.BackgroundTypeTransparent,
+			URL:            fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
+		})
+		progWin.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+			event.Cancel()
+			progWin.Hide()
 		})
 		progWin.Focus()
-		app.Event.Emit("progress:focus_completed", taskID)
+		if taskID != "" {
+			app.Event.Emit("progress:focus_completed", taskID)
+			app.Event.Emit("progress:focus_task", taskID)
+		}
+	}
+}
+
+// MinimiseProgressWindow minimises the progress window.
+func (a *App) MinimiseProgressWindow() {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("progress"); ok {
+			win.Minimise()
+		}
+	}
+}
+
+// HideProgressWindow hides the progress window.
+func (a *App) HideProgressWindow() {
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName("progress"); ok {
+			win.Hide()
+			app.Event.Emit("progress:clear_viewed")
+		}
 	}
 }

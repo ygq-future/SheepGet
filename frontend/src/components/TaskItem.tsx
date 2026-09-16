@@ -17,6 +17,7 @@ import {
   Copy,
   Check,
   Link2,
+  Activity,
 } from 'lucide-react';
 
 interface TaskItemProps {
@@ -28,6 +29,7 @@ interface TaskItemProps {
   onOpenFile: (filePath: string) => void;
   onOpenFolder: (folderPath: string) => void;
   onUpdateLink?: (task: task.Task) => void;
+  onShowProgress?: (id: string) => void;
 }
 
 export function TaskItem({
@@ -39,6 +41,7 @@ export function TaskItem({
   onOpenFile,
   onOpenFolder,
   onUpdateLink,
+  onShowProgress,
 }: TaskItemProps) {
   const [copied, setCopied] = useState(false);
 
@@ -158,6 +161,15 @@ export function TaskItem({
 
         {/* Action Controls */}
         <div className="flex items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100">
+          {onShowProgress && (
+            <button
+              onClick={() => onShowProgress(t.id)}
+              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
+              title="在独立进度窗口中查看"
+            >
+              <Activity className="h-3.5 w-3.5" />
+            </button>
+          )}
           {t.status === task.Status.StatusCompleted && (
             <>
               <button

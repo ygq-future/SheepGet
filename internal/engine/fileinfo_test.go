@@ -289,8 +289,8 @@ func TestManager_ResolveDuplicateTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve duplicate 'redownload' failed: %v", err)
 	}
-	if redownloadedTask.ID != task1.ID {
-		t.Errorf("expected redownload to reset task %s, got %s", task1.ID, redownloadedTask.ID)
+	if redownloadedTask.ID == task1.ID {
+		t.Errorf("expected redownload/overwrite to create a new distinct task, got same ID %s", task1.ID)
 	}
 	if redownloadedTask.Downloaded != 0 {
 		t.Errorf("expected redownload to reset progress, got %d", redownloadedTask.Downloaded)

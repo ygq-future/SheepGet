@@ -209,33 +209,41 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		return t, nil
 
 	case "redownload":
-		_ = m.Pause(ctx, taskID)
-		m.waitTaskIdle(taskID, 5*time.Second)
-		destPath := filepath.Join(t.Directory, t.Filename)
+		if filename == "" {
+			filename = t.Filename
+		}
+		if dir == "" {
+			dir = t.Directory
+		}
+		if maxConn <= 0 {
+			maxConn = t.MaxConcurrency
+		}
+		destPath := filepath.Join(dir, filename)
 		_ = os.Remove(destPath)
 		_ = os.Remove(destPath + ".sheepget")
 
-		if dir != "" {
-			t.Directory = dir
+		newTask := &task.Task{
+			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
+			URL:            t.URL,
+			Filename:       filename,
+			Directory:      dir,
+			TotalBytes:     t.TotalBytes,
+			Downloaded:     0,
+			Status:         task.StatusQueued,
+			MaxConcurrency: maxConn,
+			Resumable:      t.Resumable,
+			ETag:           t.ETag,
+			LastModified:   t.LastModified,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+			RequestHeaders: t.RequestHeaders,
 		}
-		if filename != "" {
-			t.Filename = filename
-		}
-		if maxConn > 0 {
-			t.MaxConcurrency = maxConn
-		}
-		t.Downloaded = 0
-		t.Chunks = nil
-		t.Status = task.StatusQueued
-		t.ErrorMsg = ""
-		t.UpdatedAt = time.Now()
-		if err := m.store.Save(ctx, t); err != nil {
+		if err := m.store.Save(ctx, newTask); err != nil {
 			return nil, err
 		}
-		m.notify(t)
+		m.notify(newTask)
 		m.schedule()
-		return t, nil
-
+		return newTask, nil
 	case "copy":
 		if filename == "" {
 			filename = t.Filename
@@ -735,6 +743,11 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 	return m.Resume(ctx, id)
 }
 
+// RetryProcessing reserves the interaction boundary for retrying failed media processing.
+func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
+	return m.Resume(ctx, id)
+}
+
 // Delete removes task from store and stops running transfer.
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	_ = m.Pause(ctx, id)
@@ -821,6 +834,7 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 
 	var lastSavedDownloaded int64
 	var lastSaveTime time.Time
+	var lastNotifyTime time.Time
 
 	progressCb := func(downloaded int64, chunkIndex int, chunkDownloaded int64) {
 		m.mu.Lock()
@@ -832,14 +846,19 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 		t.Speed = m.taskSpeed[taskID]
 		m.mu.Unlock()
 
-		// Throttle persistence to disk (at most once every 500ms or 1MB)
 		now := time.Now()
+		// Throttle persistence to disk (at most once every 500ms or 1MB)
 		if now.Sub(lastSaveTime) > 500*time.Millisecond || (downloaded-lastSavedDownloaded) > 1024*1024 {
 			lastSaveTime = now
 			lastSavedDownloaded = downloaded
 			_ = m.store.Save(bgCtx, t)
 		}
-		m.notify(t)
+
+		// Throttle UI progress notifications to ~16 FPS (60ms) to ensure smooth reorder animations
+		if now.Sub(lastNotifyTime) >= 60*time.Millisecond {
+			lastNotifyTime = now
+			m.notify(t)
+		}
 	}
 
 	err = m.downloader.Download(ctx, t, progressCb)

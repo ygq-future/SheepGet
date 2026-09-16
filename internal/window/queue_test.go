@@ -557,17 +557,17 @@ func TestQueueController_ManualEmptyURL_DuplicateCompletedTask_Recognized(t *tes
 		t.Fatalf("submit failed: %v", err)
 	}
 
-	// Must recognize duplicate and overwrite existing task, NOT create a second new task
-	if resTask.ID != existingTask.ID {
-		t.Errorf("expected duplicate task %s to be resolved, but got new task %s", existingTask.ID, resTask.ID)
+	// Must recognize duplicate and create a new task for the new download session
+	if resTask.ID == existingTask.ID {
+		t.Errorf("expected duplicate overwrite to create a new task, but got same task %s", existingTask.ID)
 	}
 	if resTask.Directory != newDir {
 		t.Errorf("expected updated directory %s, got %s", newDir, resTask.Directory)
 	}
 
-	// Total task count in store must be 1, not 2
+	// Total task count in store should be 2 (existing completed record + new task)
 	allTasks, _ := store.List(ctx)
-	if len(allTasks) != 1 {
-		t.Fatalf("expected exactly 1 task in store, got %d", len(allTasks))
+	if len(allTasks) != 2 {
+		t.Fatalf("expected 2 tasks in store (original + new), got %d", len(allTasks))
 	}
 }

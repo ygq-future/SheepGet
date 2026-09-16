@@ -53,13 +53,16 @@ export function injectThemeAndAccentCSS(settings: configModels.Settings) {
     theme === configModels.ThemeMode.ThemeDark ||
     (theme === configModels.ThemeMode.ThemeSystem && prefersDark);
 
-  const isFileInfo =
+  const isFramelessWindow =
     root.classList.contains('window-fileinfo') ||
-    new URLSearchParams(window.location.search).get('window') === 'fileinfo';
+    root.classList.contains('window-progress') ||
+    ['fileinfo', 'progress'].includes(
+      new URLSearchParams(window.location.search).get('window') || '',
+    );
 
   const bgApp = isDark ? '#0c0e12' : '#f1f5f9';
   root.style.setProperty('--bg-app', bgApp);
-  if (!isFileInfo) {
+  if (!isFramelessWindow) {
     root.style.backgroundColor = bgApp;
     if (document.body) {
       document.body.style.backgroundColor = bgApp;

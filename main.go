@@ -72,6 +72,28 @@ func main() {
 		event.Cancel()
 		_ = app.CancelCurrentFileInfo()
 	})
+	// Pre-create independent Progress window (Name: "progress")
+	progressWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:           "progress",
+		Title:          "下载进度 - SheepGet",
+		Width:          560,
+		Height:         160,
+		MinWidth:       560,
+		MaxWidth:       560,
+		MinHeight:      160,
+		MaxHeight:      640,
+		Frameless:      true,
+		BackgroundType: application.BackgroundTypeTransparent,
+		DisableResize:  false,
+		Hidden:         true,
+		URL:            "/?window=progress",
+	})
+	// Closing progress window hides it instead of terminating
+	progressWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		event.Cancel()
+		progressWindow.Hide()
+		wailsApp.Event.Emit("progress:clear_viewed")
+	})
 
 	// Configure cross-platform system tray
 	systemTray := wailsApp.SystemTray.New()

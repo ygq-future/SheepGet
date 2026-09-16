@@ -60,6 +60,7 @@ export enum Status {
 
     StatusQueued = "queued",
     StatusDownloading = "downloading",
+    StatusProcessing = "processing",
     StatusPaused = "paused",
     StatusCompleted = "completed",
     StatusError = "error",

@@ -12,6 +12,7 @@ type Status string
 const (
 	StatusQueued      Status = "queued"
 	StatusDownloading Status = "downloading"
+	StatusProcessing  Status = "processing"
 	StatusPaused      Status = "paused"
 	StatusCompleted   Status = "completed"
 	StatusError       Status = "error"

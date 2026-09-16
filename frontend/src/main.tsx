@@ -22,6 +22,7 @@ if (windowType === 'fileinfo') {
   document.documentElement.classList.add('window-fileinfo');
   ViewComponent = FileInfoView;
 } else if (windowType === 'progress') {
+  document.documentElement.classList.add('window-progress');
   ViewComponent = ProgressView;
 }
 

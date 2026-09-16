@@ -30,6 +30,49 @@ func TestDefaultSettings(t *testing.T) {
 	if s.Download.DefaultDirectory != "/downloads" {
 		t.Errorf("expected /downloads, got %s", s.Download.DefaultDirectory)
 	}
+	if !s.Download.ShowProgressWindow {
+		t.Errorf("expected ShowProgressWindow true by default")
+	}
+	if !s.Download.KeepCompletedInfo {
+		t.Errorf("expected KeepCompletedInfo true by default")
+	}
+	if s.Download.AutoRemoveCompletedOnOpen {
+		t.Errorf("expected AutoRemoveCompletedOnOpen false by default")
+	}
+}
+
+func TestDownloadConfig_WindowSettingsJSONUnmarshal(t *testing.T) {
+	// Case 1: missing fields in JSON -> defaults true, true, false
+	rawMissing := `{"defaultDirectory": "/test"}`
+	var c1 DownloadConfig
+	if err := json.Unmarshal([]byte(rawMissing), &c1); err != nil {
+		t.Fatalf("failed to unmarshal c1: %v", err)
+	}
+	if !c1.ShowProgressWindow {
+		t.Errorf("expected ShowProgressWindow default to true when missing")
+	}
+	if !c1.KeepCompletedInfo {
+		t.Errorf("expected KeepCompletedInfo default to true when missing")
+	}
+	if c1.AutoRemoveCompletedOnOpen {
+		t.Errorf("expected AutoRemoveCompletedOnOpen default to false when missing")
+	}
+
+	// Case 2: explicitly set to false, false, true
+	rawExplicit := `{"showProgressWindow": false, "keepCompletedInfo": false, "autoRemoveCompletedOnOpen": true}`
+	var c2 DownloadConfig
+	if err := json.Unmarshal([]byte(rawExplicit), &c2); err != nil {
+		t.Fatalf("failed to unmarshal c2: %v", err)
+	}
+	if c2.ShowProgressWindow {
+		t.Errorf("expected ShowProgressWindow false")
+	}
+	if c2.KeepCompletedInfo {
+		t.Errorf("expected KeepCompletedInfo false")
+	}
+	if !c2.AutoRemoveCompletedOnOpen {
+		t.Errorf("expected AutoRemoveCompletedOnOpen true")
+	}
 }
 
 func TestSettingsValidation_Fallback(t *testing.T) {

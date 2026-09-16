@@ -401,3 +401,83 @@ func TestApp_WindowQueue_Lifecycle(t *testing.T) {
 		t.Fatalf("expected completed task with payload length %d, got %v", len(payload), done)
 	}
 }
+
+func TestApp_ProgressWindow_SettingsAndSubmit(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+	payload := []byte("progress window test payload")
+	ts := serveRangedPayload(payload, "", 0)
+	defer ts.Close()
+
+	// Test 1: Submit with default settings (showProgressWindow: true)
+	resp, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       ts.URL + "/progress_item_1.bin",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+	if !resp.Handled {
+		t.Fatalf("expected handled response")
+	}
+	active, err := app.GetActiveFileInfo()
+	if err != nil || active == nil {
+		t.Fatalf("expected active file info, got %v", active)
+	}
+
+	task1, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   2,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	if task1 == nil {
+		t.Fatalf("expected created task")
+	}
+
+	// Test 2: Update settings to showProgressWindow: false
+	currSettings := app.settings.Get()
+	currSettings.Download.ShowProgressWindow = false
+	_, err = app.settings.Update(currSettings)
+	if err != nil {
+		t.Fatalf("failed to update settings: %v", err)
+	}
+
+	resp2, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       ts.URL + "/progress_item_2.bin",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("TriggerDownload 2 failed: %v", err)
+	}
+	if !resp2.Handled {
+		t.Fatalf("expected handled response 2")
+	}
+	active2, err := app.GetActiveFileInfo()
+	if err != nil || active2 == nil {
+		t.Fatalf("expected active file info 2, got %v", active2)
+	}
+
+	task2, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: active2.ID,
+		URL:       active2.URL,
+		Filename:  active2.Filename,
+		Directory: active2.Directory,
+		MaxConn:   2,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo 2 failed: %v", err)
+	}
+	if task2 == nil {
+		t.Fatalf("expected created task 2")
+	}
+
+	// Test 3: RetryProcessingTask interface boundary
+	retryErr := app.RetryProcessingTask(task2.ID)
+	if retryErr != nil {
+		t.Logf("RetryProcessingTask returned (expected if task is in another state): %v", retryErr)
+	}
+}

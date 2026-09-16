@@ -128,9 +128,11 @@
     color: var(--text-primary);
   }
 
-  /* FileInfo window: strictly scoped to auxiliary dialog viewport to eliminate native scrollbar flashing */
+  /* FileInfo and Progress frameless auxiliary windows: eliminate native window background & scrollbar flashing */
   html.window-fileinfo,
-  html.window-fileinfo body {
+  html.window-fileinfo body,
+  html.window-progress,
+  html.window-progress body {
     background-color: transparent !important;
     background: transparent !important;
     overflow: hidden !important;
@@ -139,7 +141,9 @@
   }
 
   html.window-fileinfo::-webkit-scrollbar,
-  html.window-fileinfo body::-webkit-scrollbar {
+  html.window-fileinfo body::-webkit-scrollbar,
+  html.window-progress::-webkit-scrollbar,
+  html.window-progress body::-webkit-scrollbar {
     display: none !important;
     width: 0 !important;
     height: 0 !important;
