@@ -1,100 +1,108 @@
+import { type MouseEvent } from 'react';
 import { motion } from 'motion/react';
-import { useState } from 'react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
-import { formatBytes, formatSpeed } from '../lib/format';
-import {
-  Play,
-  Pause,
-  RotateCcw,
-  Trash2,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  ArrowDownCircle,
-  HardDrive,
-  FolderOpen,
-  ExternalLink,
-  Copy,
-  Check,
-  Link2,
-  Activity,
-} from 'lucide-react';
+import { formatBytes, formatSpeed, formatDuration, formatDateTime } from '../lib/format';
+import { FileTypeIcon, isMediaFile } from '../lib/fileIcon';
+import { TaskActions } from './TaskActions';
+import { CheckCircle2, AlertCircle, Clock, Pause, Loader2 } from 'lucide-react';
+
+export interface SelectionModifiers {
+  ctrlKey: boolean;
+  shiftKey: boolean;
+}
 
 interface TaskItemProps {
   task: task.Task;
-  onPause: (id: string) => void;
-  onResume: (id: string) => void;
-  onRetry: (id: string) => void;
-  onDelete: (id: string) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: string, modifiers: SelectionModifiers) => void;
+  onDelete: (task: task.Task) => void;
   onOpenFile: (filePath: string) => void;
   onOpenFolder: (folderPath: string) => void;
-  onUpdateLink?: (task: task.Task) => void;
   onShowProgress?: (id: string) => void;
 }
 
 export function TaskItem({
   task: t,
-  onPause,
-  onResume,
-  onRetry,
+  selected = false,
+  onToggleSelect,
   onDelete,
   onOpenFile,
   onOpenFolder,
-  onUpdateLink,
   onShowProgress,
 }: TaskItemProps) {
-  const [copied, setCopied] = useState(false);
-
   const percent =
     t.totalBytes > 0 ? Math.min(100, Math.round((t.downloaded / t.totalBytes) * 100)) : 0;
 
-  const fullPath = t.directory ? `${t.directory}/${t.filename}` : t.filename;
+  // Check if media file has duration information
+  const hasDuration =
+    isMediaFile(t.filename) && typeof (t as { duration?: number }).duration === 'number';
+  const durationText = hasDuration
+    ? formatDuration((t as { duration?: number }).duration || 0)
+    : null;
 
-  const handleCopyURL = async () => {
-    try {
-      await navigator.clipboard.writeText(t.url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy url:', err);
+  const handleRowClick = (e: MouseEvent) => {
+    if (onToggleSelect) {
+      onToggleSelect(t.id, {
+        ctrlKey: e.ctrlKey || e.metaKey,
+        shiftKey: e.shiftKey,
+      });
     }
   };
 
-  const renderStatusBadge = () => {
+  const handleRowDoubleClick = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (onShowProgress) {
+      onShowProgress(t.id);
+    }
+  };
+
+  const renderStatus = () => {
     switch (t.status) {
+      case task.Status.StatusCompleted:
+        return (
+          <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-500">
+            <CheckCircle2 className="h-3 w-3" />
+            <span>已完成</span>
+          </span>
+        );
       case task.Status.StatusDownloading:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent)]">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" />
-            下载中
+          <div className="flex items-center gap-1.5 font-mono text-[11px]">
+            <span className="font-semibold text-[var(--accent)]">{percent}%</span>
+            {t.speed > 0 && (
+              <span className="text-[10px] text-[var(--text-muted)]">{formatSpeed(t.speed)}</span>
+            )}
+          </div>
+        );
+      case task.Status.StatusPaused:
+        return (
+          <span className="flex items-center gap-1 font-mono text-[11px] text-amber-500/90">
+            <Pause className="h-2.5 w-2.5" />
+            <span>{percent}% (暂停)</span>
           </span>
         );
       case task.Status.StatusQueued:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+          <span className="flex items-center gap-1 font-mono text-[11px] text-zinc-400">
             <Clock className="h-2.5 w-2.5" />
-            排队中
+            <span>排队中</span>
           </span>
         );
-      case task.Status.StatusPaused:
+      case task.Status.StatusProcessing:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">
-            <Pause className="h-2.5 w-2.5" />
-            已暂停
-          </span>
-        );
-      case task.Status.StatusCompleted:
-        return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-2 py-0.5 text-[10px] font-medium text-[var(--accent)]">
-            <CheckCircle2 className="h-2.5 w-2.5" />
-            已完成
+          <span className="flex items-center gap-1 font-mono text-[11px] text-sky-400">
+            <Loader2 className="h-2.5 w-2.5 animate-spin" />
+            <span>处理中</span>
           </span>
         );
       case task.Status.StatusError:
         return (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-400">
+          <span
+            className="flex items-center gap-1 font-mono text-[11px] text-rose-500"
+            title={t.errorMsg || '下载失败'}
+          >
             <AlertCircle className="h-2.5 w-2.5" />
-            异常
+            <span>失败</span>
           </span>
         );
       default:
@@ -105,218 +113,61 @@ export function TaskItem({
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 8, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.96 }}
-      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-      className="group relative min-w-0 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 shadow-xs backdrop-blur-sm transition-all duration-200 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] hover:shadow-md"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.15, ease: 'easeOut' }}
+      onClick={handleRowClick}
+      onDoubleClick={handleRowDoubleClick}
+      className={`group relative flex cursor-pointer items-center justify-between gap-2.5 rounded-lg border px-3 py-1.5 shadow-2xs backdrop-blur-xs transition-all duration-150 select-none ${
+        selected
+          ? 'border-[var(--accent)]/50 bg-[var(--accent)]/15 text-[var(--text-primary)] shadow-xs ring-1 ring-[var(--accent)]/30'
+          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)]'
+      }`}
+      title="单击选中/取消选中，双击在独立进度窗口中查看"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)] text-[var(--text-muted)] transition-colors group-hover:text-[var(--text-primary)]">
-              <HardDrive className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span
-                  className="truncate text-xs font-semibold tracking-tight text-[var(--text-primary)]"
-                  title={t.filename}
-                >
-                  {t.filename}
-                </span>
-                {renderStatusBadge()}
-              </div>
-              <div className="flex items-center gap-2 truncate font-mono text-[11px] text-[var(--text-muted)]">
-                <div className="group/url flex min-w-0 items-center gap-1 truncate">
-                  <span className="truncate" title={t.url}>
-                    {t.url}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void handleCopyURL();
-                    }}
-                    className="inline-flex shrink-0 items-center rounded-sm p-0.5 text-zinc-500 transition-colors hover:bg-white/10 hover:text-zinc-300"
-                    title={copied ? '已复制链接' : '复制下载链接'}
-                  >
-                    {copied ? (
-                      <Check className="h-3 w-3 text-emerald-400" />
-                    ) : (
-                      <Copy className="h-3 w-3" />
-                    )}
-                  </button>
-                </div>
-                <span className="text-zinc-600">·</span>
-                <span
-                  className="shrink-0 truncate text-zinc-400"
-                  title={`保存目录: ${t.directory}`}
-                >
-                  {t.directory}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Left: Compact Icon, Filename */}
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <FileTypeIcon
+          filename={t.filename}
+          className="h-5.5 w-5.5 shrink-0"
+          iconClassName="h-3 w-3"
+        />
 
-        {/* Action Controls */}
-        <div className="flex items-center gap-1 opacity-80 transition-opacity group-hover:opacity-100">
-          {onShowProgress && (
-            <button
-              onClick={() => onShowProgress(t.id)}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
-              title="在独立进度窗口中查看"
-            >
-              <Activity className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {t.status === task.Status.StatusCompleted && (
-            <>
-              <button
-                onClick={() => onOpenFile(fullPath)}
-                className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
-                title="打开文件"
-              >
-                <ExternalLink className="h-3.5 w-3.5" />
-              </button>
-              <button
-                onClick={() => onOpenFolder(t.directory)}
-                className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]"
-                title="打开所在文件夹"
-              >
-                <FolderOpen className="h-3.5 w-3.5" />
-              </button>
-            </>
-          )}
-
-          {t.status === task.Status.StatusDownloading && (
-            <button
-              onClick={() => onPause(t.id)}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-amber-500/10 hover:text-amber-500"
-              title="暂停任务"
-            >
-              <Pause className="h-3.5 w-3.5" />
-            </button>
-          )}
-
-          {(t.status === task.Status.StatusPaused || t.status === task.Status.StatusQueued) && (
-            <button
-              onClick={() => onResume(t.id)}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
-              title="继续下载"
-            >
-              <Play className="h-3.5 w-3.5" />
-            </button>
-          )}
-
-          {t.status === task.Status.StatusError && (
-            <button
-              onClick={() => onRetry(t.id)}
-              className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-sky-500/10 hover:text-sky-500"
-              title="重试下载"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {(t.status === task.Status.StatusPaused || t.status === task.Status.StatusError) &&
-            onUpdateLink && (
-              <button
-                onClick={() => onUpdateLink(t)}
-                className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-sky-500/10 hover:text-sky-500"
-                title="更新链接"
-              >
-                <Link2 className="h-3.5 w-3.5" />
-              </button>
-            )}
-
-          <button
-            onClick={() => onDelete(t.id)}
-            className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-rose-500/10 hover:text-rose-500"
-            title="删除任务"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        <span
+          className="truncate text-xs font-medium tracking-tight text-[var(--text-primary)]"
+          title={t.filename}
+        >
+          {t.filename}
+        </span>
       </div>
 
-      {/* Multi-chunk Progress Track */}
-      <div className="mt-3.5 space-y-2">
-        {t.chunks && t.chunks.length > 1 ? (
-          // Visualized Multi-Channel Chunks
-          <div
-            className="grid gap-1"
-            style={{ gridTemplateColumns: `repeat(${t.chunks.length}, minmax(0, 1fr))` }}
-          >
-            {t.chunks.map((chunk, idx) => {
-              const chunkSize = chunk.end - chunk.start + 1;
-              const chunkPercent =
-                chunkSize > 0 ? Math.min(100, Math.round((chunk.downloaded / chunkSize) * 100)) : 0;
-
-              return (
-                <div
-                  key={idx}
-                  className="relative h-2 overflow-hidden rounded-sm border border-[var(--border-subtle)] bg-[var(--bg-subtle)] p-[0.5px]"
-                  title={`通道 ${idx + 1}: ${formatBytes(chunk.downloaded)} / ${formatBytes(
-                    chunkSize,
-                  )} (${chunkPercent}%)`}
-                >
-                  <div
-                    className={`h-full rounded-xs transition-all duration-200 ${
-                      chunk.completed
-                        ? 'bg-[var(--accent)] shadow-xs'
-                        : t.status === task.Status.StatusError
-                          ? 'bg-rose-500'
-                          : 'bg-[var(--accent)] opacity-90 shadow-xs'
-                    }`}
-                    style={{ width: `${chunkPercent}%` }}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          // Single Stream Progress Bar
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[1px]">
-            <div
-              className={`h-full rounded-full transition-all duration-200 ${
-                t.status === task.Status.StatusCompleted
-                  ? 'bg-[var(--accent)] shadow-xs'
-                  : t.status === task.Status.StatusError
-                    ? 'bg-rose-500'
-                    : 'bg-[var(--accent)] shadow-xs'
-              }`}
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-        )}
-
-        <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-[var(--text-primary)]">
-              {formatBytes(t.downloaded)} / {formatBytes(t.totalBytes)}
-            </span>
-            {t.totalBytes > 0 && (
-              <span className="font-mono text-[var(--text-muted)]">({percent}%)</span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
-            {t.status === task.Status.StatusDownloading && (
-              <span className="flex items-center gap-1 font-mono font-medium text-[var(--accent)]">
-                <ArrowDownCircle className="h-3 w-3" />
-                {formatSpeed(t.speed)}
-              </span>
-            )}
-            {t.status === task.Status.StatusError && t.errorMsg && (
-              <span className="max-w-xs truncate font-mono text-rose-400" title={t.errorMsg}>
-                {t.errorMsg}
-              </span>
-            )}
-            <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]">
-              {t.maxConcurrency} 通道
-            </span>
-          </div>
+      {/* Right: File Size / Duration, Last Connected Time, Status / Percentage */}
+      <div className="flex shrink-0 items-center gap-3">
+        {/* File size and optional media duration */}
+        <div className="text-right font-mono text-[11px] text-[var(--text-secondary)]">
+          <span>{formatBytes(t.totalBytes > 0 ? t.totalBytes : t.downloaded)}</span>
+          {durationText && <span className="text-[var(--text-muted)]"> · {durationText}</span>}
         </div>
+
+        {/* Last connected time with year */}
+        <div className="font-mono text-[11px] text-[var(--text-muted)]" title="最后连接时间">
+          {formatDateTime(t.updatedAt || t.createdAt)}
+        </div>
+
+        {/* Progress percent / Status badge */}
+        <div className="min-w-16 text-right">{renderStatus()}</div>
+      </div>
+
+      {/* Hover Floating Actions (Absolute overlay - zero layout footprint when idle) */}
+      <div className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
+        <TaskActions
+          task={t}
+          onShowProgress={onShowProgress}
+          onOpenFile={onOpenFile}
+          onOpenFolder={onOpenFolder}
+          onDelete={onDelete}
+        />
       </div>
     </motion.div>
   );

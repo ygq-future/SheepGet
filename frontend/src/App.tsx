@@ -3,9 +3,6 @@ import { AnimatePresence, motion } from 'motion/react';
 import * as task from '../bindings/sheep-get/internal/task/models';
 import {
   ListTasks,
-  PauseTask,
-  ResumeTask,
-  RetryTask,
   DeleteTask,
   OpenFile,
   OpenFolder,
@@ -29,10 +26,14 @@ import {
   Inbox,
   Settings as SettingsIcon,
   Activity,
+  Trash2,
+  CheckCheck,
+  X,
 } from 'lucide-react';
 import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ToastContainer, showToast } from './components/ui/Toast';
+
 function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
   return (list || []).filter((t): t is task.Task => t !== null);
 }
@@ -50,8 +51,12 @@ function sortTasks(taskList: task.Task[]): task.Task[] {
 
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
-  const [filter, setFilter] = useState<'all' | 'downloading' | 'completed' | 'settings'>('all');
+  const [filter, setFilter] = useState<'all' | 'paused' | 'completed' | 'settings'>('all');
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
+  const [isBatchDeleting, setIsBatchDeleting] = useState<boolean>(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
+  const [baseSelectedIds, setBaseSelectedIds] = useState<Set<string>>(new Set());
   const [updatingLinkTask, setUpdatingLinkTask] = useState<task.Task | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -116,45 +121,153 @@ export function App() {
     };
   }, [loadSettings]);
 
-  const handlePause = (id: string) => {
-    void (async () => {
-      await PauseTask(id);
-      const list = await ListTasks();
-      setTasks(sortTasks(nonNullTasks(list)));
-    })();
+  const filteredTasks = tasks.filter((t) => {
+    if (filter === 'paused') return t.status === task.Status.StatusPaused;
+    if (filter === 'completed') return t.status === task.Status.StatusCompleted;
+    return true;
+  });
+
+  // Handle single task delete request
+  const handleDeleteSingleRequest = (target: task.Task) => {
+    setDeletingTask(target);
   };
 
-  const handleResume = (id: string) => {
-    void (async () => {
-      await ResumeTask(id);
-      const list = await ListTasks();
-      setTasks(sortTasks(nonNullTasks(list)));
-    })();
-  };
-
-  const handleRetry = (id: string) => {
-    void (async () => {
-      await RetryTask(id);
-      const list = await ListTasks();
-      setTasks(sortTasks(nonNullTasks(list)));
-    })();
-  };
-
-  const handleDeleteRequest = (id: string) => {
-    const target = tasks.find((t) => t.id === id);
-    if (target) {
-      setDeletingTask(target);
+  const handleConfirmSingleDelete = async (deleteDiskFile: boolean) => {
+    if (!deletingTask) return;
+    const targetId = deletingTask.id;
+    try {
+      await DeleteTask(targetId, deleteDiskFile);
+      setTasks((prev) => prev.filter((t) => t.id !== targetId));
+      setSelectedTaskIds((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+      setBaseSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
+      setDeletingTask(null);
+      showToast('任务已删除', 'success');
+    } catch (err) {
+      console.error('Failed to delete task:', err);
+      showToast('删除任务失败', 'error');
     }
   };
 
-  const handleConfirmDelete = (deleteDiskFile: boolean) => {
-    if (!deletingTask) return;
-    const targetId = deletingTask.id;
-    void (async () => {
-      await DeleteTask(targetId, deleteDiskFile);
-      setTasks((prev) => prev.filter((t) => t.id !== targetId));
-      setDeletingTask(null);
-    })();
+  // Selection model: Exclusive Single Selection by default, Shift for range, Ctrl/Cmd for toggle
+  const handleToggleSelect = (id: string, modifiers: { ctrlKey: boolean; shiftKey: boolean }) => {
+    // 1. Shift key pressed: continuous range selection based on anchor
+    if (modifiers.shiftKey) {
+      const anchorId = selectionAnchor || id;
+      const anchorIdx = filteredTasks.findIndex((t) => t.id === anchorId);
+      const currIdx = filteredTasks.findIndex((t) => t.id === id);
+      if (anchorIdx !== -1 && currIdx !== -1) {
+        const start = Math.min(anchorIdx, currIdx);
+        const end = Math.max(anchorIdx, currIdx);
+        const rangeIds = new Set<string>();
+        for (let i = start; i <= end; i++) {
+          rangeIds.add(filteredTasks[i].id);
+        }
+        const next = new Set([...baseSelectedIds, ...rangeIds]);
+        setSelectedTaskIds(next);
+        if (!selectionAnchor) {
+          setSelectionAnchor(id);
+        }
+        return;
+      }
+    }
+
+    // 2. Ctrl / Cmd key pressed: non-continuous discrete toggle selection
+    if (modifiers.ctrlKey) {
+      const next = new Set(selectedTaskIds);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      setSelectedTaskIds(next);
+      setSelectionAnchor(id);
+      setBaseSelectedIds(next);
+      return;
+    }
+
+    // 3. Normal single click: mutually exclusive, selects only current item
+    const next = new Set([id]);
+    setSelectedTaskIds(next);
+    setSelectionAnchor(id);
+    setBaseSelectedIds(next);
+  };
+
+  const allFilteredSelected =
+    filteredTasks.length > 0 && filteredTasks.every((t) => selectedTaskIds.has(t.id));
+
+  const handleToggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedTaskIds(new Set());
+      setSelectionAnchor(null);
+      setBaseSelectedIds(new Set());
+    } else {
+      const allIds = new Set(filteredTasks.map((t) => t.id));
+      setSelectedTaskIds(allIds);
+      setSelectionAnchor(filteredTasks[0]?.id || null);
+      setBaseSelectedIds(allIds);
+    }
+  };
+
+  const handleCancelSelection = () => {
+    setSelectedTaskIds(new Set());
+    setSelectionAnchor(null);
+    setBaseSelectedIds(new Set());
+  };
+
+  // Progress window trigger button logic
+  const handleProgressWindowClick = () => {
+    if (selectedTaskIds.size > 0) {
+      const ids = Array.from(selectedTaskIds);
+      void ShowProgressWindow(ids[0]);
+      ids.forEach((id) => {
+        void Events.Emit('progress:focus_completed', id);
+        void Events.Emit('progress:focus_task', id);
+      });
+      return;
+    }
+
+    const hasActive = tasks.some(
+      (t) =>
+        t.status === task.Status.StatusDownloading ||
+        t.status === task.Status.StatusProcessing ||
+        t.status === task.Status.StatusQueued,
+    );
+    if (hasActive) {
+      void ShowProgressWindow('');
+      return;
+    }
+
+    showToast('当前没有正在进行的下载任务', 'info', '进度窗口');
+  };
+
+  // Batch delete logic
+  const handleRequestBatchDelete = () => {
+    if (selectedTaskIds.size === 0) return;
+    setIsBatchDeleting(true);
+  };
+
+  const handleConfirmBatchDelete = async (deleteDiskFile: boolean) => {
+    const idsToDelete = Array.from(selectedTaskIds);
+    setIsBatchDeleting(false);
+    try {
+      await Promise.all(idsToDelete.map((id) => DeleteTask(id, deleteDiskFile)));
+      setTasks((prev) => prev.filter((t) => !selectedTaskIds.has(t.id)));
+      setSelectedTaskIds(new Set());
+      setSelectionAnchor(null);
+      setBaseSelectedIds(new Set());
+      showToast(`已成功删除 ${idsToDelete.length} 个任务`, 'success');
+    } catch (err) {
+      console.error('Failed to batch delete tasks:', err);
+      showToast('部分或全部任务删除失败', 'error');
+    }
   };
 
   const handleOpenFile = (filePath: string) => {
@@ -199,18 +312,8 @@ export function App() {
     await OpenNewDownload();
   };
 
-  const filteredTasks = tasks.filter((t) => {
-    if (filter === 'downloading')
-      return t.status === task.Status.StatusDownloading || t.status === task.Status.StatusQueued;
-    if (filter === 'completed') return t.status === task.Status.StatusCompleted;
-    return true;
-  });
-
   const counts = {
     total: tasks.length,
-    downloading: tasks.filter(
-      (t) => t.status === task.Status.StatusDownloading || t.status === task.Status.StatusQueued,
-    ).length,
     paused: tasks.filter((t) => t.status === task.Status.StatusPaused).length,
     completed: tasks.filter((t) => t.status === task.Status.StatusCompleted).length,
     error: tasks.filter((t) => t.status === task.Status.StatusError).length,
@@ -223,15 +326,13 @@ export function App() {
       icon: Layers,
       count: counts.total,
       color: 'text-[var(--text-primary)]',
-      badgeColor: 'bg-[var(--bg-subtle)] text-[var(--text-secondary)]',
     },
     {
-      id: 'downloading' as const,
-      label: '正在下载',
-      icon: DownloadCloud,
-      count: counts.downloading,
-      color: 'text-sky-500',
-      badgeColor: 'bg-sky-500/15 text-sky-600 dark:text-sky-400',
+      id: 'paused' as const,
+      label: '已暂停',
+      icon: PauseCircle,
+      count: counts.paused,
+      color: 'text-amber-500',
     },
     {
       id: 'completed' as const,
@@ -239,93 +340,73 @@ export function App() {
       icon: CheckCircle2,
       count: counts.completed,
       color: 'text-[var(--accent)]',
-      badgeColor: 'bg-[var(--accent-muted)] text-[var(--accent)]',
     },
   ];
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
-      {/* Top Refined Bar */}
-      <header className="z-10 flex h-12 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/80 pr-5 backdrop-blur-xl">
-        <div className="flex items-center">
-          <div className="flex h-12 w-14 shrink-0 items-center justify-center">
+    <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
+      {/* Left Full-Height Aside (Unified vertical border-r, Linear-inspired) */}
+      <aside
+        className={`flex h-screen shrink-0 flex-col justify-between border-r border-[var(--border-subtle)] bg-[var(--bg-app)]/80 backdrop-blur-xl transition-all duration-200 ${
+          sidebarCollapsed ? 'w-14 items-center px-2 py-3' : 'w-44 p-3'
+        }`}
+      >
+        {/* Aside Top: Brand Header & Categorized Navigation */}
+        <div className="w-full space-y-4">
+          {/* Brand Header */}
+          <div
+            className={`flex h-9 items-center ${
+              sidebarCollapsed ? 'justify-center' : 'gap-2.5 px-1'
+            }`}
+          >
             <button
               type="button"
-              onClick={() => setSidebarCollapsed((prev) => !prev)}
-              title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
-              className="group flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border border-[var(--border-focus)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-inner transition-transform hover:scale-105 active:scale-95"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+              className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-[var(--accent)] transition-transform hover:scale-105 active:scale-95"
             >
-              <DownloadCloud className="h-4 w-4 transition-transform group-hover:rotate-6" />
+              <DownloadCloud className="h-5 w-5" />
             </button>
-          </div>
-          <div className="flex items-baseline gap-2 pl-1">
-            <h1 className="text-xs font-semibold tracking-tight text-[var(--text-primary)]">
-              SheepGet
-            </h1>
-            <span className="font-mono text-[10px] text-[var(--text-muted)]">v0.1.0</span>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              const hasActive = tasks.some(
-                (t) =>
-                  t.status === task.Status.StatusDownloading ||
-                  t.status === task.Status.StatusProcessing ||
-                  t.status === task.Status.StatusQueued,
-              );
-              if (!hasActive) {
-                showToast('当前没有正在进行的下载任务', 'info', '进度窗口');
-                return;
-              }
-              void ShowProgressWindow('');
-            }}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] shadow-xs transition-colors hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)] active:scale-98"
-            title="打开共享下载进度窗口"
-          >
-            <Activity className="h-3.5 w-3.5 text-[var(--accent)]" />
-            <span className="hidden sm:inline">进度窗口</span>
-          </button>
-          <button
-            onClick={() => void handleNewDownload()}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
-          >
-            <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
-            新建任务
-          </button>
-        </div>
-      </header>
+            {!sidebarCollapsed && (
+              <span className="text-sm font-semibold tracking-tight text-[var(--text-primary)]">
+                SheepGet
+              </span>
+            )}
+          </div>
 
-      {/* Main Container */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar */}
-        <aside
-          className={`flex flex-col justify-between border-r border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 p-2.5 transition-all duration-200 ease-in-out ${
-            sidebarCollapsed ? 'w-14 items-center' : 'w-52'
-          }`}
-        >
-          <div className="w-full space-y-1">
+          {/* Navigation Section */}
+          <div className="space-y-1">
+            {!sidebarCollapsed && (
+              <div className="px-2 pb-1 text-[10px] font-semibold tracking-wider text-[var(--text-dim)] uppercase">
+                任务列表
+              </div>
+            )}
+
             {navItems.map((item) => {
-              const isActive = filter === item.id;
               const Icon = item.icon;
+              const isActive = filter === item.id;
 
               return (
                 <button
                   key={item.id}
                   onClick={() => setFilter(item.id)}
-                  title={item.label}
-                  className={`group relative flex w-full items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
-                    sidebarCollapsed ? 'justify-center px-0 py-2' : 'justify-between px-2.5 py-1.5'
+                  title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
+                  className={`group relative flex w-full cursor-pointer items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
+                    sidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-2.5 py-2'
                   } ${
                     isActive
-                      ? 'bg-[var(--bg-subtle)] shadow-xs'
-                      : 'hover:bg-[var(--bg-surface-hover)]'
+                      ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
+                      : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
                   }`}
                 >
+                  {/* Active Indicator Bar */}
+                  {isActive && !sidebarCollapsed && (
+                    <span className="absolute top-2 bottom-2 left-1 w-0.5 rounded-full bg-[var(--accent)] shadow-xs" />
+                  )}
+
                   <span
-                    className={`flex items-center gap-2 transition-colors ${
+                    className={`flex items-center gap-2.5 transition-colors ${
                       isActive
                         ? item.color
                         : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
@@ -337,10 +418,10 @@ export function App() {
 
                   {!sidebarCollapsed && (
                     <span
-                      className={`py-0.2 rounded-full px-1.5 font-mono text-[10px] transition-colors ${
+                      className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
                         isActive
-                          ? item.badgeColor
-                          : 'bg-[var(--bg-subtle)] text-[var(--text-muted)]'
+                          ? 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
+                          : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
                       }`}
                     >
                       {item.count}
@@ -350,75 +431,148 @@ export function App() {
               );
             })}
           </div>
+        </div>
 
-          <div className="w-full space-y-2">
-            {/* Settings Tab Button */}
-            <button
-              onClick={() => setFilter('settings')}
-              title="偏好设置"
-              className={`group relative flex w-full items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
-                sidebarCollapsed ? 'justify-center px-0 py-2' : 'justify-between px-2.5 py-1.5'
-              } ${
+        {/* Aside Footer: Settings Tab Button & Error status */}
+        <div className="w-full space-y-2 border-t border-[var(--border-subtle)] pt-2.5">
+          <button
+            onClick={() => setFilter('settings')}
+            title="偏好设置"
+            className={`group relative flex w-full cursor-pointer items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
+              sidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-2.5 py-2'
+            } ${
+              filter === 'settings'
+                ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {filter === 'settings' && !sidebarCollapsed && (
+              <span className="absolute top-2 bottom-2 left-1 w-0.5 rounded-full bg-[var(--accent)] shadow-xs" />
+            )}
+
+            <span
+              className={`flex items-center gap-2.5 transition-colors ${
                 filter === 'settings'
-                  ? 'bg-[var(--bg-subtle)] text-[var(--text-primary)] shadow-xs'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+                  ? 'text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
               }`}
             >
-              <span
-                className={`flex items-center gap-2 transition-colors ${
-                  filter === 'settings'
-                    ? 'text-[var(--text-primary)]'
-                    : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
-                }`}
-              >
-                <SettingsIcon className="h-4 w-4 shrink-0" />
-                {!sidebarCollapsed && <span>偏好设置</span>}
-              </span>
-            </button>
+              <SettingsIcon className="h-4 w-4 shrink-0" />
+              {!sidebarCollapsed && <span>偏好设置</span>}
+            </span>
+          </button>
 
-            {sidebarCollapsed ? (
-              <div className="flex w-full flex-col items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] py-2 text-[10px]">
-                <div
-                  className="flex flex-col items-center gap-0.5"
-                  title={`已暂停: ${counts.paused}`}
+          {counts.error > 0 && (
+            <div
+              className={`rounded-lg border border-rose-500/20 bg-rose-500/10 p-2 text-rose-500 ${
+                sidebarCollapsed
+                  ? 'flex justify-center'
+                  : 'flex items-center justify-between text-[11px]'
+              }`}
+              title={`异常状态: ${counts.error}`}
+            >
+              <span className="flex items-center gap-1.5">
+                <AlertCircle className="h-3 w-3" />
+                {!sidebarCollapsed && <span>异常状态</span>}
+              </span>
+              {!sidebarCollapsed && <span className="font-mono font-medium">{counts.error}</span>}
+            </div>
+          )}
+        </div>
+      </aside>
+
+      {/* Right Main Workspace */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Right Header Bar: Aligns perfectly on top of right workspace */}
+        <header className="flex h-12 w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 px-4 backdrop-blur-md">
+          {/* Header Left: Icon-based Select All & Icon-based Deselect */}
+          <div className="flex items-center gap-2">
+            {filter !== 'settings' && filteredTasks.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleToggleSelectAll}
+                  title={allFilteredSelected ? '取消全选' : '全部选择'}
+                  className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border transition-all duration-150 ${
+                    allFilteredSelected
+                      ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-xs'
+                      : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
+                  }`}
                 >
-                  <PauseCircle className="h-3.5 w-3.5 text-[var(--text-muted)]" />
-                  <span className="font-mono font-medium text-[var(--text-primary)]">
-                    {counts.paused}
-                  </span>
-                </div>
-                <div className="h-px w-4 bg-[var(--border-subtle)]" />
-                <div
-                  className="flex flex-col items-center gap-0.5"
-                  title={`异常状态: ${counts.error}`}
-                >
-                  <AlertCircle className="h-3.5 w-3.5 text-rose-500" />
-                  <span className="font-mono font-medium text-rose-500">{counts.error}</span>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 text-[11px] text-[var(--text-secondary)]">
-                <div className="flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-                    <PauseCircle className="h-3 w-3 text-[var(--text-muted)]" /> 已暂停
-                  </span>
-                  <span className="font-mono font-medium text-[var(--text-primary)]">
-                    {counts.paused}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-[var(--text-secondary)]">
-                    <AlertCircle className="h-3 w-3 text-rose-500" /> 异常状态
-                  </span>
-                  <span className="font-mono font-medium text-rose-500">{counts.error}</span>
-                </div>
+                  <CheckCheck className="h-4 w-4" />
+                </button>
+
+                {selectedTaskIds.size > 0 && (
+                  <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-xs">
+                    <span className="font-medium text-[var(--text-secondary)]">
+                      已选择{' '}
+                      <span className="font-mono font-semibold text-[var(--accent)]">
+                        {selectedTaskIds.size}
+                      </span>{' '}
+                      项
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCancelSelection}
+                      title="取消选择"
+                      className="flex h-4 w-4 cursor-pointer items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)]"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        </aside>
+
+          {/* Header Right: Progress Window, Batch Delete, New Download */}
+          <div className="flex items-center gap-2">
+            {/* Shared Progress Window Button */}
+            <button
+              type="button"
+              onClick={handleProgressWindowClick}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] shadow-xs transition-colors hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)] active:scale-98"
+              title="打开下载进度窗口"
+            >
+              <Activity className="h-3.5 w-3.5 text-[var(--accent)]" />
+              <span className="hidden sm:inline">进度窗口</span>
+            </button>
+
+            {/* Batch Delete Button */}
+            <button
+              type="button"
+              onClick={handleRequestBatchDelete}
+              disabled={selectedTaskIds.size === 0}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium shadow-xs transition-colors ${
+                selectedTaskIds.size > 0
+                  ? 'cursor-pointer border-rose-500/30 bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white active:scale-98'
+                  : 'cursor-not-allowed border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] opacity-50'
+              }`}
+              title={
+                selectedTaskIds.size > 0
+                  ? `批量删除已选择的 ${selectedTaskIds.size} 项`
+                  : '删除任务（请先选择任务）'
+              }
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">
+                删除{selectedTaskIds.size > 0 ? ` (${selectedTaskIds.size})` : ''}
+              </span>
+            </button>
+
+            {/* New Download */}
+            <button
+              onClick={() => void handleNewDownload()}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
+            >
+              <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
+              新建任务
+            </button>
+          </div>
+        </header>
 
         {/* Main Content Area */}
-        <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-5">
+        <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-3">
           {filter === 'settings' ? (
             <SettingsPanel />
           ) : filteredTasks.length === 0 ? (
@@ -436,19 +590,17 @@ export function App() {
               </p>
             </motion.div>
           ) : (
-            <div className="w-full min-w-0 space-y-2.5">
+            <div className="w-full min-w-0 space-y-1">
               <AnimatePresence mode="popLayout">
                 {filteredTasks.map((t) => (
                   <TaskItem
                     key={t.id}
                     task={t}
-                    onPause={handlePause}
-                    onResume={handleResume}
-                    onRetry={handleRetry}
-                    onDelete={handleDeleteRequest}
+                    selected={selectedTaskIds.has(t.id)}
+                    onToggleSelect={handleToggleSelect}
+                    onDelete={handleDeleteSingleRequest}
                     onOpenFile={handleOpenFile}
                     onOpenFolder={handleOpenFolder}
-                    onUpdateLink={(task) => setUpdatingLinkTask(task)}
                     onShowProgress={(id) => void ShowProgressWindow(id)}
                   />
                 ))}
@@ -470,13 +622,29 @@ export function App() {
         }}
       />
 
+      {/* Single Delete Confirm */}
       <DeleteConfirmModal
         open={Boolean(deletingTask)}
         onOpenChange={(open) => {
           if (!open) setDeletingTask(null);
         }}
         filename={deletingTask?.filename || ''}
-        onConfirm={handleConfirmDelete}
+        count={1}
+        onConfirm={(deleteDiskFile) => {
+          void handleConfirmSingleDelete(deleteDiskFile);
+        }}
+      />
+
+      {/* Batch Delete Confirm */}
+      <DeleteConfirmModal
+        open={isBatchDeleting}
+        onOpenChange={(open) => {
+          if (!open) setIsBatchDeleting(false);
+        }}
+        count={selectedTaskIds.size}
+        onConfirm={(deleteDiskFile) => {
+          void handleConfirmBatchDelete(deleteDiskFile);
+        }}
       />
 
       <ToastContainer />

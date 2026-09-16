@@ -6,17 +6,21 @@ import { Checkbox } from './ui/Checkbox';
 interface DeleteConfirmModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  filename: string;
+  filename?: string;
+  count?: number;
   onConfirm: (deleteDiskFile: boolean) => void;
 }
 
 export function DeleteConfirmModal({
   open,
   onOpenChange,
-  filename,
+  filename = '',
+  count = 1,
   onConfirm,
 }: DeleteConfirmModalProps) {
   const [deleteDiskFile, setDeleteDiskFile] = useState(false);
+
+  const isBatch = count > 1;
 
   const handleConfirm = () => {
     onConfirm(deleteDiskFile);
@@ -42,7 +46,7 @@ export function DeleteConfirmModal({
                 <AlertTriangle className="h-4 w-4 text-rose-500 dark:text-rose-400" />
               </div>
               <Dialog.Title className="text-sm font-semibold tracking-tight text-[var(--text-primary)]">
-                确认删除下载任务
+                {isBatch ? `确认批量删除 ${count} 个下载任务` : '确认删除下载任务'}
               </Dialog.Title>
             </div>
             <Dialog.Close className="rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]">
@@ -52,18 +56,30 @@ export function DeleteConfirmModal({
 
           <div className="mt-4 space-y-4">
             <p className="text-xs leading-relaxed text-[var(--text-secondary)]">
-              确定要从任务列表中移除任务{' '}
-              <span className="font-mono font-semibold text-[var(--text-primary)]">
-                "{filename}"
-              </span>{' '}
-              吗？
+              {isBatch ? (
+                <>
+                  确定要从任务列表中移除选中的{' '}
+                  <span className="font-mono font-semibold text-[var(--text-primary)]">
+                    {count}
+                  </span>{' '}
+                  个任务吗？
+                </>
+              ) : (
+                <>
+                  确定要从任务列表中移除任务{' '}
+                  <span className="font-mono font-semibold text-[var(--text-primary)]">
+                    "{filename}"
+                  </span>{' '}
+                  吗？
+                </>
+              )}
             </p>
 
             <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/50 p-3.5">
               <Checkbox
                 id="delete-disk-file"
                 checked={deleteDiskFile}
-                onCheckedChange={setDeleteDiskFile}
+                onCheckedChange={(checked) => setDeleteDiskFile(checked)}
                 label="同时删除磁盘上的本地文件"
                 description="包含未完成的临时文件 (.sheepget) 或已完成的成品"
               />
@@ -83,7 +99,7 @@ export function DeleteConfirmModal({
                 className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-rose-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-rose-500/20 transition-all hover:bg-rose-600 active:scale-98"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                确认删除
+                {isBatch ? `确认删除 (${count})` : '确认删除'}
               </button>
             </div>
           </div>

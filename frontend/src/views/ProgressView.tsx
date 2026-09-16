@@ -33,6 +33,7 @@ import {
 import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed } from '../lib/format';
+import { mergeProgressSegments } from '../lib/progress';
 
 /**
  * Sort active (non-completed) tasks:
@@ -609,62 +610,48 @@ export function ProgressView() {
                           </div>
                         </div>
 
-                        {/* Progress Bar / Chunks Visualizer */}
+                        {/* Unified Merged Progress Bar */}
                         <div className="mt-1.5 space-y-1">
-                          {t.chunks && t.chunks.length > 1 ? (
-                            <div
-                              className="grid gap-1"
-                              style={{
-                                gridTemplateColumns: `repeat(${t.chunks.length}, minmax(0, 1fr))`,
-                              }}
-                            >
-                              {t.chunks.map((chunk, idx) => {
-                                const chunkSize = chunk.end - chunk.start + 1;
-                                const chunkPercent =
-                                  chunkSize > 0
-                                    ? Math.min(
-                                        100,
-                                        Math.round((chunk.downloaded / chunkSize) * 100),
-                                      )
-                                    : 0;
+                          <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[0.5px]">
+                            {isUnknownSize && t.status === taskModels.Status.StatusDownloading ? (
+                              <div className="animate-indeterminate h-full w-2/5 rounded-full bg-[var(--accent)]" />
+                            ) : (
+                              (() => {
+                                const segments = mergeProgressSegments(
+                                  t.chunks,
+                                  t.totalBytes,
+                                  t.downloaded,
+                                );
+                                if (segments.length > 0) {
+                                  return segments.map((seg, idx) => (
+                                    <div
+                                      key={idx}
+                                      className={`absolute top-0 bottom-0 rounded-full transition-all duration-200 ${
+                                        t.status === taskModels.Status.StatusError
+                                          ? 'bg-rose-500'
+                                          : 'bg-[var(--accent)]'
+                                      }`}
+                                      style={{
+                                        left: `${seg.startPercent}%`,
+                                        width: `${seg.widthPercent}%`,
+                                      }}
+                                      title={`已下载: ${formatBytes(seg.start)} - ${formatBytes(seg.end)}`}
+                                    />
+                                  ));
+                                }
                                 return (
                                   <div
-                                    key={idx}
-                                    className="relative h-1.5 overflow-hidden rounded-xs border border-[var(--border-subtle)] bg-[var(--bg-subtle)] p-[0.5px]"
-                                    title={`通道 ${idx + 1}: ${formatBytes(chunk.downloaded)} / ${formatBytes(
-                                      chunkSize,
-                                    )} (${chunkPercent}%)`}
-                                  >
-                                    <div
-                                      className={`h-full rounded-xs transition-all duration-200 ${
-                                        chunk.completed
-                                          ? 'bg-[var(--accent)] shadow-xs'
-                                          : t.status === taskModels.Status.StatusError
-                                            ? 'bg-rose-500'
-                                            : 'bg-[var(--accent)] opacity-85'
-                                      }`}
-                                      style={{ width: `${chunkPercent}%` }}
-                                    />
-                                  </div>
+                                    className={`h-full rounded-full transition-all duration-200 ${
+                                      t.status === taskModels.Status.StatusError
+                                        ? 'bg-rose-500'
+                                        : 'bg-[var(--accent)]'
+                                    }`}
+                                    style={{ width: `${percent}%` }}
+                                  />
                                 );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[1px]">
-                              {isUnknownSize && t.status === taskModels.Status.StatusDownloading ? (
-                                <div className="animate-indeterminate h-full w-2/5 rounded-full bg-[var(--accent)]" />
-                              ) : (
-                                <div
-                                  className={`h-full rounded-full transition-all duration-200 ${
-                                    t.status === taskModels.Status.StatusError
-                                      ? 'bg-rose-500'
-                                      : 'bg-[var(--accent)]'
-                                  }`}
-                                  style={{ width: `${percent}%` }}
-                                />
-                              )}
-                            </div>
-                          )}
+                              })()
+                            )}
+                          </div>
 
                           {/* Detail Metrics Row */}
                           <div className="flex items-center justify-between font-mono text-[10px] text-[var(--text-muted)]">
