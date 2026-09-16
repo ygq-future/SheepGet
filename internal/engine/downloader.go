@@ -283,140 +283,307 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	return os.Rename(partPath, destPath)
 }
 
-func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc) error {
-	// Initialize or load chunks
-	if len(t.Chunks) == 0 {
-		t.Chunks = splitChunks(t.TotalBytes, t.MaxConcurrency)
+type chunkTracker struct {
+	claimed    bool
+	active     bool
+	splitCount int
+	lastSplit  time.Time
+	speed      int64 // bytes/sec
+	lastBytes  int64
+	lastUpdate time.Time
+}
+
+type chunkCoordinator struct {
+	mu         sync.Mutex
+	progressMu sync.Mutex
+	t          *task.Task
+	file       *os.File
+	fileMu     sync.Mutex
+	totalDown  int64
+	trackers   map[int]*chunkTracker
+	onProgress ProgressFunc
+	downloader *HTTPDownloader
+}
+
+func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, onProgress ProgressFunc) *chunkCoordinator {
+	coord := &chunkCoordinator{
+		t:          t,
+		file:       file,
+		trackers:   make(map[int]*chunkTracker),
+		onProgress: onProgress,
+		downloader: downloader,
+	}
+	now := time.Now()
+	for i := range t.Chunks {
+		c := &t.Chunks[i]
+		coord.totalDown += c.Downloaded
+		coord.trackers[c.Index] = &chunkTracker{
+			claimed:    c.Completed,
+			active:     false,
+			splitCount: 0,
+			lastSplit:  now,
+			lastBytes:  c.Downloaded,
+			lastUpdate: now,
+		}
+	}
+	return coord
+}
+
+func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
+	for {
+		select {
+		case <-ctx.Done():
+			return -1
+		default:
+		}
+
+		coord.mu.Lock()
+
+		// 1. Check if all chunks are completed
+		allDone := true
+		for _, c := range coord.t.Chunks {
+			if !c.Completed {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			coord.mu.Unlock()
+			return -1
+		}
+
+		// 2. Claim next available unclaimed chunk
+		for i := range coord.t.Chunks {
+			c := &coord.t.Chunks[i]
+			trk := coord.trackers[c.Index]
+			if !c.Completed && trk != nil && !trk.claimed {
+				trk.claimed = true
+				trk.active = true
+				trk.lastBytes = c.Downloaded
+				trk.lastUpdate = time.Now()
+				coord.mu.Unlock()
+				return c.Index
+			}
+		}
+
+		// 3. Try to assist a slow chunk by dynamically splitting its remaining range
+		splitIdx := coord.trySplitSlowChunkLocked()
+		if splitIdx != -1 {
+			coord.mu.Unlock()
+			return splitIdx
+		}
+
+		// 4. Check if any workers are still active
+		activeWorkers := 0
+		for _, trk := range coord.trackers {
+			if trk.active {
+				activeWorkers++
+			}
+		}
+		if activeWorkers == 0 {
+			coord.mu.Unlock()
+			return -1
+		}
+
+		coord.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return -1
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
+	hasCompletedChunk := false
+	for _, c := range coord.t.Chunks {
+		if c.Completed {
+			hasCompletedChunk = true
+			break
+		}
 	}
 
-	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open part file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
+	now := time.Now()
+	var bestIdx = -1
+	var maxRemaining int64 = 0
 
-	// Ensure file size matches TotalBytes
-	if err := file.Truncate(t.TotalBytes); err != nil {
-		return fmt.Errorf("failed to truncate part file: %w", err)
-	}
-
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(t.Chunks))
-
-	totalDownloaded := int64(0)
-	for _, c := range t.Chunks {
-		totalDownloaded += c.Downloaded
+	var activeSpeeds []int64
+	for _, c := range coord.t.Chunks {
+		if c.Completed {
+			continue
+		}
+		trk := coord.trackers[c.Index]
+		if trk != nil && trk.active {
+			activeSpeeds = append(activeSpeeds, trk.speed)
+		}
 	}
 
-	var mu sync.Mutex // protects writing to file at offset and progress reporting
+	// Overall slowdown protection: when no chunk has completed and speeds are uniformly low,
+	// avoid excessive unhelpful splitting
+	if !hasCompletedChunk && len(activeSpeeds) > 1 {
+		allSlowAndUniform := true
+		for _, spd := range activeSpeeds {
+			if spd > 100*1024 {
+				allSlowAndUniform = false
+				break
+			}
+		}
+		if allSlowAndUniform {
+			return -1
+		}
+	}
 
-	// Start all chunk workers simultaneously so all channels download in parallel
-	for chunkIdx := range t.Chunks {
-		chunk := &t.Chunks[chunkIdx]
-		if chunk.Completed {
+	for i := range coord.t.Chunks {
+		c := &coord.t.Chunks[i]
+		if c.Completed {
+			continue
+		}
+		trk := coord.trackers[c.Index]
+		if trk == nil || !trk.active {
 			continue
 		}
 
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			c := &t.Chunks[idx]
+		// Limit splits per chunk to avoid unbounded fragments
+		if trk.splitCount >= 3 {
+			continue
+		}
 
-			// Persistent retry loop for each dedicated channel
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
+		// Cooldown between splits on the same chunk
+		if now.Sub(trk.lastSplit) < 100*time.Millisecond {
+			continue
+		}
 
-				chunkStart := c.Start + c.Downloaded
-				if chunkStart > c.End {
-					c.Completed = true
-					return
-				}
+		currPos := c.Start + c.Downloaded
+		remaining := c.End - currPos + 1
 
-				chunkErr := d.downloadChunk(ctx, t, file, &mu, idx, chunkStart, c.End, &totalDownloaded, onProgress)
-				if chunkErr == nil {
-					if c.Downloaded >= (c.End - c.Start + 1) {
-						c.Completed = true
-					}
-					return
-				}
+		// Must have at least 2 * MinChunkSize remaining to justify splitting
+		if remaining < MinChunkSize*2 {
+			continue
+		}
 
-				// Abort immediately on user cancel, file version mismatch, or Range not supported
-				if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) {
-					select {
-					case errChan <- chunkErr:
-					default:
-					}
-					return
-				}
-
-				// If 429 rate limited or transient network drop, wait briefly and retry this channel until completed
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(300 * time.Millisecond):
-				}
-			}
-		}(chunkIdx)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	if err, ok := <-errChan; ok && err != nil {
-		return err
-	}
-
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-
-	// Verify all chunks completed
-	for _, c := range t.Chunks {
-		if !c.Completed {
-			return errors.New("not all chunks completed")
+		if remaining > maxRemaining {
+			maxRemaining = remaining
+			bestIdx = i
 		}
 	}
 
-	_ = file.Close()
-	return os.Rename(partPath, destPath)
+	if bestIdx == -1 {
+		return -1
+	}
+
+	// Split the remaining range in half
+	origChunk := &coord.t.Chunks[bestIdx]
+	currPos := origChunk.Start + origChunk.Downloaded
+	remaining := origChunk.End - currPos + 1
+	mid := currPos + remaining/2
+	oldEnd := origChunk.End
+
+	// Shrink original chunk end to mid
+	origChunk.End = mid
+	trk := coord.trackers[origChunk.Index]
+	trk.splitCount++
+	trk.lastSplit = now
+
+	// Create assisted chunk for the second half
+	newIdx := len(coord.t.Chunks)
+	newChunk := task.Chunk{
+		Index:      newIdx,
+		Start:      mid + 1,
+		End:        oldEnd,
+		Downloaded: 0,
+		Assisted:   true,
+		Completed:  false,
+	}
+	coord.t.Chunks = append(coord.t.Chunks, newChunk)
+
+	coord.trackers[newIdx] = &chunkTracker{
+		claimed:    true,
+		active:     true,
+		splitCount: trk.splitCount,
+		lastSplit:  now,
+		lastBytes:  0,
+		lastUpdate: now,
+	}
+
+	return newIdx
 }
 
-func (d *HTTPDownloader) downloadChunk(
-	ctx context.Context,
-	t *task.Task,
-	file *os.File,
-	fileMu *sync.Mutex,
-	chunkIdx int,
-	start, end int64,
-	totalDownloaded *int64,
-	onProgress ProgressFunc,
-) error {
+func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx int) error {
+	defer func() {
+		coord.mu.Lock()
+		trk := coord.trackers[chunkIdx]
+		if trk != nil {
+			trk.active = false
+		}
+		coord.mu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		coord.mu.Lock()
+		c := &coord.t.Chunks[chunkIdx]
+		chunkStart := c.Start + c.Downloaded
+		chunkEnd := c.End
+		if chunkStart > chunkEnd {
+			c.Completed = true
+			coord.mu.Unlock()
+			return nil
+		}
+		coord.mu.Unlock()
+
+		chunkErr := coord.downloadChunkStream(ctx, chunkIdx, chunkStart, chunkEnd)
+		if chunkErr == nil {
+			coord.mu.Lock()
+			c := &coord.t.Chunks[chunkIdx]
+			if c.Downloaded >= (c.End - c.Start + 1) {
+				c.Completed = true
+			}
+			coord.mu.Unlock()
+			return nil
+		}
+
+		// Fatal errors abort immediately
+		if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) {
+			return chunkErr
+		}
+
+		// Transient network drop or 429 rate limit: back off and retry
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+
+func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx int, start, end int64) error {
 	if start > end {
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coord.t.URL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	req.Header.Set("User-Agent", UserAgentChrome)
 	req.Header.Set("Accept", "*/*")
-	applyRequestHeaders(req, t.RequestHeaders)
-	req.Close = true // Clean single connection per stream
+	applyRequestHeaders(req, coord.t.RequestHeaders)
+	req.Close = true
 
-	// Version consistency validation headers
-	if t.ETag != "" {
-		req.Header.Set("If-Match", t.ETag)
-	} else if t.LastModified != "" {
-		req.Header.Set("If-Unmodified-Since", t.LastModified)
+	if coord.t.ETag != "" {
+		req.Header.Set("If-Match", coord.t.ETag)
+	} else if coord.t.LastModified != "" {
+		req.Header.Set("If-Unmodified-Since", coord.t.LastModified)
 	}
 
-	resp, err := d.client.Do(req)
+	resp, err := coord.downloader.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -425,19 +592,15 @@ func (d *HTTPDownloader) downloadChunk(
 	if resp.StatusCode == http.StatusPreconditionFailed {
 		return ErrVersionMismatch
 	}
-
-	// 416 Requested Range Not Satisfiable: chunk is already at the end
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		if start >= end {
 			return nil
 		}
 		return fmt.Errorf("range out of bounds: %d-%d", start, end)
 	}
-
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return fmt.Errorf("server rate limited (HTTP 429 Too Many Requests): retrying")
 	}
-
 	if resp.StatusCode != http.StatusPartialContent {
 		if resp.StatusCode == http.StatusOK {
 			return fmt.Errorf("%w: server returned 200 OK instead of partial content", ErrRangeNotSupported)
@@ -445,8 +608,7 @@ func (d *HTTPDownloader) downloadChunk(
 		return fmt.Errorf("download failed: server returned status %s", resp.Status)
 	}
 
-	// Check if ETag or LastModified changed on 206 response
-	if t.ETag != "" && resp.Header.Get("ETag") != "" && resp.Header.Get("ETag") != t.ETag {
+	if coord.t.ETag != "" && resp.Header.Get("ETag") != "" && resp.Header.Get("ETag") != coord.t.ETag {
 		return ErrVersionMismatch
 	}
 
@@ -461,25 +623,74 @@ func (d *HTTPDownloader) downloadChunk(
 
 		n, rErr := resp.Body.Read(buf)
 		if n > 0 {
-			fileMu.Lock()
-			_, wErr := file.WriteAt(buf[:n], offset)
+			coord.mu.Lock()
+			chunk := &coord.t.Chunks[chunkIdx]
+			targetEnd := chunk.End
+
+			if offset > targetEnd {
+				chunk.Completed = true
+				coord.mu.Unlock()
+				return nil
+			}
+
+			validN := int64(n)
+			truncated := false
+			if offset+validN-1 > targetEnd {
+				validN = targetEnd - offset + 1
+				truncated = true
+			}
+
+			coord.fileMu.Lock()
+			_, wErr := coord.file.WriteAt(buf[:validN], offset)
 			if wErr != nil {
-				fileMu.Unlock()
+				coord.fileMu.Unlock()
+				coord.mu.Unlock()
 				return wErr
 			}
-			offset += int64(n)
-			t.Chunks[chunkIdx].Downloaded += int64(n)
-			atomic.AddInt64(totalDownloaded, int64(n))
-			currTotal := atomic.LoadInt64(totalDownloaded)
-			fileMu.Unlock()
+			offset += validN
+			chunk.Downloaded += validN
+			atomic.AddInt64(&coord.totalDown, validN)
+			currTotal := atomic.LoadInt64(&coord.totalDown)
+			coord.fileMu.Unlock()
 
-			if onProgress != nil {
-				onProgress(currTotal, chunkIdx, t.Chunks[chunkIdx].Downloaded)
+			now := time.Now()
+			trk := coord.trackers[chunkIdx]
+			if trk != nil {
+				dt := now.Sub(trk.lastUpdate)
+				if dt >= 100*time.Millisecond {
+					bytesDiff := chunk.Downloaded - trk.lastBytes
+					trk.speed = bytesDiff * int64(time.Second) / int64(dt)
+					trk.lastBytes = chunk.Downloaded
+					trk.lastUpdate = now
+				}
+			}
+
+			if chunk.Downloaded >= (chunk.End-chunk.Start+1) || truncated {
+				chunk.Completed = true
+			}
+			done := chunk.Completed
+
+			if coord.onProgress != nil {
+				coord.progressMu.Lock()
+				coord.onProgress(currTotal, chunkIdx, chunk.Downloaded)
+				coord.progressMu.Unlock()
+			}
+
+			coord.mu.Unlock()
+
+			if done {
+				return nil
 			}
 		}
 
 		if rErr != nil {
 			if errors.Is(rErr, io.EOF) {
+				coord.mu.Lock()
+				chunk := &coord.t.Chunks[chunkIdx]
+				if offset > chunk.End || chunk.Downloaded >= (chunk.End-chunk.Start+1) {
+					chunk.Completed = true
+				}
+				coord.mu.Unlock()
 				break
 			}
 			return rErr
@@ -487,6 +698,87 @@ func (d *HTTPDownloader) downloadChunk(
 	}
 
 	return nil
+}
+
+func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc) error {
+	if len(t.Chunks) == 0 {
+		t.Chunks = splitChunks(t.TotalBytes, t.MaxConcurrency)
+	}
+
+	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open part file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	if err := file.Truncate(t.TotalBytes); err != nil {
+		return fmt.Errorf("failed to truncate part file: %w", err)
+	}
+
+	coord := newChunkCoordinator(t, file, d, onProgress)
+
+	numWorkers := t.MaxConcurrency
+	if numWorkers <= 0 {
+		numWorkers = DefaultMaxConcurrency
+	}
+	if int64(numWorkers) > t.TotalBytes/MinChunkSize && t.TotalBytes < MinChunkSize*2 {
+		numWorkers = 1
+	}
+
+	innerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-innerCtx.Done():
+					return
+				default:
+				}
+
+				chunkIdx := coord.getNextChunk(innerCtx)
+				if chunkIdx == -1 {
+					return
+				}
+
+				wErr := coord.downloadChunkLoop(innerCtx, chunkIdx)
+				if wErr != nil {
+					select {
+					case errChan <- wErr:
+					default:
+					}
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	if err, ok := <-errChan; ok && err != nil {
+		return err
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	for _, c := range t.Chunks {
+		if !c.Completed {
+			return errors.New("not all chunks completed")
+		}
+	}
+
+	_ = file.Close()
+	return os.Rename(partPath, destPath)
 }
 
 func splitChunks(totalBytes int64, concurrency int) []task.Chunk {
