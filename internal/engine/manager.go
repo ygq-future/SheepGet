@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -50,31 +51,61 @@ type ConsistencyResult struct {
 	Resumable  bool   `json:"resumable"`
 }
 
+// SamePath checks whether two directory paths point to the same location,
+// respecting platform case sensitivity (Windows case-insensitive).
+func SamePath(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	ca := filepath.Clean(a)
+	cb := filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(ca, cb)
+	}
+	return ca == cb
+}
+
+// SameFilename checks whether two filenames match, respecting platform case sensitivity.
+func SameFilename(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// FileExists reports whether path or path.sheepget exists on disk.
+func FileExists(path string) bool {
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	if _, err := os.Stat(path + ".sheepget"); err == nil {
+		return true
+	}
+	return false
+}
+
 // CheckFileConflict reports whether filename already exists in dir, and if so suggests a
 // numbered alternative name that is free on disk.
 func CheckFileConflict(dir, filename string) (bool, string) {
 	if dir == "" || filename == "" {
 		return false, filename
 	}
-	if !fileExists(filepath.Join(dir, filename)) {
+	if !FileExists(filepath.Join(dir, filename)) {
 		return false, filename
 	}
-	return true, numberedName(filename, func(candidate string) bool {
-		return fileExists(filepath.Join(dir, candidate))
+	return true, NextNumberedCopy(filename, func(candidate string) bool {
+		return FileExists(filepath.Join(dir, candidate))
 	})
 }
 
 var numberedSuffixRegex = regexp.MustCompile(`^(.*) \(\d+\)$`)
 
-// numberedName returns the first "name (n).ext" variant not rejected by taken.
-func numberedName(filename string, taken func(string) bool) string {
+// NextNumberedCopy returns the first "name (n).ext" variant free according to taken.
+func NextNumberedCopy(filename string, taken func(string) bool) string {
 	ext := filepath.Ext(filename)
 	stem := strings.TrimSuffix(filename, ext)
 	if m := numberedSuffixRegex.FindStringSubmatch(stem); len(m) == 2 {
 		stem = m[1]
-	}
-	if !taken(filename) {
-		return filename
 	}
 	for i := 1; ; i++ {
 		candidate := fmt.Sprintf("%s (%d)%s", stem, i, ext)
@@ -82,11 +113,6 @@ func numberedName(filename string, taken func(string) bool) string {
 			return candidate
 		}
 	}
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil || !os.IsNotExist(err)
 }
 
 // Manager orchestrates task queues, concurrency, lifecycle, and progress reporting.
@@ -294,12 +320,12 @@ func (m *Manager) NumberedCopyName(ctx context.Context, dir, filename string) (s
 	if err != nil {
 		return "", fmt.Errorf("failed to read task list: %w", err)
 	}
-	return numberedName(filename, func(candidate string) bool {
-		if fileExists(filepath.Join(dir, candidate)) {
+	return NextNumberedCopy(filename, func(candidate string) bool {
+		if FileExists(filepath.Join(dir, candidate)) {
 			return true
 		}
 		for _, et := range existingList {
-			if et.Directory == dir && et.Filename == candidate {
+			if SamePath(et.Directory, dir) && SameFilename(et.Filename, candidate) {
 				return true
 			}
 		}

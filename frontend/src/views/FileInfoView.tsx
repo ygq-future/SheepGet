@@ -35,6 +35,19 @@ import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
 import { useSettingsStore } from '../stores/settings';
+interface ItemDraftState {
+  filename: string;
+  directory: string;
+  maxConn: number;
+  preDownload: boolean;
+  duplicateStrategy?: string;
+  dupFileExists: boolean;
+  fileConflict: boolean;
+  suggestedFilename: string;
+  overwriteConflict: boolean;
+  nameEdited: boolean;
+  originalFilename: string;
+}
 
 export function FileInfoView() {
   const { loadSettings } = useSettingsStore();
@@ -63,8 +76,64 @@ export function FileInfoView() {
   const originalFilenameRef = useRef('');
   const probeSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const itemDraftsRef = useRef<Record<string, ItemDraftState>>({});
+  const activeItemIdRef = useRef<string | null>(null);
 
+  // Keep active item draft in sync with current form inputs
+  useEffect(() => {
+    const id = activeItemIdRef.current;
+    if (!id) return;
+    itemDraftsRef.current[id] = {
+      filename,
+      directory,
+      maxConn,
+      preDownload,
+      duplicateStrategy,
+      dupFileExists,
+      fileConflict,
+      suggestedFilename,
+      overwriteConflict,
+      nameEdited: nameEditedRef.current,
+      originalFilename: originalFilenameRef.current,
+    };
+  }, [
+    filename,
+    directory,
+    maxConn,
+    preDownload,
+    duplicateStrategy,
+    dupFileExists,
+    fileConflict,
+    suggestedFilename,
+    overwriteConflict,
+  ]);
   const initItem = useCallback(async (item: windowModels.FileInfoItem) => {
+    activeItemIdRef.current = item.id;
+    const existingDraft = itemDraftsRef.current[item.id];
+
+    if (existingDraft) {
+      setActiveItem((prev) => ({
+        ...item,
+        queueIndex: item.queueIndex || prev?.queueIndex || 1,
+        queueTotal: item.queueTotal || prev?.queueTotal || 1,
+      }));
+      setUrl(item.url || '');
+      setFilename(existingDraft.filename);
+      setDirectory(existingDraft.directory);
+      setMaxConn(existingDraft.maxConn);
+      setPreDownload(existingDraft.preDownload);
+      setDuplicateStrategy(existingDraft.duplicateStrategy);
+      setDupFileExists(existingDraft.dupFileExists);
+      setFileConflict(existingDraft.fileConflict);
+      setSuggestedFilename(existingDraft.suggestedFilename);
+      setOverwriteConflict(existingDraft.overwriteConflict);
+      nameEditedRef.current = existingDraft.nameEdited;
+      originalFilenameRef.current = existingDraft.originalFilename;
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     const currentSettings = useSettingsStore.getState().settings;
     const currentPolicy =
       item.duplicatePolicy ||
@@ -117,6 +186,20 @@ export function FileInfoView() {
     setError(null);
     setLoading(false);
     nameEditedRef.current = false;
+
+    itemDraftsRef.current[item.id] = {
+      filename: chosenName,
+      directory: dir,
+      maxConn: item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8,
+      preDownload: item.preDownload ?? !!currentSettings?.download?.preDownload,
+      duplicateStrategy: initialStrategy,
+      dupFileExists: dupExistsOnDisk,
+      fileConflict: dupExistsOnDisk ? false : !!item.fileConflict,
+      suggestedFilename: item.suggestedFilename || '',
+      overwriteConflict: false,
+      nameEdited: false,
+      originalFilename: initialName,
+    };
   }, []);
 
   useEffect(() => {
@@ -310,6 +393,9 @@ export function FileInfoView() {
           preDownload,
           overwriteConflict: overwriteConflict || isOverwrite,
         });
+        if (activeItem?.id) {
+          delete itemDraftsRef.current[activeItem.id];
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         setError(`提交失败: ${msg}`);
@@ -331,14 +417,16 @@ export function FileInfoView() {
     ],
   );
 
-  const handleCancel = async () => {
+  const handleCancel = useCallback(async () => {
     try {
+      if (activeItem?.id) {
+        delete itemDraftsRef.current[activeItem.id];
+      }
       await CancelCurrentFileInfo();
     } catch (err) {
       console.error('Failed to cancel file info:', err);
     }
-  };
-
+  }, [activeItem]);
   const handleMinimise = () => {
     void MinimiseFileInfoWindow();
   };
@@ -357,7 +445,7 @@ export function FileInfoView() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleConfirm]);
+  }, [handleConfirm, handleCancel]);
 
   // Resize window dynamically to wrap content perfectly
   useEffect(() => {

@@ -36,10 +36,12 @@ func main() {
 
 	// Create main window (Name: "main")
 	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:   "main",
-		Title:  "sheep-get",
-		Width:  1024,
-		Height: 768,
+		Name:      "main",
+		Title:     "sheep-get",
+		Width:     800,
+		Height:    520,
+		MinWidth:  800,
+		MinHeight: 520,
 		BackgroundColour: application.RGBA{
 			Red:   27,
 			Green: 38,
@@ -73,20 +75,33 @@ func main() {
 		_ = app.CancelCurrentFileInfo()
 	})
 	// Pre-create independent Progress window (Name: "progress")
+	var (
+		progX       = 0
+		progY       = 0
+		progInitPos = application.WindowCentered
+	)
+	if primary := wailsApp.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
+		progX = primary.WorkArea.X + primary.WorkArea.Width - 560 - 32
+		progY = primary.WorkArea.Y + primary.WorkArea.Height - 320 - 32
+		progInitPos = application.WindowXY
+	}
 	progressWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:           "progress",
-		Title:          "下载进度 - SheepGet",
-		Width:          560,
-		Height:         160,
-		MinWidth:       560,
-		MaxWidth:       560,
-		MinHeight:      160,
-		MaxHeight:      640,
-		Frameless:      true,
-		BackgroundType: application.BackgroundTypeTransparent,
-		DisableResize:  false,
-		Hidden:         true,
-		URL:            "/?window=progress",
+		Name:            "progress",
+		Title:           "下载进度 - SheepGet",
+		Width:           560,
+		Height:          160,
+		MinWidth:        560,
+		MaxWidth:        560,
+		MinHeight:       160,
+		MaxHeight:       640,
+		InitialPosition: progInitPos,
+		X:               progX,
+		Y:               progY,
+		Frameless:       true,
+		BackgroundType:  application.BackgroundTypeTransparent,
+		DisableResize:   false,
+		Hidden:          true,
+		URL:             "/?window=progress",
 	})
 	// Closing progress window hides it instead of terminating
 	progressWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {

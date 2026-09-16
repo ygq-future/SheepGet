@@ -26,13 +26,14 @@ type FileConflictResult struct {
 
 // App struct
 type App struct {
-	app         *application.App
-	ctx         context.Context
-	manager     *engine.Manager
-	store       task.TaskStore
-	storage     *storage.Storage
-	settings    *config.SettingsService
-	windowQueue *window.QueueController
+	app                *application.App
+	ctx                context.Context
+	manager            *engine.Manager
+	store              task.TaskStore
+	storage            *storage.Storage
+	settings           *config.SettingsService
+	windowQueue        *window.QueueController
+	progressPositioned bool
 }
 
 type wailsWindowView struct {
@@ -316,15 +317,45 @@ func (a *App) ProbeURL(urlStr string) (*engine.ProbeResult, error) {
 	return a.manager.ProbeURL(a.ctx, urlStr)
 }
 
+func (a *App) isFilenameTaken(dir, candidate string) bool {
+	if engine.FileExists(filepath.Join(dir, candidate)) {
+		return true
+	}
+	if a.manager != nil {
+		if tasks, err := a.manager.List(a.ctx); err == nil {
+			for _, t := range tasks {
+				if engine.SamePath(t.Directory, dir) && engine.SameFilename(t.Filename, candidate) {
+					return true
+				}
+			}
+		}
+	}
+	if a.windowQueue != nil {
+		for _, it := range a.windowQueue.GetQueueItems() {
+			if it != nil && engine.SamePath(it.Directory, dir) && engine.SameFilename(it.Filename, candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CheckFileConflict checks if filename exists in dir and returns conflict status and suggested name.
 func (a *App) CheckFileConflict(dir, filename string) FileConflictResult {
 	if dir == "" {
 		dir = getDefaultDownloadDir()
 	}
-	exists, suggested := engine.CheckFileConflict(dir, filename)
+	if !a.isFilenameTaken(dir, filename) {
+		return FileConflictResult{
+			Exists:            false,
+			SuggestedFilename: filename,
+		}
+	}
 	return FileConflictResult{
-		Exists:            exists,
-		SuggestedFilename: suggested,
+		Exists: true,
+		SuggestedFilename: engine.NextNumberedCopy(filename, func(cand string) bool {
+			return a.isFilenameTaken(dir, cand)
+		}),
 	}
 }
 
@@ -334,35 +365,26 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 		dir = getDefaultDownloadDir()
 	}
 
-	// 1. First check if the provided filename exists
-	exists, suggested := engine.CheckFileConflict(dir, filename)
-	if exists {
-		return FileConflictResult{
-			Exists:            true,
-			SuggestedFilename: suggested,
-		}
-	}
-
-	// 2. Check all tasks associated with this URL
-	if a.manager != nil && urlStr != "" {
+	exists := a.isFilenameTaken(dir, filename)
+	if !exists && a.manager != nil && urlStr != "" {
 		if tasks, err := a.manager.List(a.ctx); err == nil {
 			for _, t := range tasks {
 				if t.URL == urlStr && t.Filename != "" {
-					targetPath := filepath.Join(dir, t.Filename)
-					if info, err := os.Stat(targetPath); err == nil && !info.IsDir() {
-						_, sugg := engine.CheckFileConflict(dir, t.Filename)
-						return FileConflictResult{
-							Exists:            true,
-							SuggestedFilename: sugg,
-						}
+					if a.isFilenameTaken(dir, t.Filename) {
+						exists = true
+						break
 					}
 				}
 			}
 		}
 	}
 
+	suggested := engine.NextNumberedCopy(filename, func(cand string) bool {
+		return a.isFilenameTaken(dir, cand)
+	})
+
 	return FileConflictResult{
-		Exists:            false,
+		Exists:            exists,
 		SuggestedFilename: suggested,
 	}
 }
@@ -478,6 +500,13 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 				app.Event.Emit("progress:clear_viewed")
 			}
 			a.ShowProgressWindow(t.ID)
+			if a.GetFileInfoQueueLength() > 0 {
+				if app := a.getApp(); app != nil {
+					if fileWin, ok := app.Window.GetByName("fileinfo"); ok {
+						fileWin.Focus()
+					}
+				}
+			}
 		}
 	}
 	return t, nil
@@ -568,6 +597,14 @@ func (a *App) SetProgressWindowHeight(height int) {
 func (a *App) ShowProgressWindow(taskID string) {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName("progress"); ok {
+			if !a.progressPositioned {
+				if primary := app.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
+					x := primary.WorkArea.X + primary.WorkArea.Width - 560 - 32
+					y := primary.WorkArea.Y + primary.WorkArea.Height - 320 - 32
+					win.SetPosition(x, y)
+				}
+				a.progressPositioned = true
+			}
 			win.Show()
 			win.Focus()
 			if taskID != "" {

@@ -210,6 +210,52 @@ func TestCheckFileConflict(t *testing.T) {
 		t.Errorf("expected exists=true, suggested=README (1); got exists=%v, suggested=%s", exists, suggested)
 	}
 }
+func TestCheckFileConflict_SheepgetTemporaryFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	// If a downloading task has created sample.txt.sheepget, it should be treated as taken.
+	writeFile(t, filepath.Join(tmpDir, "sample.txt.sheepget"))
+
+	exists, suggested := engine.CheckFileConflict(tmpDir, "sample.txt")
+	if !exists || suggested != "sample (1).txt" {
+		t.Errorf("expected sample.txt.sheepget to cause conflict, got exists=%v, suggested=%s", exists, suggested)
+	}
+}
+
+func TestManager_NumberedCopyName_MultiCopies(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+	// 1. Add base task and two copy tasks into store
+	t0 := &task.Task{ID: "t0", URL: "http://example.com/test.zip", Filename: "test.zip", Directory: tmpDir, Status: task.StatusCompleted}
+	t1 := &task.Task{ID: "t1", URL: "http://example.com/test.zip", Filename: "test (1).zip", Directory: tmpDir, Status: task.StatusCompleted}
+	t2 := &task.Task{ID: "t2", URL: "http://example.com/test.zip", Filename: "test (2).zip", Directory: tmpDir, Status: task.StatusDownloading}
+	_ = store.Save(ctx, t0)
+	_ = store.Save(ctx, t1)
+	_ = store.Save(ctx, t2)
+
+	// NumberedCopyName should skip t0, t1, t2 and produce test (3).zip
+	copyName, err := mgr.NumberedCopyName(ctx, tmpDir, "test.zip")
+	if err != nil {
+		t.Fatalf("NumberedCopyName failed: %v", err)
+	}
+	if copyName != "test (3).zip" {
+		t.Errorf("expected test (3).zip, got %s", copyName)
+	}
+
+	// Even if passed "test (1).zip", it should still recognize existing (1) and (2) and return (3)
+	copyName2, err := mgr.NumberedCopyName(ctx, tmpDir, "test (1).zip")
+	if err != nil {
+		t.Fatalf("NumberedCopyName from copy failed: %v", err)
+	}
+	if copyName2 != "test (3).zip" {
+		t.Errorf("expected test (3).zip, got %s", copyName2)
+	}
+}
 
 func writeFile(t *testing.T, path string) {
 	t.Helper()

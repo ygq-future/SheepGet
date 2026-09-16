@@ -244,14 +244,13 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 
 	conflict, suggested := engine.CheckFileConflict(dir, filename)
+	if copyName, err := qc.engine.NumberedCopyName(ctx, dir, filename); err == nil && copyName != "" {
+		suggested = copyName
+	}
 
 	// If duplicate policy is numbered_copy and duplicate exists, auto-fill numbered copy name
 	if probe.DuplicateTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
-		if copyName, err := qc.engine.NumberedCopyName(ctx, dir, filename); err == nil && copyName != "" {
-			filename = copyName
-		} else {
-			filename = suggested
-		}
+		filename = suggested
 		conflict = false
 	}
 	item := &FileInfoItem{

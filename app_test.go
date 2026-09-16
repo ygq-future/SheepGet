@@ -481,3 +481,35 @@ func TestApp_ProgressWindow_SettingsAndSubmit(t *testing.T) {
 		t.Logf("RetryProcessingTask returned (expected if task is in another state): %v", retryErr)
 	}
 }
+
+func TestApp_CheckURLFilesExist_MultiCopiesInTaskList(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/archive.zip"
+
+	// Existing tasks in store: archive.zip (base), archive (1).zip (copy 1), archive (2).zip (copy 2)
+	t0 := &task.Task{ID: "t0", URL: targetURL, Filename: "archive.zip", Directory: tmpDir, Status: task.StatusCompleted}
+	t1 := &task.Task{ID: "t1", URL: targetURL, Filename: "archive (1).zip", Directory: tmpDir, Status: task.StatusCompleted}
+	t2 := &task.Task{ID: "t2", URL: targetURL, Filename: "archive (2).zip", Directory: tmpDir, Status: task.StatusDownloading}
+	_ = store.Save(ctx, t0)
+	_ = store.Save(ctx, t1)
+	_ = store.Save(ctx, t2)
+
+	// CheckURLFilesExist should recognize the existing tasks and suggest archive (3).zip
+	res := app.CheckURLFilesExist(targetURL, tmpDir, "archive.zip")
+	if !res.Exists {
+		t.Errorf("expected duplicate existence, got false")
+	}
+	if res.SuggestedFilename != "archive (3).zip" {
+		t.Errorf("expected suggested archive (3).zip, got %s", res.SuggestedFilename)
+	}
+
+	// CheckFileConflict should also recognize the existing tasks and suggest archive (3).zip
+	conflictRes := app.CheckFileConflict(tmpDir, "archive.zip")
+	if !conflictRes.Exists {
+		t.Errorf("expected conflict existence, got false")
+	}
+	if conflictRes.SuggestedFilename != "archive (3).zip" {
+		t.Errorf("expected suggested archive (3).zip, got %s", conflictRes.SuggestedFilename)
+	}
+}
