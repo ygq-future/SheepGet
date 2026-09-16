@@ -113,10 +113,25 @@ export function App() {
       });
     };
 
+    const onDeleted = (event: unknown) => {
+      const deletedId = unwrapEventData<string>(event);
+      if (!deletedId) return;
+      setTasks((prev) => prev.filter((t) => t.id !== deletedId));
+      setSelectedTaskIds((prev) => {
+        if (!prev.has(deletedId)) return prev;
+        const next = new Set(prev);
+        next.delete(deletedId);
+        return next;
+      });
+    };
+
+    const unsubscribeDeleted = Events.On('task:deleted', onDeleted);
+
     const unsubscribe = Events.On('task:updated', onUpdated);
     return () => {
       ignore = true;
       unsubscribe();
+      unsubscribeDeleted();
       unlistenSettings();
     };
   }, [loadSettings]);

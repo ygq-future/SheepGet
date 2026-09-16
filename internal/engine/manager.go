@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,11 @@ var (
 // TaskListener allows observing task state transitions and progress updates.
 type TaskListener interface {
 	OnTaskUpdated(t *task.Task)
+}
+
+// TaskDeleteListener allows observing task deletions.
+type TaskDeleteListener interface {
+	OnTaskDeleted(taskID string)
 }
 
 // Config holds manager settings.
@@ -115,6 +121,40 @@ func NextNumberedCopy(filename string, taken func(string) bool) string {
 	}
 }
 
+var numberedCopyStrictRegex = regexp.MustCompile(`^(.+) \((\d+)\)$`)
+
+// ExtractStemAndExt returns the base stem (without any (n) suffix) and extension.
+func ExtractStemAndExt(filename string) (string, string) {
+	ext := filepath.Ext(filename)
+	stem := strings.TrimSuffix(filename, ext)
+	if m := numberedSuffixRegex.FindStringSubmatch(stem); len(m) == 2 {
+		stem = m[1]
+	}
+	return stem, ext
+}
+
+// IsNumberedCopyOf checks if candidate is a numbered copy of baseStem with matching ext (e.g. "name (1).ext").
+// It returns the copy index and true, or 0 and false if it is the base file or unrelated.
+func IsNumberedCopyOf(candidate, baseStem, ext string) (int, bool) {
+	candExt := filepath.Ext(candidate)
+	if !strings.EqualFold(candExt, ext) {
+		return 0, false
+	}
+	candStem := strings.TrimSuffix(candidate, candExt)
+	m := numberedCopyStrictRegex.FindStringSubmatch(candStem)
+	if len(m) != 3 {
+		return 0, false
+	}
+	if !strings.EqualFold(m[1], baseStem) {
+		return 0, false
+	}
+	num, err := strconv.Atoi(m[2])
+	if err != nil || num <= 0 {
+		return 0, false
+	}
+	return num, true
+}
+
 // Manager orchestrates task queues, concurrency, lifecycle, and progress reporting.
 type Manager struct {
 	mu           sync.Mutex
@@ -162,6 +202,14 @@ func (m *Manager) AddListener(l TaskListener) {
 func (m *Manager) notify(t *task.Task) {
 	for _, l := range m.listeners {
 		l.OnTaskUpdated(t)
+	}
+}
+
+func (m *Manager) notifyDelete(taskID string) {
+	for _, l := range m.listeners {
+		if dl, ok := l.(TaskDeleteListener); ok {
+			dl.OnTaskDeleted(taskID)
+		}
 	}
 }
 
@@ -248,6 +296,17 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		_ = os.Remove(destPath)
 		_ = os.Remove(destPath + ".sheepget")
 
+		// Delete the old duplicate task being overwritten if it is in the same directory
+		if SamePath(t.Directory, dir) {
+			_ = m.Delete(ctx, taskID)
+		}
+		if existingList, err := m.store.List(ctx); err == nil {
+			for _, et := range existingList {
+				if et.ID != taskID && et.URL == t.URL && SamePath(et.Directory, dir) && SameFilename(et.Filename, filename) {
+					_ = m.Delete(ctx, et.ID)
+				}
+			}
+		}
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
@@ -277,6 +336,8 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		if dir == "" {
 			dir = t.Directory
 		}
+		// Clean up missing copy tasks now that user explicitly confirmed creating a copy
+		_, _ = m.CleanMissingNumberedCopies(ctx, t.URL, dir, filename)
 		filename, err = m.NumberedCopyName(ctx, dir, filename)
 		if err != nil {
 			return nil, err
@@ -314,7 +375,49 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 	}
 }
 
+// CleanMissingNumberedCopies scans tasks in dir matching the numbered copy pattern for filename
+// (excluding the original base file itself). Any copy whose destination file no longer exists on disk
+// (and is not actively downloading or preparing) is deleted from the task store.
+// If urlStr is non-empty, only copies sharing the same URL are cleaned.
+func (m *Manager) CleanMissingNumberedCopies(ctx context.Context, urlStr, dir, filename string) ([]string, error) {
+	if dir == "" || filename == "" {
+		return nil, nil
+	}
+	baseStem, ext := ExtractStemAndExt(filename)
+	existingList, err := m.store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read task list: %w", err)
+	}
+
+	var deletedIDs []string
+	for _, t := range existingList {
+		if !SamePath(t.Directory, dir) {
+			continue
+		}
+		if urlStr != "" && t.URL != urlStr {
+			continue
+		}
+		// Only check numbered copies, never touch the original task
+		if _, ok := IsNumberedCopyOf(t.Filename, baseStem, ext); !ok {
+			continue
+		}
+		// Do not delete active downloading/queued/processing tasks
+		if t.Status == task.StatusDownloading || t.Status == task.StatusQueued || t.Status == task.StatusProcessing {
+			continue
+		}
+		// Check if file exists on disk
+		filePath := filepath.Join(t.Directory, t.Filename)
+		if !FileExists(filePath) {
+			if delErr := m.Delete(ctx, t.ID); delErr == nil {
+				deletedIDs = append(deletedIDs, t.ID)
+			}
+		}
+	}
+	return deletedIDs, nil
+}
+
 // NumberedCopyName returns the first "name (n).ext" variant free on disk and in the task list.
+// It performs a purely read-only scan of disk files and active downloading tasks without deleting any tasks.
 func (m *Manager) NumberedCopyName(ctx context.Context, dir, filename string) (string, error) {
 	existingList, err := m.store.List(ctx)
 	if err != nil {
@@ -326,11 +429,30 @@ func (m *Manager) NumberedCopyName(ctx context.Context, dir, filename string) (s
 		}
 		for _, et := range existingList {
 			if SamePath(et.Directory, dir) && SameFilename(et.Filename, candidate) {
-				return true
+				if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
+					return true
+				}
 			}
 		}
 		return false
 	}), nil
+}
+
+// FindDuplicateTask finds an existing task with matching urlStr from local store without network probe.
+func (m *Manager) FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error) {
+	if urlStr == "" {
+		return nil, nil
+	}
+	existingList, err := m.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, ext := range existingList {
+		if ext.URL == urlStr {
+			return ext, nil
+		}
+	}
+	return nil, nil
 }
 
 // StartPreDownload creates a task that begins transferring while the file info dialog is still open.
@@ -778,6 +900,9 @@ func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	_ = m.Pause(ctx, id)
 	err := m.store.Delete(ctx, id)
+	if err == nil {
+		m.notifyDelete(id)
+	}
 	return err
 }
 

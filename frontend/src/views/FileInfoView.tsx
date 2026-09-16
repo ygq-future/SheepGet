@@ -78,11 +78,15 @@ export function FileInfoView() {
   const containerRef = useRef<HTMLDivElement>(null);
   const itemDraftsRef = useRef<Record<string, ItemDraftState>>({});
   const activeItemIdRef = useRef<string | null>(null);
+  const filenameRef = useRef(filename);
+  const directoryRef = useRef(directory);
 
   // Keep active item draft in sync with current form inputs
   useEffect(() => {
     const id = activeItemIdRef.current;
     if (!id) return;
+    filenameRef.current = filename;
+    directoryRef.current = directory;
     itemDraftsRef.current[id] = {
       filename,
       directory,
@@ -185,8 +189,8 @@ export function FileInfoView() {
     setOverwriteConflict(false);
     setError(null);
     setLoading(false);
+    setProbing(!!item.url && item.totalBytes === -1);
     nameEditedRef.current = false;
-
     itemDraftsRef.current[item.id] = {
       filename: chosenName,
       directory: dir,
@@ -243,9 +247,44 @@ export function FileInfoView() {
       }
     });
 
+    // Listen for probed updates on the active item
+    const unlistenUpdated = Events.On('fileinfo:updated', (ev: unknown) => {
+      const item = unwrapEventData<windowModels.FileInfoItem>(ev);
+      if (item && item.id === activeItemIdRef.current) {
+        setProbing(false);
+        setActiveItem((prev) => (prev ? { ...prev, ...item } : item));
+        if (item.totalBytes !== undefined && item.totalBytes > 0) {
+          if (!nameEditedRef.current && item.filename) {
+            setFilename(item.filename);
+            originalFilenameRef.current = item.filename;
+          }
+        }
+        if (item.fileConflict !== undefined) {
+          setFileConflict(item.fileConflict);
+        }
+        if (item.suggestedFilename) {
+          setSuggestedFilename(item.suggestedFilename);
+        }
+        if (item.url && (item.filename || filenameRef.current)) {
+          void (async () => {
+            const checkName = item.filename || filenameRef.current;
+            const checkDir = item.directory || directoryRef.current;
+            if (checkDir && checkName) {
+              const conf = await CheckURLFilesExist(item.url, checkDir, checkName);
+              setDupFileExists(conf.exists);
+              if (conf.suggestedFilename) {
+                setSuggestedFilename(conf.suggestedFilename);
+              }
+            }
+          })();
+        }
+      }
+    });
+
     return () => {
       unlistenNext();
       unlistenQueue();
+      unlistenUpdated();
     };
   }, [loadSettings, initItem]);
 

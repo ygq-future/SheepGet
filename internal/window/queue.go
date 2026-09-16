@@ -6,13 +6,13 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"strings"
-	"sync"
-	"time"
-
+	"path/filepath"
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
+	"strings"
+	"sync"
+	"time"
 )
 
 // WindowView abstracts a native OS/Wails window.
@@ -26,6 +26,7 @@ type WindowView interface {
 // DownloadEngine abstracts download engine operations required by the window controller.
 type DownloadEngine interface {
 	ProbeURL(ctx context.Context, urlStr string) (*engine.ProbeResult, error)
+	FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error)
 	AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
 	StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
@@ -206,38 +207,31 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	policy := activeSettings.Download.DuplicateURLPolicy
 
-	var (
-		probe *engine.ProbeResult
-		err   error
-	)
-
+	// Fast local duplicate check without blocking on network probe
+	var dupTask *task.Task
 	if req.URL != "" {
-		probe, err = qc.engine.ProbeURL(ctx, req.URL)
-		if err != nil && probe == nil {
-			probe = &engine.ProbeResult{
-				URL:        req.URL,
-				Filename:   path.Base(strings.Split(req.URL, "?")[0]),
-				TotalBytes: -1,
-			}
-		}
-	} else {
-		probe = &engine.ProbeResult{
-			TotalBytes: -1,
-		}
+		dupTask, _ = qc.engine.FindDuplicateTask(ctx, req.URL)
 	}
 
 	// Check Duplicate policy: skip_show_completed
 	// Opens the download completed dialog for reference without closing/suppressing the FileInfo dialog
-	if probe.DuplicateTask != nil && probe.DuplicateTask.Status == task.StatusCompleted {
+	if dupTask != nil && dupTask.Status == task.StatusCompleted {
 		if policy == config.DuplicatePolicySkipShowCompleted || policy == config.DuplicatePolicySkipShowLegacy {
 			if qc.onShowCompleted != nil {
-				qc.onShowCompleted(probe.DuplicateTask.ID)
+				qc.onShowCompleted(dupTask.ID)
 			}
 		}
 	}
 	filename := req.Filename
-	if filename == "" && probe != nil && probe.Filename != "" {
-		filename = probe.Filename
+	if filename == "" && req.URL != "" {
+		urlPath := strings.Split(req.URL, "?")[0]
+		base := path.Base(urlPath)
+		if base != "" && base != "." && base != "/" {
+			filename = base
+		}
+	}
+	if filename == "" && dupTask != nil && dupTask.Filename != "" {
+		filename = dupTask.Filename
 	}
 	if filename == "" {
 		filename = "download.bin"
@@ -249,7 +243,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 
 	// If duplicate policy is numbered_copy and duplicate exists, auto-fill numbered copy name
-	if probe.DuplicateTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
+	if dupTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
 		filename = suggested
 		conflict = false
 	}
@@ -259,28 +253,21 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		Filename:          filename,
 		SuggestedFilename: suggested,
 		Directory:         dir,
-		TotalBytes:        probe.TotalBytes,
-		MimeType:          probe.ContentType,
-		Resumable:         probe.Resumable,
+		TotalBytes:        -1,
+		MimeType:          "",
+		Resumable:         false,
 		MaxConn:           maxConn,
 		PreDownload:       preDownload,
 		FileConflict:      conflict,
-		DuplicateTask:     probe.DuplicateTask,
+		DuplicateTask:     dupTask,
 		DuplicatePolicy:   policy,
 		Headers:           req.Headers,
-	}
-
-	// Trigger pre-download if enabled and no conflict exists
-	if preDownload && !conflict && probe.DuplicateTask == nil && req.URL != "" {
-		if preTask, err := qc.engine.StartPreDownloadWithHeaders(ctx, req.URL, dir, filename, maxConn, req.Headers); err == nil && preTask != nil {
-			item.PreDownloadTaskID = preTask.ID
-		}
 	}
 
 	qc.items = append(qc.items, item)
 	qc.updateQueueNumbersLocked()
 
-	// Show window and bring to focus
+	// Show window and bring to focus immediately
 	if qc.windowView != nil {
 		qc.windowView.Show()
 		qc.windowView.Focus()
@@ -295,11 +282,85 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		}
 	}
 
+	// Trigger background async probe if URL is present
+	if req.URL != "" {
+		itemID := item.ID
+		reqURL := req.URL
+		reqHeaders := req.Headers
+		go qc.asyncProbeItem(itemID, reqURL, reqHeaders, dir, policy, preDownload, maxConn)
+	}
+
 	return &DownloadResponse{
 		Handled:   true,
 		Action:    "enqueued",
 		RequestID: item.ID,
 	}, nil
+}
+
+func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[string]string, dir string, policy config.DuplicateURLPolicy, preDownload bool, maxConn int) {
+	probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	probe, err := qc.engine.ProbeURL(probeCtx, reqURL)
+	if err != nil && probe == nil {
+		return
+	}
+
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+
+	var targetItem *FileInfoItem
+	for _, it := range qc.items {
+		if it.ID == itemID {
+			targetItem = it
+			break
+		}
+	}
+	if targetItem == nil {
+		return
+	}
+
+	if probe != nil {
+		targetItem.TotalBytes = probe.TotalBytes
+		targetItem.MimeType = probe.ContentType
+		targetItem.Resumable = probe.Resumable
+		if probe.DuplicateTask != nil {
+			targetItem.DuplicateTask = probe.DuplicateTask
+		}
+		if probe.Filename != "" && (targetItem.Filename == "download.bin" || targetItem.Filename == path.Base(strings.Split(reqURL, "?")[0])) {
+			targetItem.Filename = probe.Filename
+		}
+	}
+
+	if targetItem.DuplicateTask != nil && targetItem.DuplicateTask.Status == task.StatusCompleted {
+		if policy == config.DuplicatePolicySkipShowCompleted || policy == config.DuplicatePolicySkipShowLegacy {
+			if qc.onShowCompleted != nil {
+				qc.onShowCompleted(targetItem.DuplicateTask.ID)
+			}
+		}
+	}
+
+	conflict, suggested := engine.CheckFileConflict(dir, targetItem.Filename)
+	if copyName, err := qc.engine.NumberedCopyName(context.Background(), dir, targetItem.Filename); err == nil && copyName != "" {
+		suggested = copyName
+	}
+	targetItem.SuggestedFilename = suggested
+	targetItem.FileConflict = conflict
+
+	if targetItem.DuplicateTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
+		targetItem.Filename = suggested
+		targetItem.FileConflict = false
+	}
+
+	if preDownload && !targetItem.FileConflict && targetItem.DuplicateTask == nil && targetItem.PreDownloadTaskID == "" {
+		if preTask, err := qc.engine.StartPreDownloadWithHeaders(context.Background(), reqURL, dir, targetItem.Filename, maxConn, headers); err == nil && preTask != nil {
+			targetItem.PreDownloadTaskID = preTask.ID
+		}
+	}
+
+	if qc.windowView != nil {
+		qc.windowView.Emit("fileinfo:updated", targetItem)
+	}
 }
 
 // Submit confirms the active file info item with final user choices.
@@ -330,14 +391,22 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 
 	// Duplicate resolution
 	strategy := sub.DuplicateStrategy
+	destFileExists := engine.FileExists(filepath.Join(sub.Directory, sub.Filename))
+
 	if strategy == "" && active.DuplicateTask != nil {
-		switch active.DuplicatePolicy {
-		case config.DuplicatePolicyContinueOverwrite, config.DuplicatePolicyOverwriteLegacy:
-			strategy = "continue_overwrite"
-		case config.DuplicatePolicyNumberedCopy:
-			strategy = "copy"
-		case config.DuplicatePolicySkipShowCompleted, config.DuplicatePolicySkipShowLegacy:
-			strategy = "show_completed"
+		if !destFileExists && active.DuplicateTask.Status == task.StatusCompleted && engine.SamePath(active.DuplicateTask.Directory, sub.Directory) {
+			// Disk file does not exist for completed task in the same directory:
+			// user directly downloads and we clean the stale duplicate task
+			strategy = "redownload"
+		} else {
+			switch active.DuplicatePolicy {
+			case config.DuplicatePolicyContinueOverwrite, config.DuplicatePolicyOverwriteLegacy:
+				strategy = "continue_overwrite"
+			case config.DuplicatePolicyNumberedCopy:
+				strategy = "copy"
+			case config.DuplicatePolicySkipShowCompleted, config.DuplicatePolicySkipShowLegacy:
+				strategy = "show_completed"
+			}
 		}
 	}
 

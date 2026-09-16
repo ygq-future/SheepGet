@@ -230,7 +230,9 @@ func TestManager_NumberedCopyName_MultiCopies(t *testing.T) {
 	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
 	defer mgr.Close()
 	ctx := context.Background()
-	// 1. Add base task and two copy tasks into store
+	// 1. Add base task and two copy tasks into store, with disk files present
+	writeFile(t, filepath.Join(tmpDir, "test.zip"))
+	writeFile(t, filepath.Join(tmpDir, "test (1).zip"))
 	t0 := &task.Task{ID: "t0", URL: "http://example.com/test.zip", Filename: "test.zip", Directory: tmpDir, Status: task.StatusCompleted}
 	t1 := &task.Task{ID: "t1", URL: "http://example.com/test.zip", Filename: "test (1).zip", Directory: tmpDir, Status: task.StatusCompleted}
 	t2 := &task.Task{ID: "t2", URL: "http://example.com/test.zip", Filename: "test (2).zip", Directory: tmpDir, Status: task.StatusDownloading}
@@ -238,7 +240,7 @@ func TestManager_NumberedCopyName_MultiCopies(t *testing.T) {
 	_ = store.Save(ctx, t1)
 	_ = store.Save(ctx, t2)
 
-	// NumberedCopyName should skip t0, t1, t2 and produce test (3).zip
+	// NumberedCopyName should recognize existing disk files/active tasks and produce test (3).zip
 	copyName, err := mgr.NumberedCopyName(ctx, tmpDir, "test.zip")
 	if err != nil {
 		t.Fatalf("NumberedCopyName failed: %v", err)
@@ -257,6 +259,190 @@ func TestManager_NumberedCopyName_MultiCopies(t *testing.T) {
 	}
 }
 
+func TestManager_NumberedCopy_CleanMissingCopies_ScenarioAllMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	// Base file exists on disk
+	targetURL := "http://example.com/item.zip"
+	writeFile(t, filepath.Join(tmpDir, "item.zip"))
+	baseTask := &task.Task{ID: "base", URL: targetURL, Filename: "item.zip", Directory: tmpDir, Status: task.StatusCompleted}
+	_ = store.Save(ctx, baseTask)
+
+	// Copies 1 to 5 exist in store, but NONE exist on disk
+	for i := 1; i <= 5; i++ {
+		tName := fmt.Sprintf("item (%d).zip", i)
+		tID := fmt.Sprintf("copy_%d", i)
+		_ = store.Save(ctx, &task.Task{
+			ID:        tID,
+			URL:       targetURL,
+			Filename:  tName,
+			Directory: tmpDir,
+			Status:    task.StatusCompleted,
+		})
+	}
+
+	// 1. In read-only preview (NumberedCopyName), it identifies copy (1) WITHOUT deleting any tasks
+	suggested, err := mgr.NumberedCopyName(ctx, tmpDir, "item.zip")
+	if err != nil {
+		t.Fatalf("NumberedCopyName failed: %v", err)
+	}
+	if suggested != "item (1).zip" {
+		t.Errorf("expected suggested copy item (1).zip, got %s", suggested)
+	}
+	beforeConfirm, _ := store.List(ctx)
+	if len(beforeConfirm) != 6 {
+		t.Fatalf("preview should not delete tasks, expected 6 tasks, got %d", len(beforeConfirm))
+	}
+
+	// 2. When user confirms download with "copy" strategy (ResolveDuplicate), it cleans stale copies and creates copy (1)
+	newTask, err := mgr.ResolveDuplicate(ctx, baseTask.ID, "copy", tmpDir, "item.zip", 2)
+	if err != nil {
+		t.Fatalf("ResolveDuplicate copy failed: %v", err)
+	}
+	if newTask.Filename != "item (1).zip" {
+		t.Errorf("expected new task filename item (1).zip, got %s", newTask.Filename)
+	}
+
+	// Verify copies 1-5 tasks were removed, only base and newTask remain
+	remaining, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("store.List failed: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 tasks remaining (base + newTask), got %d: %+v", len(remaining), remaining)
+	}
+	baseFound, newFound := false, false
+	for _, rem := range remaining {
+		if rem.ID == "base" {
+			baseFound = true
+		}
+		if rem.ID == newTask.ID {
+			newFound = true
+		}
+	}
+	if !baseFound || !newFound {
+		t.Errorf("expected base and newTask to remain in store, got %+v", remaining)
+	}
+}
+func TestManager_NumberedCopy_CleanMissingCopies_ScenarioHoleMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	targetURL := "http://example.com/item.zip"
+	writeFile(t, filepath.Join(tmpDir, "item.zip"))
+	baseTask := &task.Task{ID: "base", URL: targetURL, Filename: "item.zip", Directory: tmpDir, Status: task.StatusCompleted}
+	_ = store.Save(ctx, baseTask)
+
+	// Copies 1, 2, 4, 5 exist on disk and in store; Copy 3 is missing on disk
+	for i := 1; i <= 5; i++ {
+		tName := fmt.Sprintf("item (%d).zip", i)
+		tID := fmt.Sprintf("copy_%d", i)
+		if i != 3 {
+			writeFile(t, filepath.Join(tmpDir, tName))
+		}
+		_ = store.Save(ctx, &task.Task{
+			ID:        tID,
+			URL:       targetURL,
+			Filename:  tName,
+			Directory: tmpDir,
+			Status:    task.StatusCompleted,
+		})
+	}
+
+	suggested, err := mgr.NumberedCopyName(ctx, tmpDir, "item.zip")
+	if err != nil {
+		t.Fatalf("NumberedCopyName failed: %v", err)
+	}
+	if suggested != "item (3).zip" {
+		t.Errorf("expected suggested copy item (3).zip, got %s", suggested)
+	}
+	c3Before, _ := store.Get(ctx, "copy_3")
+	if c3Before == nil {
+		t.Fatalf("copy_3 should not be deleted before user confirms download")
+	}
+
+	// 2. When user confirms download with "copy" strategy, copy_3 is deleted and new task is item (3).zip
+	newTask, err := mgr.ResolveDuplicate(ctx, baseTask.ID, "copy", tmpDir, "item.zip", 2)
+	if err != nil {
+		t.Fatalf("ResolveDuplicate copy failed: %v", err)
+	}
+	if newTask.Filename != "item (3).zip" {
+		t.Errorf("expected new task filename item (3).zip, got %s", newTask.Filename)
+	}
+
+	// Verify copy_3 was deleted, others preserved
+	c3, _ := store.Get(ctx, "copy_3")
+	if c3 != nil {
+		t.Errorf("expected copy_3 to be deleted, but still found in store")
+	}
+	for _, idx := range []int{1, 2, 4, 5} {
+		c, _ := store.Get(ctx, fmt.Sprintf("copy_%d", idx))
+		if c == nil {
+			t.Errorf("expected copy_%d to be preserved", idx)
+		}
+	}
+}
+
+func TestManager_ResolveDuplicate_RedownloadCleansOldTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	targetURL := "http://example.com/file.bin"
+	writeFile(t, filepath.Join(tmpDir, "file.bin"))
+	oldTask := &task.Task{
+		ID:        "old_task",
+		URL:       targetURL,
+		Filename:  "file.bin",
+		Directory: tmpDir,
+		Status:    task.StatusCompleted,
+	}
+	_ = store.Save(ctx, oldTask)
+
+	// When user resolves with "redownload", the old task should be deleted and a new task created
+	newTask, err := mgr.ResolveDuplicate(ctx, oldTask.ID, "redownload", tmpDir, "file.bin", 2)
+	if err != nil {
+		t.Fatalf("ResolveDuplicate redownload failed: %v", err)
+	}
+	if newTask.ID == oldTask.ID {
+		t.Fatalf("expected new task with distinct ID")
+	}
+
+	// Verify old_task is gone from store
+	ot, _ := store.Get(ctx, oldTask.ID)
+	if ot != nil {
+		t.Errorf("expected old_task to be deleted on redownload")
+	}
+
+	// Verify newTask is in store
+	nt, _ := store.Get(ctx, newTask.ID)
+	if nt == nil {
+		t.Errorf("expected new task in store")
+	}
+
+	tasks, _ := store.List(ctx)
+	if len(tasks) != 1 {
+		t.Errorf("expected exactly 1 task in store, got %d", len(tasks))
+	}
+}
 func writeFile(t *testing.T, path string) {
 	t.Helper()
 	file, err := os.Create(path)

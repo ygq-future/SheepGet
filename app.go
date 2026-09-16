@@ -177,6 +177,13 @@ func (a *App) OnTaskUpdated(t *task.Task) {
 	}
 }
 
+// OnTaskDeleted emits wails event to the frontend whenever a task is deleted
+func (a *App) OnTaskDeleted(taskID string) {
+	if app := a.getApp(); app != nil {
+		app.Event.Emit("task:deleted", taskID)
+	}
+}
+
 func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
 }
@@ -325,7 +332,9 @@ func (a *App) isFilenameTaken(dir, candidate string) bool {
 		if tasks, err := a.manager.List(a.ctx); err == nil {
 			for _, t := range tasks {
 				if engine.SamePath(t.Directory, dir) && engine.SameFilename(t.Filename, candidate) {
-					return true
+					if t.Status == task.StatusDownloading || t.Status == task.StatusQueued || t.Status == task.StatusProcessing {
+						return true
+					}
 				}
 			}
 		}
@@ -365,12 +374,13 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 		dir = getDefaultDownloadDir()
 	}
 
-	exists := a.isFilenameTaken(dir, filename)
+	// 1. Only report exists=true if the physical file actually exists on disk
+	exists := engine.FileExists(filepath.Join(dir, filename))
 	if !exists && a.manager != nil && urlStr != "" {
 		if tasks, err := a.manager.List(a.ctx); err == nil {
 			for _, t := range tasks {
 				if t.URL == urlStr && t.Filename != "" {
-					if a.isFilenameTaken(dir, t.Filename) {
+					if engine.FileExists(filepath.Join(dir, t.Filename)) {
 						exists = true
 						break
 					}
@@ -379,10 +389,15 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 		}
 	}
 
-	suggested := engine.NextNumberedCopy(filename, func(cand string) bool {
-		return a.isFilenameTaken(dir, cand)
-	})
-
+	// 2. Purely read-only suggestion calculation; no deletions here!
+	var suggested string
+	if exists {
+		suggested = engine.NextNumberedCopy(filename, func(cand string) bool {
+			return a.isFilenameTaken(dir, cand)
+		})
+	} else {
+		suggested = filename
+	}
 	return FileConflictResult{
 		Exists:            exists,
 		SuggestedFilename: suggested,

@@ -187,6 +187,8 @@ export function ProgressView() {
           setCompletedTasks((prev) => [updated, ...prev.filter((t) => t.id !== updated.id)]);
         }
       } else {
+        // Active status update: remove from completedTasks if present, update activeTasks
+        setCompletedTasks((prev) => prev.filter((t) => t.id !== updated.id));
         setActiveTasks((prev) => {
           const idx = prev.findIndex((t) => t.id === updated.id);
           let next: taskModels.Task[];
@@ -211,7 +213,8 @@ export function ProgressView() {
           if (!target) return;
 
           if (target.status === taskModels.Status.StatusCompleted) {
-            // Manual view of completed task: always show regardless of keepCompletedInfo
+            // Manual view of completed task: append to completedTasks AND remove from activeTasks
+            setActiveTasks((prev) => prev.filter((t) => t.id !== id));
             setCompletedTasks((prev) => {
               if (prev.some((t) => t.id === id)) {
                 return prev;
@@ -219,6 +222,8 @@ export function ProgressView() {
               return [target, ...prev];
             });
           } else {
+            // Active task: append to activeTasks AND remove from completedTasks
+            setCompletedTasks((prev) => prev.filter((t) => t.id !== id));
             setActiveTasks((prev) => {
               if (prev.some((t) => t.id === id)) {
                 return prev;
@@ -251,12 +256,21 @@ export function ProgressView() {
       setCompletedTasks([]);
     });
 
+    // Listen for task deletion to keep progress window clean
+    const unlistenDeleted = Events.On('task:deleted', (ev: unknown) => {
+      const deletedId = unwrapEventData<string>(ev);
+      if (!deletedId) return;
+      setActiveTasks((prev) => prev.filter((t) => t.id !== deletedId));
+      setCompletedTasks((prev) => prev.filter((t) => t.id !== deletedId));
+    });
+
     return () => {
       ignore = true;
       unlistenTask();
       unlistenFocus();
       unlistenFocusTask();
       unlistenClear();
+      unlistenDeleted();
     };
   }, [loadSettings, keepCompletedInfo]);
 
@@ -345,8 +359,13 @@ export function ProgressView() {
     }
   };
 
-  const sortedActive = useMemo(() => sortActiveTasks(activeTasks), [activeTasks]);
-
+  const sortedActive = useMemo(() => {
+    const completedIds = new Set(completedTasks.map((c) => c.id));
+    const nonCompleted = activeTasks.filter(
+      (t) => t.status !== taskModels.Status.StatusCompleted && !completedIds.has(t.id),
+    );
+    return sortActiveTasks(nonCompleted);
+  }, [activeTasks, completedTasks]);
   return (
     <div
       className="flex h-screen w-full flex-col overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-base)] font-sans text-[var(--text-primary)] shadow-2xl select-none [&::-webkit-scrollbar]:hidden"

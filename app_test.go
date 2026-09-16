@@ -369,9 +369,17 @@ func TestApp_WindowQueue_Lifecycle(t *testing.T) {
 		t.Fatalf("expected queue length 1, got %d", app.GetFileInfoQueueLength())
 	}
 
-	active, err := app.GetActiveFileInfo()
-	if err != nil || active == nil {
-		t.Fatalf("expected active file info, got %v, err: %v", active, err)
+	var active *window.FileInfoItem
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		active, _ = app.GetActiveFileInfo()
+		if active != nil && active.Filename == "flow.bin" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if active == nil {
+		t.Fatalf("expected active file info, got nil")
 	}
 	if active.Filename != "flow.bin" {
 		t.Errorf("expected filename flow.bin from Content-Disposition, got %s", active.Filename)
@@ -487,6 +495,10 @@ func TestApp_CheckURLFilesExist_MultiCopiesInTaskList(t *testing.T) {
 	ctx := context.Background()
 	targetURL := "https://example.com/archive.zip"
 
+	// Existing files on disk: archive.zip (base), archive (1).zip (copy 1)
+	_ = os.WriteFile(filepath.Join(tmpDir, "archive.zip"), []byte("data0"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "archive (1).zip"), []byte("data1"), 0644)
+
 	// Existing tasks in store: archive.zip (base), archive (1).zip (copy 1), archive (2).zip (copy 2)
 	t0 := &task.Task{ID: "t0", URL: targetURL, Filename: "archive.zip", Directory: tmpDir, Status: task.StatusCompleted}
 	t1 := &task.Task{ID: "t1", URL: targetURL, Filename: "archive (1).zip", Directory: tmpDir, Status: task.StatusCompleted}
@@ -495,7 +507,7 @@ func TestApp_CheckURLFilesExist_MultiCopiesInTaskList(t *testing.T) {
 	_ = store.Save(ctx, t1)
 	_ = store.Save(ctx, t2)
 
-	// CheckURLFilesExist should recognize the existing tasks and suggest archive (3).zip
+	// CheckURLFilesExist should recognize the existing disk files and suggest archive (3).zip
 	res := app.CheckURLFilesExist(targetURL, tmpDir, "archive.zip")
 	if !res.Exists {
 		t.Errorf("expected duplicate existence, got false")
@@ -511,5 +523,174 @@ func TestApp_CheckURLFilesExist_MultiCopiesInTaskList(t *testing.T) {
 	}
 	if conflictRes.SuggestedFilename != "archive (3).zip" {
 		t.Errorf("expected suggested archive (3).zip, got %s", conflictRes.SuggestedFilename)
+	}
+}
+func TestApp_CheckURLFilesExist_ReadOnlySuggestion_AllMissing(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/item.zip"
+
+	// Base file exists on disk
+	_ = os.WriteFile(filepath.Join(tmpDir, "item.zip"), []byte("base"), 0644)
+	baseTask := &task.Task{ID: "t_base", URL: targetURL, Filename: "item.zip", Directory: tmpDir, Status: task.StatusCompleted}
+	_ = store.Save(ctx, baseTask)
+
+	// Copies 1-5 exist in store, but NONE exist on disk
+	for i := 1; i <= 5; i++ {
+		tName := fmt.Sprintf("item (%d).zip", i)
+		tID := fmt.Sprintf("t_copy_%d", i)
+		_ = store.Save(ctx, &task.Task{
+			ID:        tID,
+			URL:       targetURL,
+			Filename:  tName,
+			Directory: tmpDir,
+			Status:    task.StatusCompleted,
+		})
+	}
+
+	// CheckURLFilesExist should suggest item (1).zip WITHOUT deleting any tasks
+	res := app.CheckURLFilesExist(targetURL, tmpDir, "item.zip")
+	if !res.Exists {
+		t.Errorf("expected base duplicate existence to be true, got false")
+	}
+	if res.SuggestedFilename != "item (1).zip" {
+		t.Errorf("expected suggested item (1).zip, got %s", res.SuggestedFilename)
+	}
+
+	// Verify tasks in store: all 6 tasks MUST still exist at dialog preview time!
+	beforeSubmit, _ := store.List(ctx)
+	if len(beforeSubmit) != 6 {
+		t.Fatalf("CheckURLFilesExist must be read-only! expected 6 tasks, got %d", len(beforeSubmit))
+	}
+
+	// When user resolves with "copy" strategy, stale copies 1-5 are deleted and new task is created
+	newTask, err := app.ResolveDuplicate("t_base", "copy", tmpDir, "item.zip", 2)
+	if err != nil {
+		t.Fatalf("ResolveDuplicate copy failed: %v", err)
+	}
+	if newTask.Filename != "item (1).zip" {
+		t.Errorf("expected new task item (1).zip, got %s", newTask.Filename)
+	}
+
+	afterSubmit, _ := store.List(ctx)
+	if len(afterSubmit) != 2 {
+		t.Fatalf("expected 2 tasks after copy resolve (base + new), got %d: %+v", len(afterSubmit), afterSubmit)
+	}
+}
+
+func TestApp_CheckURLFilesExist_ReadOnlySuggestion_HoleMissing(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/item.zip"
+
+	// Base file exists on disk
+	_ = os.WriteFile(filepath.Join(tmpDir, "item.zip"), []byte("base"), 0644)
+	baseTask := &task.Task{ID: "t_base", URL: targetURL, Filename: "item.zip", Directory: tmpDir, Status: task.StatusCompleted}
+	_ = store.Save(ctx, baseTask)
+
+	// Copies 1, 2, 4, 5 exist on disk; copy 3 does NOT exist on disk
+	for i := 1; i <= 5; i++ {
+		tName := fmt.Sprintf("item (%d).zip", i)
+		tID := fmt.Sprintf("t_copy_%d", i)
+		if i != 3 {
+			_ = os.WriteFile(filepath.Join(tmpDir, tName), []byte("copy"), 0644)
+		}
+		_ = store.Save(ctx, &task.Task{
+			ID:        tID,
+			URL:       targetURL,
+			Filename:  tName,
+			Directory: tmpDir,
+			Status:    task.StatusCompleted,
+		})
+	}
+
+	// CheckURLFilesExist suggests item (3).zip without deleting copy 3
+	res := app.CheckURLFilesExist(targetURL, tmpDir, "item.zip")
+	if !res.Exists {
+		t.Errorf("expected existence to be true, got false")
+	}
+	if res.SuggestedFilename != "item (3).zip" {
+		t.Errorf("expected suggested item (3).zip, got %s", res.SuggestedFilename)
+	}
+
+	c3Before, _ := store.Get(ctx, "t_copy_3")
+	if c3Before == nil {
+		t.Fatalf("copy 3 must not be deleted at preview time")
+	}
+
+	// Confirm download with copy strategy: copy 3 is removed, new task is item (3).zip
+	newTask, err := app.ResolveDuplicate("t_base", "copy", tmpDir, "item.zip", 2)
+	if err != nil {
+		t.Fatalf("ResolveDuplicate copy failed: %v", err)
+	}
+	if newTask.Filename != "item (3).zip" {
+		t.Errorf("expected item (3).zip, got %s", newTask.Filename)
+	}
+
+	c3After, _ := store.Get(ctx, "t_copy_3")
+	if c3After != nil {
+		t.Errorf("expected t_copy_3 to be deleted after copy resolve")
+	}
+}
+
+func TestApp_CheckURLFilesExist_DiskFileNotExists_ReportsNotExistsAndDirectDownloadCleansOld(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/no_disk_file.zip"
+
+	// Old completed task in store, but disk file was deleted by user!
+	oldTask := &task.Task{
+		ID:        "t_old",
+		URL:       targetURL,
+		Filename:  "no_disk_file.zip",
+		Directory: tmpDir,
+		Status:    task.StatusCompleted,
+	}
+	_ = store.Save(ctx, oldTask)
+
+	// Since file does NOT exist on disk, CheckURLFilesExist MUST return exists: false!
+	res := app.CheckURLFilesExist(targetURL, tmpDir, "no_disk_file.zip")
+	if res.Exists {
+		t.Errorf("expected exists=false when disk file is deleted, got true")
+	}
+	if res.SuggestedFilename != "no_disk_file.zip" {
+		t.Errorf("expected suggested filename no_disk_file.zip, got %s", res.SuggestedFilename)
+	}
+
+	// When user enqueues and confirms download for this request without duplicate strategy (direct download)
+	enqResp, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       targetURL,
+		Directory: tmpDir,
+		Filename:  "no_disk_file.zip",
+	})
+	if err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+
+	subTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID:         enqResp.RequestID,
+		URL:               targetURL,
+		Filename:          "no_disk_file.zip",
+		Directory:         tmpDir,
+		DuplicateStrategy: "", // User did not choose duplicate option because no disk file was present
+		MaxConn:           2,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	if subTask == nil {
+		t.Fatalf("expected created task")
+	}
+
+	// Verify the old stale task was deleted
+	ot, _ := store.Get(ctx, "t_old")
+	if ot != nil {
+		t.Errorf("expected old stale task t_old to be deleted on direct download")
+	}
+
+	// Verify only the new task remains in store
+	tasks, _ := store.List(ctx)
+	if len(tasks) != 1 {
+		t.Errorf("expected exactly 1 task in store, got %d", len(tasks))
 	}
 }
