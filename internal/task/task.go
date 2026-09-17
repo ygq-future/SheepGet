@@ -18,6 +18,17 @@ const (
 	StatusError       Status = "error"
 )
 
+// FailurePhase records which stage of the pipeline failed. 传输与处理是两条不同的失败路径：
+// 传输失败可重新传输，处理失败只能复用已下载分片重试处理（ADR-0001/ADR-0004）。
+// 它属于任务契约，使界面按任务事实选择重试动作，而不是从错误文案推断失败类型。
+type FailurePhase string
+
+const (
+	FailurePhaseNone       FailurePhase = ""
+	FailurePhaseTransfer   FailurePhase = "transfer"
+	FailurePhaseProcessing FailurePhase = "processing"
+)
+
 // Chunk represents a segment of a file being downloaded.
 type Chunk struct {
 	Index      int   `json:"index"`
@@ -30,22 +41,23 @@ type Chunk struct {
 
 // Task represents a download task in SheepGet.
 type Task struct {
-	ID             string    `json:"id"`
-	URL            string    `json:"url"`
-	Filename       string    `json:"filename"`
-	Directory      string    `json:"directory"`
-	TempDir        string    `json:"tempDir,omitempty"`
-	TotalBytes     int64     `json:"totalBytes"`
-	Downloaded     int64     `json:"downloaded"`
-	Speed          int64     `json:"speed"` // bytes per second
-	Status         Status    `json:"status"`
-	ErrorMsg       string    `json:"errorMsg,omitempty"`
-	MaxConcurrency int       `json:"maxConcurrency"`
-	Resumable      bool      `json:"resumable"`
-	ETag           string    `json:"etag,omitempty"`
-	LastModified   string    `json:"lastModified,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID             string       `json:"id"`
+	URL            string       `json:"url"`
+	Filename       string       `json:"filename"`
+	Directory      string       `json:"directory"`
+	TempDir        string       `json:"tempDir,omitempty"`
+	TotalBytes     int64        `json:"totalBytes"`
+	Downloaded     int64        `json:"downloaded"`
+	Speed          int64        `json:"speed"` // bytes per second
+	Status         Status       `json:"status"`
+	FailurePhase   FailurePhase `json:"failurePhase,omitempty"`
+	ErrorMsg       string       `json:"errorMsg,omitempty"`
+	MaxConcurrency int          `json:"maxConcurrency"`
+	Resumable      bool         `json:"resumable"`
+	ETag           string       `json:"etag,omitempty"`
+	LastModified   string       `json:"lastModified,omitempty"`
+	CreatedAt      time.Time    `json:"createdAt"`
+	UpdatedAt      time.Time    `json:"updatedAt"`
 
 	// Chunks for multi-connection download state
 	Chunks []Chunk `json:"chunks,omitempty"`

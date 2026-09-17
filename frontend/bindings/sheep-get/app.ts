@@ -190,7 +190,8 @@ export function MinimiseProgressWindow(): $CancellablePromise<void> {
 }
 
 /**
- * OnSettingsUpdated emits wails event to the frontend whenever settings change
+ * OnSettingsUpdated applies changed settings to the running engine and broadcasts them.
+ * 应用代理可能失败，错误交回发起更新的调用方，避免界面继续显示一个实际未生效的代理。
  */
 export function OnSettingsUpdated(s: config$0.Settings | null): $CancellablePromise<void> {
     return $Call.ByID(3585324432, s);

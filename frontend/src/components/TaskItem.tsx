@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed, formatDuration, formatDateTime } from '../lib/format';
 import { FileTypeIcon, isMediaFile } from '../lib/fileIcon';
+import { isProcessingFailure } from '../lib/progress';
 import { TaskActions } from './TaskActions';
 import { CheckCircle2, AlertCircle, Clock, Pause, Loader2 } from 'lucide-react';
 
@@ -99,7 +100,7 @@ export function TaskItem({
         return (
           <span
             className="flex items-center gap-1 font-mono text-[11px] text-rose-500"
-            title={t.errorMsg || '下载失败'}
+            title={t.errorMsg || (isProcessingFailure(t) ? '处理失败' : '下载失败')}
           >
             <AlertCircle className="h-2.5 w-2.5" />
             <span>失败</span>

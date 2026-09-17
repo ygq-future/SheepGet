@@ -4,6 +4,7 @@ import {
   mergeProgressSegments,
   calculateChunkProgress,
   calculateChunkDividers,
+  isProcessingFailure,
 } from './lib/progress';
 import * as taskModels from '../bindings/sheep-get/internal/task/models';
 
@@ -77,33 +78,31 @@ describe('ProgressView active task sorting and rules (Ticket 03)', () => {
     expect(sorted.map((t) => t.id)).toEqual(['proc', 'dl', 'queued', 'paused', 'err']);
   });
 
-  it('identifies processing failure vs regular download failure', () => {
-    const regularErr = createTask(
-      'reg',
-      taskModels.Status.StatusError,
-      10,
-      100,
-      undefined,
-      'connection reset by peer',
-    );
-    const processErr = createTask(
-      'procErr',
-      taskModels.Status.StatusError,
-      100,
-      100,
-      undefined,
-      '媒体处理失败: fMP4 track muxing error',
-    );
+  it('selects the retry action from the recorded failure phase, not from error text', () => {
+    // 即便错误文案里出现 "处理"/"mux"，传输失败也不能被当作处理失败。
+    const transferErr = new taskModels.Task({
+      id: 'transferErr',
+      status: taskModels.Status.StatusError,
+      failurePhase: taskModels.FailurePhase.FailurePhaseTransfer,
+      errorMsg: '媒体处理失败: fMP4 track muxing error',
+    });
+    // 处理失败由任务契约记录，与错误文案内容无关。
+    const processErr = new taskModels.Task({
+      id: 'processErr',
+      status: taskModels.Status.StatusError,
+      failurePhase: taskModels.FailurePhase.FailurePhaseProcessing,
+      errorMsg: 'connection reset by peer',
+    });
+    // 只有失败状态才提供仅重试处理。
+    const completed = new taskModels.Task({
+      id: 'completed',
+      status: taskModels.Status.StatusCompleted,
+      failurePhase: taskModels.FailurePhase.FailurePhaseProcessing,
+    });
 
-    const isProcessing1 =
-      regularErr.status === taskModels.Status.StatusError &&
-      (regularErr.errorMsg?.includes('处理') || regularErr.errorMsg?.toLowerCase().includes('mux'));
-    const isProcessing2 =
-      processErr.status === taskModels.Status.StatusError &&
-      (processErr.errorMsg?.includes('处理') || processErr.errorMsg?.toLowerCase().includes('mux'));
-
-    expect(isProcessing1).toBe(false);
-    expect(isProcessing2).toBe(true);
+    expect(isProcessingFailure(transferErr)).toBe(false);
+    expect(isProcessingFailure(processErr)).toBe(true);
+    expect(isProcessingFailure(completed)).toBe(false);
   });
 
   it('ensures manual view appends completed task even when keepCompletedInfo is false', () => {

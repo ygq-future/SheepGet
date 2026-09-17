@@ -3,6 +3,7 @@
 
 export {
     Chunk,
+    FailurePhase,
     Status,
     Task
 } from "./models.js";

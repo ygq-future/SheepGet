@@ -33,7 +33,11 @@ import {
 import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed } from '../lib/format';
-import { calculateChunkProgress, calculateChunkDividers } from '../lib/progress';
+import {
+  calculateChunkProgress,
+  calculateChunkDividers,
+  isProcessingFailure,
+} from '../lib/progress';
 
 /**
  * Sort active (non-completed) tasks:
@@ -345,11 +349,7 @@ export function ProgressView() {
 
   const handleRetry = async (t: taskModels.Task) => {
     try {
-      const isProcessing =
-        t.errorMsg?.includes('处理') ||
-        t.errorMsg?.toLowerCase().includes('process') ||
-        t.errorMsg?.toLowerCase().includes('mux');
-      if (isProcessing) {
+      if (isProcessingFailure(t)) {
         await RetryProcessingTask(t.id);
       } else {
         await RetryTask(t.id);
@@ -526,11 +526,7 @@ export function ProgressView() {
                         ? Math.min(100, Math.round((t.downloaded / t.totalBytes) * 100))
                         : 0;
                     const isUnknownSize = t.totalBytes <= 0;
-                    const isProcessingError =
-                      t.status === taskModels.Status.StatusError &&
-                      (t.errorMsg?.includes('处理') ||
-                        t.errorMsg?.toLowerCase().includes('process') ||
-                        t.errorMsg?.toLowerCase().includes('mux'));
+                    const isProcessingError = isProcessingFailure(t);
                     const isFocused = focusedTaskId === t.id;
 
                     return (

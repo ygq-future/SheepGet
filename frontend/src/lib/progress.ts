@@ -187,3 +187,15 @@ export function mergeProgressSegments(
     };
   });
 }
+
+/**
+ * 处理失败与传输失败是两条不同的恢复路径：只有处理阶段失败的任务才提供「重试处理」，
+ * 且重试复用已下载分片而不是重新传输。判定来自任务契约的 failurePhase，
+ * 不从错误文案推断失败类型。
+ */
+export function isProcessingFailure(t: taskModels.Task): boolean {
+  return (
+    t.status === taskModels.Status.StatusError &&
+    t.failurePhase === taskModels.FailurePhase.FailurePhaseProcessing
+  );
+}

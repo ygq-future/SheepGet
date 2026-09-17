@@ -50,6 +50,22 @@ export class Chunk {
 }
 
 /**
+ * FailurePhase records which stage of the pipeline failed. 传输与处理是两条不同的失败路径：
+ * 传输失败可重新传输，处理失败只能复用已下载分片重试处理（ADR-0001/ADR-0004）。
+ * 它属于任务契约，使界面按任务事实选择重试动作，而不是从错误文案推断失败类型。
+ */
+export enum FailurePhase {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    FailurePhaseNone = "",
+    FailurePhaseTransfer = "transfer",
+    FailurePhaseProcessing = "processing",
+};
+
+/**
  * Status represents the download task status.
  */
 export enum Status {
@@ -83,6 +99,7 @@ export class Task {
      */
     "speed": number;
     "status": Status;
+    "failurePhase"?: FailurePhase;
     "errorMsg"?: string;
     "maxConcurrency": number;
     "resumable": boolean;
@@ -148,14 +165,14 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField16_0 = $$createType1;
-        const $$createField17_0 = $$createType2;
+        const $$createField17_0 = $$createType1;
+        const $$createField18_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField16_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField17_0($$parsedSource["chunks"]);
         }
         if ("requestHeaders" in $$parsedSource) {
-            $$parsedSource["requestHeaders"] = $$createField17_0($$parsedSource["requestHeaders"]);
+            $$parsedSource["requestHeaders"] = $$createField18_0($$parsedSource["requestHeaders"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

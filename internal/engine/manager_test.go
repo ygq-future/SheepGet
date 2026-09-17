@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -138,11 +139,64 @@ func TestManager_ImmediateErrorKeepsTask(t *testing.T) {
 	if t1.ErrorMsg == "" {
 		t.Fatalf("expected non-empty ErrorMsg")
 	}
+	if t1.FailurePhase != task.FailurePhaseTransfer {
+		t.Fatalf("expected transfer failure phase, got %q", t1.FailurePhase)
+	}
 
 	// Verify task is persisted in store and can be retrieved
 	saved, err := store.Get(ctx, t1.ID)
 	if err != nil || saved.Status != task.StatusError {
 		t.Fatalf("expected task to be saved in store with StatusError: %v", err)
+	}
+	if saved.FailurePhase != task.FailurePhaseTransfer {
+		t.Fatalf("expected persisted transfer failure phase, got %q", saved.FailurePhase)
+	}
+}
+
+// TestManager_RetryContractByFailurePhase pins the contract the UI uses to choose a retry
+// action: 传输失败走 Retry，处理失败只能走 RetryProcessing，避免按错误文案猜测失败类型。
+func TestManager_RetryContractByFailurePhase(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, _ := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+
+	mgr := engine.NewManager(store, nil, engine.Config{MaxActiveTasks: 2})
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	// 传输阶段失败：不能按处理失败重试。
+	transferFailed, err := mgr.AddTask(ctx, "http://127.0.0.1:54321/nonexistent.bin", tmpDir, "t.bin", 2)
+	if err != nil {
+		t.Fatalf("AddTask should not fail outright, got err: %v", err)
+	}
+	if err := mgr.RetryProcessing(ctx, transferFailed.ID); !errors.Is(err, engine.ErrNotProcessingFailure) {
+		t.Fatalf("expected ErrNotProcessingFailure, got %v", err)
+	}
+	if err := mgr.Retry(ctx, transferFailed.ID); errors.Is(err, engine.ErrProcessingRetryRequired) {
+		t.Fatalf("transfer failure must remain retryable as a transfer, got %v", err)
+	}
+
+	// 处理阶段失败：不能重新传输，只能重试处理。
+	processingFailed := &task.Task{
+		ID:           "processing-failed",
+		URL:          "https://example.com/media.m3u8",
+		Filename:     "media.mp4",
+		Directory:    tmpDir,
+		Status:       task.StatusError,
+		FailurePhase: task.FailurePhaseProcessing,
+		ErrorMsg:     "mux failed",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if err := store.Save(ctx, processingFailed); err != nil {
+		t.Fatalf("failed to seed processing failure: %v", err)
+	}
+
+	if err := mgr.Retry(ctx, processingFailed.ID); !errors.Is(err, engine.ErrProcessingRetryRequired) {
+		t.Fatalf("expected ErrProcessingRetryRequired, got %v", err)
+	}
+	if err := mgr.RetryProcessing(ctx, processingFailed.ID); !errors.Is(err, engine.ErrProcessingUnavailable) {
+		t.Fatalf("expected ErrProcessingUnavailable, got %v", err)
 	}
 }
 

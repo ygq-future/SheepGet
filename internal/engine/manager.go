@@ -18,6 +18,12 @@ import (
 var (
 	ErrTaskAlreadyRunning = errors.New("task already running")
 	ErrCannotResume       = errors.New("cannot resume task in current status")
+	// ErrProcessingRetryRequired 表示传输已完成、只有处理失败；重新传输既不必要也会丢弃已下载分片。
+	ErrProcessingRetryRequired = errors.New("task failed during media processing; retry processing instead")
+	// ErrNotProcessingFailure 表示任务并非处理失败，不能按仅重试处理处理。
+	ErrNotProcessingFailure = errors.New("task did not fail during media processing")
+	// ErrProcessingUnavailable 表示媒体处理层尚未接入（ADR-0001 的 Media Processor）。
+	ErrProcessingUnavailable = errors.New("media processing is not available")
 )
 
 // TaskListener allows observing task state transitions and progress updates.
@@ -553,6 +559,7 @@ func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, 
 			TempDir:        m.getTempDir(),
 			TotalBytes:     -1,
 			Status:         task.StatusError,
+			FailurePhase:   task.FailurePhaseTransfer,
 			ErrorMsg:       err.Error(),
 			MaxConcurrency: maxConn,
 			RequestHeaders: headers,
@@ -878,6 +885,7 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 			TempDir:        m.getTempDir(),
 			TotalBytes:     -1,
 			Status:         task.StatusError,
+			FailurePhase:   task.FailurePhaseTransfer,
 			ErrorMsg:       err.Error(),
 			MaxConcurrency: maxConn,
 			RequestHeaders: headers,
@@ -979,14 +987,32 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	return nil
 }
 
-// Retry retries a failed or paused task from beginning or checkpoint.
+// Retry retries a failed or paused task, restarting its transfer from the last checkpoint.
+// 处理阶段失败的任务必须走 RetryProcessing：分片已就绪，重新传输既无必要也会使分片失效。
 func (m *Manager) Retry(ctx context.Context, id string) error {
+	t, err := m.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if t.FailurePhase == task.FailurePhaseProcessing {
+		return ErrProcessingRetryRequired
+	}
 	return m.Resume(ctx, id)
 }
 
-// RetryProcessing reserves the interaction boundary for retrying failed media processing.
+// RetryProcessing retries media processing for a task whose transfer finished but whose
+// 成品生成 failed, reusing the segments already on disk instead of transferring again.
+// 媒体处理由 ADR-0001 的 Media Processor 承担，尚未接入；此处保证契约正确：
+// 传输失败的任务不会被当作处理失败重试，处理失败也不会退化为重新下载。
 func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
-	return m.Resume(ctx, id)
+	t, err := m.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if t.FailurePhase != task.FailurePhaseProcessing {
+		return ErrNotProcessingFailure
+	}
+	return ErrProcessingUnavailable
 }
 
 // Delete removes task from store and stops running transfer.
@@ -1116,6 +1142,8 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	}
 
 	t.Status = task.StatusDownloading
+	// 本次运行重新开始，清掉上一轮遗留的失败阶段。
+	t.FailurePhase = task.FailurePhaseNone
 	t.UpdatedAt = time.Now()
 	_ = m.store.Save(bgCtx, t)
 	m.notify(t)
@@ -1157,15 +1185,19 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	if err != nil {
 		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			t.Status = task.StatusPaused
+			t.FailurePhase = task.FailurePhaseNone
 		} else if latest, getErr := m.store.Get(bgCtx, taskID); getErr == nil && latest.Status == task.StatusPaused {
 			// A concurrent Pause already persisted the paused state; keep it.
 			t.Status = task.StatusPaused
+			t.FailurePhase = task.FailurePhaseNone
 		} else {
 			t.Status = task.StatusError
+			t.FailurePhase = task.FailurePhaseTransfer
 			t.ErrorMsg = err.Error()
 		}
 	} else {
 		t.Status = task.StatusCompleted
+		t.FailurePhase = task.FailurePhaseNone
 		if t.TotalBytes > 0 {
 			// For a known size the transfer is complete by definition; when the size was never
 			// known, keep the bytes actually written instead of reporting the unknown marker.
