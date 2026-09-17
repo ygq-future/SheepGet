@@ -34,6 +34,7 @@ type Task struct {
 	URL            string    `json:"url"`
 	Filename       string    `json:"filename"`
 	Directory      string    `json:"directory"`
+	TempDir        string    `json:"tempDir,omitempty"`
 	TotalBytes     int64     `json:"totalBytes"`
 	Downloaded     int64     `json:"downloaded"`
 	Speed          int64     `json:"speed"` // bytes per second

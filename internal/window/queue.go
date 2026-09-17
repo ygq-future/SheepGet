@@ -190,11 +190,6 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	defer qc.mu.Unlock()
 
 	activeSettings := qc.settings.Get()
-	dir := req.Directory
-	if dir == "" {
-		dir = activeSettings.Download.DefaultDirectory
-	}
-
 	maxConn := req.MaxConn
 	if maxConn <= 0 {
 		maxConn = activeSettings.Download.DefaultConnectionsPerTask
@@ -233,15 +228,27 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	if filename == "" && dupTask != nil && dupTask.Filename != "" {
 		filename = dupTask.Filename
 	}
-	if filename == "" {
+	if filename == "" && req.URL != "" {
 		filename = "download.bin"
 	}
 
-	conflict, suggested := engine.CheckFileConflict(dir, filename)
-	if copyName, err := qc.engine.NumberedCopyName(ctx, dir, filename); err == nil && copyName != "" {
-		suggested = copyName
+	dir := req.Directory
+	if dir == "" {
+		if filename != "" {
+			dir = activeSettings.Download.ResolveCategoryDirectory(filename)
+		} else {
+			dir = activeSettings.Download.DefaultDirectory
+		}
 	}
 
+	conflict := false
+	suggested := ""
+	if filename != "" {
+		conflict, suggested = engine.CheckFileConflict(dir, filename)
+		if copyName, err := qc.engine.NumberedCopyName(ctx, dir, filename); err == nil && copyName != "" {
+			suggested = copyName
+		}
+	}
 	// If duplicate policy is numbered_copy and duplicate exists, auto-fill numbered copy name
 	if dupTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
 		filename = suggested

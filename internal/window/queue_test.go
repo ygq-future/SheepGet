@@ -571,3 +571,70 @@ func TestQueueController_ManualEmptyURL_DuplicateCompletedTask_Recognized(t *tes
 		t.Fatalf("expected 2 tasks in store (original + new), got %d", len(allTasks))
 	}
 }
+
+func TestQueueController_CategoryDirectoryResolution_AndManualPriority(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	store, _ := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 3})
+	t.Cleanup(mgr.Close)
+
+	settings := config.DefaultSettings(tmpDir, filepath.Join(tmpDir, "temp"))
+	// Custom category for books (.epub)
+	booksDir := filepath.Join(tmpDir, "Books")
+	settings.Download.CustomCategories = []config.CategoryConfig{
+		{
+			ID:         "custom-books",
+			Name:       "电子书",
+			Directory:  booksDir,
+			Extensions: []string{"epub"},
+		},
+	}
+
+	win := &mockWindowView{}
+	qc := NewQueueController(mgr, &testSettingsProvider{settings: settings}, win)
+
+	// 1. Request with empty directory for .mp4 -> should automatically resolve to built-in "视频" directory!
+	videoResp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:      "http://example.com/movie.mp4",
+		Filename: "movie.mp4",
+	})
+	if err != nil || !videoResp.Handled {
+		t.Fatalf("enqueue video failed: %v", err)
+	}
+	item1, _ := qc.GetActive()
+	expectedVideoDir := filepath.Join(tmpDir, "Videos")
+	if item1.Directory != expectedVideoDir {
+		t.Errorf("expected category directory %s, got %s", expectedVideoDir, item1.Directory)
+	}
+	_ = qc.CancelCurrent(ctx)
+
+	// 2. Request with empty directory for .epub -> should resolve to custom "电子书" directory!
+	bookResp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:      "http://example.com/novel.epub",
+		Filename: "novel.epub",
+	})
+	if err != nil || !bookResp.Handled {
+		t.Fatalf("enqueue book failed: %v", err)
+	}
+	item2, _ := qc.GetActive()
+	if item2.Directory != booksDir {
+		t.Errorf("expected custom category directory %s, got %s", booksDir, item2.Directory)
+	}
+	_ = qc.CancelCurrent(ctx)
+
+	// 3. Request with explicit MANUAL directory -> manual directory MUST take precedence!
+	manualDir := filepath.Join(tmpDir, "ManualFolder")
+	manualResp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "http://example.com/clip.mp4",
+		Filename:  "clip.mp4",
+		Directory: manualDir, // user manually specified directory
+	})
+	if err != nil || !manualResp.Handled {
+		t.Fatalf("enqueue manual failed: %v", err)
+	}
+	item3, _ := qc.GetActive()
+	if item3.Directory != manualDir {
+		t.Errorf("expected manual directory %s to take precedence, got %s", manualDir, item3.Directory)
+	}
+}

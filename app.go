@@ -124,8 +124,13 @@ func NewApp() *App {
 
 	activeSettings := settingsSvc.Get()
 	downloader := engine.NewHTTPDownloader(nil)
+	downloader.SetTempDirectory(activeSettings.Download.TempDirectory)
+	downloader.SetUseServerFileTime(activeSettings.Download.UseServerFileTime)
+
 	mgr := engine.NewManager(store, downloader, engine.Config{
-		MaxActiveTasks: activeSettings.Download.MaxConcurrentDownloads,
+		MaxActiveTasks:    activeSettings.Download.MaxConcurrentDownloads,
+		TempDirectory:     activeSettings.Download.TempDirectory,
+		UseServerFileTime: activeSettings.Download.UseServerFileTime,
 	})
 	app.manager = mgr
 
@@ -192,6 +197,8 @@ func (a *App) Greet(name string) string {
 func (a *App) OnSettingsUpdated(s *config.Settings) {
 	if a.manager != nil && s != nil {
 		a.manager.SetMaxActiveTasks(s.Download.MaxConcurrentDownloads)
+		a.manager.SetTempDirectory(s.Download.TempDirectory)
+		a.manager.SetUseServerFileTime(s.Download.UseServerFileTime)
 	}
 	if app := a.getApp(); app != nil {
 		app.Event.Emit("settings:updated", s)
@@ -239,10 +246,38 @@ func (a *App) GetDefaultDownloadDir() string {
 	return getDefaultDownloadDir()
 }
 
+// ResolveCategoryDirectory resolves the target directory for a given filename based on current settings.
+func (a *App) ResolveCategoryDirectory(filename string) string {
+	if a.settings == nil {
+		return a.GetDefaultDownloadDir()
+	}
+	cfg := a.settings.Get()
+	return cfg.Download.ResolveCategoryDirectory(filename)
+}
+
+// AssignExtensionToCategory assigns an extension to a target category and updates settings.
+func (a *App) AssignExtensionToCategory(ext, targetCategoryID string) error {
+	if a.settings == nil {
+		return fmt.Errorf("settings service not initialized")
+	}
+	current := a.settings.Get()
+	updatedDownload, changed := current.Download.AssignExtensionToCategory(ext, targetCategoryID)
+	if !changed {
+		return nil
+	}
+	current.Download = updatedDownload
+	_, err := a.settings.Update(current)
+	return err
+}
+
 // AddTask adds a new download task
 func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
 	if dir == "" {
-		dir = a.GetDefaultDownloadDir()
+		if filename != "" {
+			dir = a.ResolveCategoryDirectory(filename)
+		} else {
+			dir = a.GetDefaultDownloadDir()
+		}
 	}
 	return a.manager.AddTask(a.ctx, urlStr, dir, filename, maxConn)
 }
@@ -274,6 +309,10 @@ func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 			destPath := filepath.Join(t.Directory, t.Filename)
 			_ = os.Remove(destPath)
 			_ = os.Remove(destPath + ".sheepget")
+			if a.manager != nil {
+				partPath := a.manager.GetPartPath(t)
+				_ = os.Remove(partPath)
+			}
 		}
 	}
 	return a.manager.Delete(a.ctx, id)
@@ -415,7 +454,11 @@ func (a *App) ResolveDuplicate(taskID, strategy, dir, filename string, maxConn i
 // StartPreDownload starts downloading in the background while file info dialog is displayed.
 func (a *App) StartPreDownload(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
 	if dir == "" {
-		dir = getDefaultDownloadDir()
+		if filename != "" {
+			dir = a.ResolveCategoryDirectory(filename)
+		} else {
+			dir = a.GetDefaultDownloadDir()
+		}
 	}
 	return a.manager.StartPreDownload(a.ctx, urlStr, dir, filename, maxConn)
 }

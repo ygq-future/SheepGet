@@ -33,7 +33,9 @@ type TaskDeleteListener interface {
 
 // Config holds manager settings.
 type Config struct {
-	MaxActiveTasks int `json:"maxActiveTasks"`
+	MaxActiveTasks    int    `json:"maxActiveTasks"`
+	TempDirectory     string `json:"tempDirectory"`
+	UseServerFileTime bool   `json:"useServerFileTime"`
 }
 
 // ProbeResult holds the probed metadata and duplicate-task state for a URL.
@@ -189,10 +191,14 @@ func NewManager(store task.TaskStore, downloader *HTTPDownloader, cfg Config) *M
 		speedSamples: make(map[string]int64),
 	}
 
+	if cfg.TempDirectory != "" {
+		downloader.SetTempDirectory(cfg.TempDirectory)
+	}
+	downloader.SetUseServerFileTime(cfg.UseServerFileTime)
+
 	go m.speedTicker()
 	return m
 }
-
 func (m *Manager) AddListener(l TaskListener) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -470,6 +476,7 @@ func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, 
 			URL:            urlStr,
 			Filename:       filename,
 			Directory:      dir,
+			TempDir:        m.getTempDir(),
 			TotalBytes:     -1,
 			Status:         task.StatusError,
 			ErrorMsg:       err.Error(),
@@ -500,6 +507,7 @@ func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, 
 		URL:            urlStr,
 		Filename:       filename,
 		Directory:      dir,
+		TempDir:        m.getTempDir(),
 		TotalBytes:     info.TotalBytes,
 		Downloaded:     0,
 		Status:         task.StatusQueued,
@@ -546,7 +554,9 @@ func (m *Manager) ConfirmPreDownload(ctx context.Context, taskID, finalDir, fina
 		if t.Status == task.StatusCompleted {
 			if _, err := os.Stat(oldDest); err == nil {
 				if err := os.Rename(oldDest, newDest); err != nil {
-					return nil, fmt.Errorf("failed to move completed file: %w", err)
+					if xErr := safeTransferCrossDevice(oldDest, newDest); xErr != nil {
+						return nil, fmt.Errorf("failed to move completed file: %w", xErr)
+					}
 				}
 			}
 		} else {
@@ -567,15 +577,20 @@ func (m *Manager) ConfirmPreDownload(ctx context.Context, taskID, finalDir, fina
 				t = latest
 			}
 
-			oldPart := oldDest + ".sheepget"
-			newPart := newDest + ".sheepget"
-			if _, err := os.Stat(oldPart); err == nil {
-				if renameErr := os.Rename(oldPart, newPart); renameErr != nil {
-					// Partial data cannot be relocated: drop it and restart cleanly so the
-					// confirmed destination never receives bytes from the wrong file.
-					_ = os.Remove(oldPart)
-					t.Chunks = nil
-					t.Downloaded = 0
+			oldPart := m.downloader.GetPartPath(t)
+			tempTask := *t
+			tempTask.Directory = finalDir
+			tempTask.Filename = finalFilename
+			newPart := m.downloader.GetPartPath(&tempTask)
+			if oldPart != newPart {
+				if _, err := os.Stat(oldPart); err == nil {
+					if renameErr := os.Rename(oldPart, newPart); renameErr != nil {
+						if xErr := safeTransferCrossDevice(oldPart, newPart); xErr != nil {
+							_ = os.Remove(oldPart)
+							t.Chunks = nil
+							t.Downloaded = 0
+						}
+					}
 				}
 			}
 			t.Status = task.StatusQueued
@@ -786,6 +801,7 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 			URL:            urlStr,
 			Filename:       filename,
 			Directory:      dir,
+			TempDir:        m.getTempDir(),
 			TotalBytes:     -1,
 			Status:         task.StatusError,
 			ErrorMsg:       err.Error(),
@@ -814,6 +830,7 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 		URL:            urlStr,
 		Filename:       filename,
 		Directory:      dir,
+		TempDir:        m.getTempDir(),
 		TotalBytes:     info.TotalBytes,
 		Downloaded:     0,
 		Status:         task.StatusQueued,
@@ -919,6 +936,40 @@ func (m *Manager) SetMaxActiveTasks(n int) {
 	}
 	m.mu.Unlock()
 	m.schedule()
+}
+
+// SetTempDirectory updates the configured temporary directory for downloads.
+func (m *Manager) SetTempDirectory(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config.TempDirectory = dir
+	if m.downloader != nil {
+		m.downloader.SetTempDirectory(dir)
+	}
+}
+
+// SetUseServerFileTime updates whether completed files should adopt server Last-Modified time.
+
+// GetPartPath returns the temporary part file path for a task, delegating to downloader.
+func (m *Manager) GetPartPath(t *task.Task) string {
+	if m.downloader != nil {
+		return m.downloader.GetPartPath(t)
+	}
+	return filepath.Join(t.Directory, t.Filename+".sheepget")
+}
+
+func (m *Manager) getTempDir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.config.TempDirectory
+}
+func (m *Manager) SetUseServerFileTime(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config.UseServerFileTime = enabled
+	if m.downloader != nil {
+		m.downloader.SetUseServerFileTime(enabled)
+	}
 }
 
 func (m *Manager) schedule() {

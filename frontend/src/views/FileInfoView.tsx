@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback, type SyntheticEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type SyntheticEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  Folder,
+  FolderOpen,
   DownloadCloud,
   AlertCircle,
   Copy,
@@ -29,12 +29,17 @@ import {
   CheckURLFilesExist,
   ShowProgressWindow,
   SwitchFileInfoActive,
+  ResolveCategoryDirectory,
+  AssignExtensionToCategory,
 } from '../../bindings/sheep-get/app';
 import type * as windowModels from '../../bindings/sheep-get/internal/window/models';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
 import { useSettingsStore } from '../stores/settings';
+import { Select } from '../components/ui/Select';
+import { Checkbox } from '../components/ui/Checkbox';
+import { extractExtension, resolveCategory } from '../lib/category';
 interface ItemDraftState {
   filename: string;
   directory: string;
@@ -46,7 +51,11 @@ interface ItemDraftState {
   suggestedFilename: string;
   overwriteConflict: boolean;
   nameEdited: boolean;
+  dirEdited: boolean;
   originalFilename: string;
+  selectedCategoryId: string;
+  rememberCategory: boolean;
+  categoryEdited: boolean;
 }
 
 export function FileInfoView() {
@@ -68,13 +77,16 @@ export function FileInfoView() {
   const [fileConflict, setFileConflict] = useState(false);
   const [suggestedFilename, setSuggestedFilename] = useState('');
   const [overwriteConflict, setOverwriteConflict] = useState(false);
-
-  // Status states
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  const [rememberCategory, setRememberCategory] = useState(false);
+  const [categoryEdited, setCategoryEdited] = useState(false);
   const nameEditedRef = useRef(false);
+  const dirEditedRef = useRef(false);
   const originalFilenameRef = useRef('');
   const probeSeqRef = useRef(0);
+  const filenameSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const itemDraftsRef = useRef<Record<string, ItemDraftState>>({});
   const activeItemIdRef = useRef<string | null>(null);
@@ -98,7 +110,11 @@ export function FileInfoView() {
       suggestedFilename,
       overwriteConflict,
       nameEdited: nameEditedRef.current,
+      dirEdited: dirEditedRef.current,
       originalFilename: originalFilenameRef.current,
+      selectedCategoryId,
+      rememberCategory,
+      categoryEdited,
     };
   }, [
     filename,
@@ -110,11 +126,14 @@ export function FileInfoView() {
     fileConflict,
     suggestedFilename,
     overwriteConflict,
+    selectedCategoryId,
+    rememberCategory,
+    categoryEdited,
   ]);
+
   const initItem = useCallback(async (item: windowModels.FileInfoItem) => {
     activeItemIdRef.current = item.id;
     const existingDraft = itemDraftsRef.current[item.id];
-
     if (existingDraft) {
       setActiveItem((prev) => ({
         ...item,
@@ -132,8 +151,9 @@ export function FileInfoView() {
       setSuggestedFilename(existingDraft.suggestedFilename);
       setOverwriteConflict(existingDraft.overwriteConflict);
       nameEditedRef.current = existingDraft.nameEdited;
-      originalFilenameRef.current = existingDraft.originalFilename;
-      setError(null);
+      dirEditedRef.current = existingDraft.dirEdited;
+      setCategoryEdited(existingDraft.categoryEdited || false);
+      setSelectedCategoryId(existingDraft.selectedCategoryId || '');
       setLoading(false);
       return;
     }
@@ -145,7 +165,7 @@ export function FileInfoView() {
       configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
 
     const dir = item.directory || currentSettings?.download?.defaultDirectory || '';
-    const initialName = item.filename || '';
+    const initialName = !item.url && item.filename === 'download.bin' ? '' : item.filename || '';
     originalFilenameRef.current = initialName;
 
     let initialStrategy: string | undefined = undefined;
@@ -189,8 +209,13 @@ export function FileInfoView() {
     setOverwriteConflict(false);
     setError(null);
     setLoading(false);
-    setProbing(!!item.url && item.totalBytes === -1);
     nameEditedRef.current = false;
+    dirEditedRef.current = false;
+    setCategoryEdited(false);
+    const initialCat = resolveCategory(initialName, currentSettings).category;
+    const initialCatId = initialCat?.id || 'builtin-file';
+    setSelectedCategoryId(initialCatId);
+    setRememberCategory(false);
     itemDraftsRef.current[item.id] = {
       filename: chosenName,
       directory: dir,
@@ -202,6 +227,10 @@ export function FileInfoView() {
       suggestedFilename: item.suggestedFilename || '',
       overwriteConflict: false,
       nameEdited: false,
+      dirEdited: false,
+      categoryEdited: false,
+      selectedCategoryId: initialCatId,
+      rememberCategory: false,
       originalFilename: initialName,
     };
   }, []);
@@ -305,15 +334,34 @@ export function FileInfoView() {
         activeItem?.duplicatePolicy ||
         currentSettings?.download?.duplicateUrlPolicy ||
         configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
+      const rawName =
+        (!nameEditedRef.current && result.filename
+          ? result.filename
+          : filenameRef.current || result.filename) || '';
+      originalFilenameRef.current = result.filename || filenameRef.current;
 
-      let chosenName =
-        !nameEditedRef.current && result.filename ? result.filename : filename || result.filename;
-      originalFilenameRef.current = result.filename || filename;
+      const currentDir = directoryRef.current;
+      let effectiveDir = currentDir;
+      if (!dirEditedRef.current && rawName) {
+        try {
+          const catDir = await ResolveCategoryDirectory(rawName);
+          if (catDir) {
+            effectiveDir = catDir;
+            if (catDir !== currentDir) {
+              setDirectory(catDir);
+            }
+          }
+        } catch {
+          // fallback to currentDir
+        }
+      }
+
+      let chosenName = rawName;
       let initStrategy: string | undefined = undefined;
       let dupExistsOnDisk = false;
-      if (directory && chosenName) {
+      if (effectiveDir && rawName) {
         if (result.duplicateTask) {
-          const conf = await CheckURLFilesExist(trimmed, directory, chosenName);
+          const conf = await CheckURLFilesExist(trimmed, effectiveDir, rawName);
           dupExistsOnDisk = conf.exists;
           const policyStr = String(currentPolicy);
           if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
@@ -331,7 +379,7 @@ export function FileInfoView() {
           }
           setSuggestedFilename(conf.suggestedFilename);
         } else {
-          const conf = await CheckFileConflict(directory, chosenName);
+          const conf = await CheckFileConflict(effectiveDir, rawName);
           setFileConflict(conf.exists);
           setSuggestedFilename(conf.suggestedFilename);
         }
@@ -339,7 +387,6 @@ export function FileInfoView() {
       setFilename(chosenName);
       setDupFileExists(dupExistsOnDisk);
       setDuplicateStrategy(initStrategy);
-
       setActiveItem((prev) => {
         if (!prev) return null;
         return {
@@ -363,10 +410,48 @@ export function FileInfoView() {
     }
   };
 
+  const currentSettings = useSettingsStore((s) => s.settings);
+  const autoCategoryId = resolveCategory(filename, currentSettings).category?.id || 'builtin-file';
+  const effectiveCategoryId =
+    categoryEdited && selectedCategoryId ? selectedCategoryId : autoCategoryId;
+  const categoryOptions = useMemo(() => {
+    const opts: { value: string; label: string }[] = [];
+    for (const c of currentSettings?.download?.customCategories || []) {
+      opts.push({ value: c.id, label: `${c.name} (自定义)` });
+    }
+    for (const c of currentSettings?.download?.builtinCategories || []) {
+      opts.push({ value: c.id, label: `${c.name} (内置)` });
+    }
+    return opts;
+  }, [currentSettings?.download?.customCategories, currentSettings?.download?.builtinCategories]);
+
+  const handleCategoryDropdownChange = (catId: string) => {
+    setSelectedCategoryId(catId);
+    setCategoryEdited(true);
+    dirEditedRef.current = true;
+
+    const allCats = [
+      ...(currentSettings?.download?.customCategories || []),
+      ...(currentSettings?.download?.builtinCategories || []),
+    ];
+    const targetCat = allCats.find((c) => c.id === catId);
+    const catDir = targetCat?.directory || currentSettings?.download?.defaultDirectory || '';
+
+    setDirectory(catDir);
+    if (filename) {
+      void (async () => {
+        const conf = await CheckFileConflict(catDir, filename);
+        setFileConflict(conf.exists);
+        setSuggestedFilename(conf.suggestedFilename);
+      })();
+    }
+  };
+
   const handleSelectDir = async () => {
     try {
       const selected = await SelectDirectory();
       if (selected) {
+        dirEditedRef.current = true;
         setDirectory(selected);
         if (filename) {
           if (activeItem?.duplicateTask) {
@@ -417,6 +502,19 @@ export function FileInfoView() {
         setError('目标目录存在同名文件，请确认是否覆盖或使用建议名称');
         return;
       }
+
+      if (rememberCategory && effectiveCategoryId) {
+        const ext = extractExtension(filename);
+        if (ext) {
+          try {
+            await AssignExtensionToCategory(ext, effectiveCategoryId);
+            await loadSettings();
+          } catch (assignErr) {
+            console.error('Failed to assign extension to category:', assignErr);
+          }
+        }
+      }
+
       setLoading(true);
       setError(null);
       const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 8));
@@ -447,11 +545,14 @@ export function FileInfoView() {
       directory,
       dupFileExists,
       duplicateStrategy,
+      effectiveCategoryId,
       fileConflict,
       filename,
+      loadSettings,
       maxConn,
       overwriteConflict,
       preDownload,
+      rememberCategory,
       url,
     ],
   );
@@ -808,12 +909,29 @@ export function FileInfoView() {
                 </label>
                 <Input
                   value={filename}
+                  placeholder="请输入文件名"
                   onChange={(e) => {
+                    const newName = e.target.value;
                     nameEditedRef.current = true;
-                    setFilename(e.target.value);
+                    setFilename(newName);
+
+                    const seq = ++filenameSeqRef.current;
+                    if (!dirEditedRef.current && newName) {
+                      void (async () => {
+                        try {
+                          const catDir = await ResolveCategoryDirectory(newName);
+                          if (seq === filenameSeqRef.current && catDir) {
+                            setDirectory(catDir);
+                          }
+                        } catch {
+                          // ignore
+                        }
+                      })();
+                    }
+
                     if (directory) {
                       void (async () => {
-                        const conf = await CheckFileConflict(directory, e.target.value);
+                        const conf = await CheckFileConflict(directory, newName);
                         setFileConflict(conf.exists);
                         setSuggestedFilename(conf.suggestedFilename);
                       })();
@@ -849,15 +967,24 @@ export function FileInfoView() {
               </div>
             </div>
 
-            {/* Save Directory */}
-            <div className="space-y-0.5">
+            {/* Save Directory with IDM-style Category Select and Remember Checkbox */}
+            <div className="space-y-1.5">
               <label className="text-[11px] font-medium text-[var(--text-secondary)]">
                 保存目录
               </label>
-              <div className="flex gap-1.5">
+              <div className="flex items-center gap-1.5">
+                <div className="w-28 shrink-0">
+                  <Select
+                    value={effectiveCategoryId}
+                    onChange={(catId) => handleCategoryDropdownChange(String(catId))}
+                    options={categoryOptions}
+                    className="h-8 py-1.5 text-xs"
+                  />
+                </div>
                 <Input
                   value={directory}
                   onChange={(e) => {
+                    dirEditedRef.current = true;
                     const newDir = e.target.value;
                     setDirectory(newDir);
                     if (filename) {
@@ -868,18 +995,42 @@ export function FileInfoView() {
                       })();
                     }
                   }}
-                  className="flex-1"
+                  className="h-8 flex-1 font-mono text-xs"
                 />
                 <Button
-                  size="md"
+                  size="icon"
                   variant="secondary"
                   onClick={() => void handleSelectDir()}
-                  className="shrink-0 gap-1"
+                  title="浏览选择保存目录"
                 >
-                  <Folder className="h-3.5 w-3.5" />
-                  <span>浏览</span>
+                  <FolderOpen className="h-4 w-4 text-[var(--text-secondary)]" />
                 </Button>
               </div>
+
+              {/* Checkbox: 保持此类型文件为该分类 */}
+              {(() => {
+                const currentExt = extractExtension(filename);
+                return (
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <Checkbox
+                      id="remember-category-checkbox"
+                      checked={rememberCategory}
+                      onCheckedChange={(checked) => setRememberCategory(Boolean(checked))}
+                      disabled={!currentExt}
+                    />
+                    <label
+                      htmlFor="remember-category-checkbox"
+                      className={`cursor-pointer text-[11px] select-none ${
+                        currentExt
+                          ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                          : 'cursor-not-allowed text-[var(--text-muted)]'
+                      }`}
+                    >
+                      保持此类型文件{currentExt ? ` (.${currentExt})` : ''}为该分类
+                    </label>
+                  </div>
+                );
+              })()}
             </div>
           </motion.div>
         </AnimatePresence>

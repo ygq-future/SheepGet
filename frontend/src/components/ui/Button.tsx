@@ -24,7 +24,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const sizeStyles = {
       sm: 'h-7 px-2.5 text-xs gap-1.5',
       md: 'h-8 px-3 text-xs gap-1.5',
-      icon: 'h-6 w-6 p-0 justify-center',
+      icon: 'h-8 w-8 p-0 shrink-0 justify-center',
     }[size];
 
     return (

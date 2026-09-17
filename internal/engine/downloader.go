@@ -43,7 +43,60 @@ type HTTPProbeInfo struct {
 
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
 type HTTPDownloader struct {
-	client *http.Client
+	client            *http.Client
+	mu                sync.RWMutex
+	tempDirectory     string
+	useServerFileTime bool
+}
+
+// SetTempDirectory updates the default temporary directory for in-progress part files.
+func (d *HTTPDownloader) SetTempDirectory(dir string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.tempDirectory = strings.TrimSpace(dir)
+}
+
+// GetTempDirectory returns the configured temporary directory.
+func (d *HTTPDownloader) GetTempDirectory() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.tempDirectory
+}
+
+// SetUseServerFileTime sets whether downloaded files should apply server Last-Modified time.
+func (d *HTTPDownloader) SetUseServerFileTime(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.useServerFileTime = enabled
+}
+
+// GetUseServerFileTime returns whether server Last-Modified time application is enabled.
+func (d *HTTPDownloader) GetUseServerFileTime() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.useServerFileTime
+}
+
+// GetPartPath returns the temporary file path for a task.
+func (d *HTTPDownloader) GetPartPath(t *task.Task) string {
+	d.mu.RLock()
+	globalTemp := d.tempDirectory
+	d.mu.RUnlock()
+
+	tempDir := strings.TrimSpace(t.TempDir)
+	if tempDir == "" {
+		tempDir = globalTemp
+	}
+
+	if tempDir == "" || SamePath(tempDir, t.Directory) {
+		return filepath.Join(t.Directory, t.Filename+".sheepget")
+	}
+
+	id := t.ID
+	if id == "" {
+		id = "task"
+	}
+	return filepath.Join(tempDir, fmt.Sprintf("%s_%s.sheepget", id, t.Filename))
 }
 
 // NewHTTPDownloader creates a new HTTPDownloader with robust Transport settings.
@@ -211,10 +264,13 @@ type ProgressFunc func(downloaded int64, chunkIndex int, chunkDownloaded int64)
 // Download executes download for a task, handling single-connection or multi-connection range download.
 func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, onProgress ProgressFunc) error {
 	destPath := filepath.Join(t.Directory, t.Filename)
-	partPath := destPath + ".sheepget"
+	partPath := d.GetPartPath(t)
 
 	if err := os.MkdirAll(t.Directory, 0755); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(partPath), 0755); err != nil {
+		return fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 
 	// If the resource is not resumable or total size is unknown, fallback to single-stream download
@@ -280,7 +336,82 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	}
 
 	_ = file.Close()
-	return os.Rename(partPath, destPath)
+	if t.LastModified == "" && resp.Header.Get("Last-Modified") != "" {
+		t.LastModified = resp.Header.Get("Last-Modified")
+	}
+	return d.commitCompletedFile(partPath, destPath, t)
+}
+
+func (d *HTTPDownloader) commitCompletedFile(partPath, destPath string, t *task.Task) error {
+	// 1. Try atomic rename first (efficient when partPath and destPath reside on the same filesystem)
+	err := os.Rename(partPath, destPath)
+	if err != nil {
+		// Cross-device link or rename failure: safely stream-copy across filesystems
+		if transferErr := safeTransferCrossDevice(partPath, destPath); transferErr != nil {
+			// CRITICAL: Preserve partPath so user data is not lost on transfer failure
+			return fmt.Errorf("failed to transfer completed file to %s: %w (temporary file preserved at %s)", destPath, transferErr, partPath)
+		}
+	}
+
+	// 2. Apply server Last-Modified time if enabled and present
+	d.mu.RLock()
+	useServerTime := d.useServerFileTime
+	d.mu.RUnlock()
+
+	if useServerTime && t != nil && t.LastModified != "" {
+		if modTime, parseErr := http.ParseTime(t.LastModified); parseErr == nil {
+			_ = os.Chtimes(destPath, modTime, modTime)
+		}
+	}
+
+	return nil
+}
+
+// safeTransferCrossDevice transfers a file across filesystems or disks by copying to a temporary
+// file in the destination directory, syncing, closing, and renaming before removing the source.
+// If any step fails, srcPath is strictly preserved to prevent data loss.
+func safeTransferCrossDevice(srcPath, dstPath string) error {
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open source temp file: %w", err)
+	}
+	defer func() { _ = srcFile.Close() }()
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	transferPath := dstPath + ".transferring"
+	dstFile, err := os.OpenFile(transferPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+
+	buf := make([]byte, 256*1024)
+	_, copyErr := io.CopyBuffer(dstFile, srcFile, buf)
+	syncErr := dstFile.Sync()
+	closeErr := dstFile.Close()
+
+	if copyErr != nil {
+		_ = os.Remove(transferPath)
+		return fmt.Errorf("copy failed: %w", copyErr)
+	}
+	if syncErr != nil {
+		_ = os.Remove(transferPath)
+		return fmt.Errorf("sync failed: %w", syncErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(transferPath)
+		return fmt.Errorf("close failed: %w", closeErr)
+	}
+
+	if err := os.Rename(transferPath, dstPath); err != nil {
+		_ = os.Remove(transferPath)
+		return fmt.Errorf("rename to target destination failed: %w", err)
+	}
+
+	_ = os.Remove(srcPath)
+	return nil
 }
 
 type chunkTracker struct {
@@ -778,7 +909,7 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 	}
 
 	_ = file.Close()
-	return os.Rename(partPath, destPath)
+	return d.commitCompletedFile(partPath, destPath, t)
 }
 
 func splitChunks(totalBytes int64, concurrency int) []task.Chunk {

@@ -657,9 +657,11 @@ export function ProgressView() {
                                             left: `${item.startPercent}%`,
                                             width: `${item.downloadedPercent}%`,
                                           }}
-                                          title={`通道 ${item.index + 1}${item.assisted ? ' (动态协助)' : ''}: ${formatBytes(
-                                            item.downloaded,
-                                          )} / ${formatBytes(item.chunkSize)} (${Math.round(
+                                          title={`通道 ${item.index + 1}${
+                                            item.assisted ? ' (动态协助)' : ''
+                                          }: ${formatBytes(item.downloaded)} / ${formatBytes(
+                                            item.chunkSize,
+                                          )} (${Math.round(
                                             (item.downloaded / item.chunkSize) * 100,
                                           )}%)`}
                                         />

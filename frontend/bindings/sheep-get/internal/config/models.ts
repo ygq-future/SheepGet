@@ -34,6 +34,50 @@ export class AppearanceConfig {
 }
 
 /**
+ * CategoryConfig specifies an automatic archiving category rule.
+ */
+export class CategoryConfig {
+    "id": string;
+    "name": string;
+    "directory": string;
+    "extensions": string[];
+    "isBuiltin": boolean;
+
+    /** Creates a new CategoryConfig instance. */
+    constructor($$source: Partial<CategoryConfig> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("directory" in $$source)) {
+            this["directory"] = "";
+        }
+        if (!("extensions" in $$source)) {
+            this["extensions"] = [];
+        }
+        if (!("isBuiltin" in $$source)) {
+            this["isBuiltin"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CategoryConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CategoryConfig {
+        const $$createField3_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("extensions" in $$parsedSource) {
+            $$parsedSource["extensions"] = $$createField3_0($$parsedSource["extensions"]);
+        }
+        return new CategoryConfig($$parsedSource as Partial<CategoryConfig>);
+    }
+}
+
+/**
  * DownloadConfig specifies download engine and directory rules.
  */
 export class DownloadConfig {
@@ -43,9 +87,12 @@ export class DownloadConfig {
     "defaultConnectionsPerTask": number;
     "defaultDirectory": string;
     "tempDirectory": string;
+    "useServerFileTime": boolean;
     "showProgressWindow": boolean;
     "keepCompletedInfo": boolean;
     "autoRemoveCompletedOnOpen": boolean;
+    "builtinCategories": CategoryConfig[];
+    "customCategories": CategoryConfig[];
 
     /** Creates a new DownloadConfig instance. */
     constructor($$source: Partial<DownloadConfig> = {}) {
@@ -67,6 +114,9 @@ export class DownloadConfig {
         if (!("tempDirectory" in $$source)) {
             this["tempDirectory"] = "";
         }
+        if (!("useServerFileTime" in $$source)) {
+            this["useServerFileTime"] = false;
+        }
         if (!("showProgressWindow" in $$source)) {
             this["showProgressWindow"] = true;
         }
@@ -76,6 +126,13 @@ export class DownloadConfig {
         if (!("autoRemoveCompletedOnOpen" in $$source)) {
             this["autoRemoveCompletedOnOpen"] = false;
         }
+        if (!("builtinCategories" in $$source)) {
+            this["builtinCategories"] = [];
+        }
+        if (!("customCategories" in $$source)) {
+            this["customCategories"] = [];
+        }
+
         Object.assign(this, $$source);
     }
 
@@ -83,7 +140,15 @@ export class DownloadConfig {
      * Creates a new DownloadConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): DownloadConfig {
+        const $$createField10_0 = $$createType2;
+        const $$createField11_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("builtinCategories" in $$parsedSource) {
+            $$parsedSource["builtinCategories"] = $$createField10_0($$parsedSource["builtinCategories"]);
+        }
+        if ("customCategories" in $$parsedSource) {
+            $$parsedSource["customCategories"] = $$createField11_0($$parsedSource["customCategories"]);
+        }
         return new DownloadConfig($$parsedSource as Partial<DownloadConfig>);
     }
 }
@@ -135,8 +200,8 @@ export class Settings {
      * Creates a new Settings instance from a string or object.
      */
     static createFrom($$source: any = {}): Settings {
-        const $$createField0_0 = $$createType0;
-        const $$createField1_0 = $$createType1;
+        const $$createField0_0 = $$createType3;
+        const $$createField1_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("appearance" in $$parsedSource) {
             $$parsedSource["appearance"] = $$createField0_0($$parsedSource["appearance"]);
@@ -163,5 +228,8 @@ export enum ThemeMode {
 };
 
 // Private type creation functions
-const $$createType0 = AppearanceConfig.createFrom;
-const $$createType1 = DownloadConfig.createFrom;
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = CategoryConfig.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = AppearanceConfig.createFrom;
+const $$createType4 = DownloadConfig.createFrom;

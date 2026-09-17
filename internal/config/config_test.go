@@ -167,3 +167,318 @@ func TestSettingsService_AtomicPersistenceAndBroadcast(t *testing.T) {
 		t.Errorf("reloaded config expected accent color #3b82f6, got %s", reloaded.Appearance.AccentColor)
 	}
 }
+
+func TestResolveCategory_BuiltinAndFallback(t *testing.T) {
+	s := DefaultSettings("/downloads", "/temp")
+
+	// Video
+	vCat, ok := s.Download.ResolveCategory("movie.mp4")
+	if !ok || vCat.Name != "视频" {
+		t.Errorf("expected video category for movie.mp4, got %v (%v)", vCat.Name, ok)
+	}
+	if vCat.Directory != filepath.Join("/downloads", "Videos") {
+		t.Errorf("expected video dir, got %s", vCat.Directory)
+	}
+
+	// Audio
+	aCat, ok := s.Download.ResolveCategory("song.mp3")
+	if !ok || aCat.Name != "音频" {
+		t.Errorf("expected audio category for song.mp3, got %v (%v)", aCat.Name, ok)
+	}
+
+	// Image
+	iCat, ok := s.Download.ResolveCategory("photo.png")
+	if !ok || iCat.Name != "图片" {
+		t.Errorf("expected image category for photo.png, got %v (%v)", iCat.Name, ok)
+	}
+
+	// Archive
+	arcCat, ok := s.Download.ResolveCategory("data.tar.gz")
+	if !ok || arcCat.Name != "压缩包" {
+		t.Errorf("expected archive category for data.tar.gz, got %v (%v)", arcCat.Name, ok)
+	}
+
+	// Software
+	softCat, ok := s.Download.ResolveCategory("setup.exe")
+	if !ok || softCat.Name != "软件" {
+		t.Errorf("expected software category for setup.exe, got %v (%v)", softCat.Name, ok)
+	}
+
+	// Document / File
+	docCat, ok := s.Download.ResolveCategory("report.pdf")
+	if !ok || docCat.Name != "文件" {
+		t.Errorf("expected file category for report.pdf, got %v (%v)", docCat.Name, ok)
+	}
+
+	// Unmatched extension: falls back into "文件"
+	unmatchedCat, ok := s.Download.ResolveCategory("mystery.xyz123")
+	if !ok || unmatchedCat.Name != "文件" {
+		t.Errorf("expected fallback to file category for mystery.xyz123, got %v (%v)", unmatchedCat.Name, ok)
+	}
+	if unmatchedCat.Directory != filepath.Join("/downloads", "Files") {
+		t.Errorf("expected fallback to Files directory, got %s", unmatchedCat.Directory)
+	}
+
+	// No extension: falls back into "文件"
+	noExtCat, ok := s.Download.ResolveCategory("Makefile")
+	if !ok || noExtCat.Name != "文件" {
+		t.Errorf("expected fallback to file category for Makefile, got %v (%v)", noExtCat.Name, ok)
+	}
+}
+
+func TestResolveCategory_OverlappingRulesAndCustomPrecedence(t *testing.T) {
+	s := DefaultSettings("/downloads", "/temp")
+
+	// Add custom category that overlaps with built-in "压缩包" (rar)
+	customWork := CategoryConfig{
+		ID:         "custom-work",
+		Name:       "工作压缩包",
+		Directory:  "/work/archives",
+		Extensions: []string{"rar", "workzip"},
+	}
+	s.Download.CustomCategories = []CategoryConfig{customWork}
+
+	// When custom category is present, .rar matches the custom category first!
+	res, ok := s.Download.ResolveCategory("package.rar")
+	if !ok || res.Name != "工作压缩包" {
+		t.Fatalf("expected custom category 工作压缩包 for package.rar, got %s", res.Name)
+	}
+	if res.Directory != "/work/archives" {
+		t.Errorf("expected /work/archives, got %s", res.Directory)
+	}
+
+	// Other archive extensions still match built-in "压缩包"
+	zipRes, ok := s.Download.ResolveCategory("normal.zip")
+	if !ok || zipRes.Name != "压缩包" {
+		t.Fatalf("expected builtin 压缩包 for normal.zip, got %s", zipRes.Name)
+	}
+
+	// If custom category is removed, .rar must immediately fall back to built-in "压缩包"
+	s.Download.CustomCategories = nil
+	fallbackRes, ok := s.Download.ResolveCategory("package.rar")
+	if !ok || fallbackRes.Name != "压缩包" {
+		t.Fatalf("expected fallback to builtin 压缩包 after deleting custom category, got %s", fallbackRes.Name)
+	}
+	if fallbackRes.Directory != filepath.Join("/downloads", "Archives") {
+		t.Errorf("expected builtin Archives directory, got %s", fallbackRes.Directory)
+	}
+}
+
+func TestResolveCategory_CustomOrderingTopToBottom(t *testing.T) {
+	s := DefaultSettings("/downloads", "/temp")
+
+	catA := CategoryConfig{
+		ID:         "cat-a",
+		Name:       "分类A",
+		Directory:  "/dir/a",
+		Extensions: []string{"log"},
+	}
+	catB := CategoryConfig{
+		ID:         "cat-b",
+		Name:       "分类B",
+		Directory:  "/dir/b",
+		Extensions: []string{"log"},
+	}
+
+	// Case 1: catA is on top -> matches catA
+	s.Download.CustomCategories = []CategoryConfig{catA, catB}
+	res1, _ := s.Download.ResolveCategory("server.log")
+	if res1.Name != "分类A" || res1.Directory != "/dir/a" {
+		t.Errorf("expected 分类A, got %s (%s)", res1.Name, res1.Directory)
+	}
+
+	// Case 2: drag/reorder so catB is on top -> matches catB
+	s.Download.CustomCategories = []CategoryConfig{catB, catA}
+	res2, _ := s.Download.ResolveCategory("server.log")
+	if res2.Name != "分类B" || res2.Directory != "/dir/b" {
+		t.Errorf("expected 分类B, got %s (%s)", res2.Name, res2.Directory)
+	}
+}
+
+func TestSettingsValidation_CategoriesAndServerFileTime(t *testing.T) {
+	rawJSON := `{
+		"download": {
+			"defaultDirectory": "/custom/downloads",
+			"tempDirectory": "/custom/temp",
+			"useServerFileTime": true,
+			"customCategories": [
+				{"name": "电子书", "directory": "", "extensions": [".epub", "mobi", "EPUB"]}
+			]
+		}
+	}`
+
+	var s Settings
+	if err := json.Unmarshal([]byte(rawJSON), &s); err != nil {
+		t.Fatalf("json unmarshal failed: %v", err)
+	}
+
+	validated := s.ValidateAndFallback("/fallback/dl", "/fallback/tmp")
+	if !validated.Download.UseServerFileTime {
+		t.Errorf("expected UseServerFileTime true")
+	}
+	if len(validated.Download.BuiltinCategories) != 6 {
+		t.Errorf("expected 6 builtin categories populated, got %d", len(validated.Download.BuiltinCategories))
+	}
+	if len(validated.Download.CustomCategories) != 1 {
+		t.Fatalf("expected 1 custom category, got %d", len(validated.Download.CustomCategories))
+	}
+
+	custom := validated.Download.CustomCategories[0]
+	if custom.Name != "电子书" {
+		t.Errorf("expected 电子书, got %s", custom.Name)
+	}
+	if custom.Directory != "/custom/downloads" {
+		t.Errorf("expected fallback to default directory when empty, got %s", custom.Directory)
+	}
+	// Extensions should be normalized (lowercase, no leading dots, deduplicated)
+	if len(custom.Extensions) != 2 || custom.Extensions[0] != "epub" || custom.Extensions[1] != "mobi" {
+		t.Errorf("expected [epub, mobi], got %v", custom.Extensions)
+	}
+}
+
+func TestAssignExtensionToCategory(t *testing.T) {
+	s := DefaultSettings("/dl", "/tmp")
+	customA := CategoryConfig{
+		ID:         "custom-a",
+		Name:       "自定义A",
+		Directory:  "/dl/a",
+		Extensions: []string{"customext", "shared"},
+	}
+	customB := CategoryConfig{
+		ID:         "custom-b",
+		Name:       "自定义B",
+		Directory:  "/dl/b",
+		Extensions: []string{"another"},
+	}
+	s.Download.CustomCategories = []CategoryConfig{customA, customB}
+
+	// Case 1: Extension already in target -> no-op
+	updated, changed := s.Download.AssignExtensionToCategory("customext", "custom-a")
+	if changed {
+		t.Errorf("expected changed=false for already present extension")
+	}
+
+	// Case 2: In builtin "压缩包" (rar), assign to custom "custom-a"
+	// Overlapping rule: must be added to custom-a, but NOT removed from builtin-archive!
+	updated, changed = s.Download.AssignExtensionToCategory(".RAR", "custom-a")
+	if !changed {
+		t.Errorf("expected changed=true")
+	}
+	// Check custom-a has rar
+	foundInCustom := false
+	for _, e := range updated.CustomCategories[0].Extensions {
+		if e == "rar" {
+			foundInCustom = true
+		}
+	}
+	if !foundInCustom {
+		t.Errorf("expected rar in custom-a")
+	}
+	// Check builtin-archive STILL has rar
+	foundInBuiltin := false
+	for _, b := range updated.BuiltinCategories {
+		if b.ID == "builtin-archive" {
+			for _, e := range b.Extensions {
+				if e == "rar" {
+					foundInBuiltin = true
+				}
+			}
+		}
+	}
+	if !foundInBuiltin {
+		t.Errorf("expected rar to be preserved in builtin-archive under overlapping rule")
+	}
+
+	// Case 2b: .rar is now in custom-a AND builtin-archive.
+	// Assigning .rar to builtin-archive (which already has rar) MUST remove rar from custom-a!
+	reassignedToBuiltin, changed2b := updated.AssignExtensionToCategory("rar", "builtin-archive")
+	if !changed2b {
+		t.Errorf("expected changed2b=true when pruning rar from custom-a")
+	}
+	for _, e := range reassignedToBuiltin.CustomCategories[0].Extensions {
+		if e == "rar" {
+			t.Errorf("expected rar to be removed from custom-a after re-assigning to builtin-archive")
+		}
+	}
+	// Next resolution for package.rar must now resolve to builtin-archive!
+	resolvedCat, _ := reassignedToBuiltin.ResolveCategory("package.rar")
+	if resolvedCat.ID != "builtin-archive" {
+		t.Errorf("expected builtin-archive after re-assigning rar back to builtin, got %s", resolvedCat.ID)
+	}
+
+	// Continue with updated for Case 3
+	updated = reassignedToBuiltin
+
+	// Case 3: In custom-a (shared), assign to builtin "builtin-software"
+	// Must be removed from custom-a and added to builtin-software!
+	updated, changed = updated.AssignExtensionToCategory("shared", "builtin-software")
+	if !changed {
+		t.Errorf("expected changed=true")
+	}
+	for _, e := range updated.CustomCategories[0].Extensions {
+		if e == "shared" {
+			t.Errorf("expected shared to be removed from custom-a")
+		}
+	}
+	foundInSoftware := false
+	for _, b := range updated.BuiltinCategories {
+		if b.ID == "builtin-software" {
+			for _, e := range b.Extensions {
+				if e == "shared" {
+					foundInSoftware = true
+				}
+			}
+		}
+	}
+	if !foundInSoftware {
+		t.Errorf("expected shared to be added to builtin-software")
+	}
+
+	// Case 4: In custom-a (customext), assign to custom-b
+	// Must be removed from custom-a and added to custom-b
+	updated, changed = updated.AssignExtensionToCategory("customext", "custom-b")
+	if !changed {
+		t.Errorf("expected changed=true")
+	}
+	for _, e := range updated.CustomCategories[0].Extensions {
+		if e == "customext" {
+			t.Errorf("expected customext removed from custom-a")
+		}
+	}
+	foundInB := false
+	for _, e := range updated.CustomCategories[1].Extensions {
+		if e == "customext" {
+			foundInB = true
+		}
+	}
+	if !foundInB {
+		t.Errorf("expected customext in custom-b")
+	}
+
+	// Case 5: In builtin-video (mp4), assign to builtin-audio
+	// Both are builtin: must be removed from builtin-video and added to builtin-audio!
+	updated, changed = updated.AssignExtensionToCategory("mp4", "builtin-audio")
+	if !changed {
+		t.Errorf("expected changed=true")
+	}
+	for _, b := range updated.BuiltinCategories {
+		if b.ID == "builtin-video" {
+			for _, e := range b.Extensions {
+				if e == "mp4" {
+					t.Errorf("expected mp4 removed from builtin-video")
+				}
+			}
+		}
+		if b.ID == "builtin-audio" {
+			hasMp4 := false
+			for _, e := range b.Extensions {
+				if e == "mp4" {
+					hasMp4 = true
+				}
+			}
+			if !hasMp4 {
+				t.Errorf("expected mp4 added to builtin-audio")
+			}
+		}
+	}
+}

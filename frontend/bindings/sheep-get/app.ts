@@ -40,6 +40,13 @@ export function AddTask(urlStr: string, dir: string, filename: string, maxConn: 
 }
 
 /**
+ * AssignExtensionToCategory assigns an extension to a target category and updates settings.
+ */
+export function AssignExtensionToCategory(ext: string, targetCategoryID: string): $CancellablePromise<void> {
+    return $Call.ByID(328676256, ext, targetCategoryID);
+}
+
+/**
  * CancelCurrentFileInfo cancels the active FileInfo request and advances the queue.
  */
 export function CancelCurrentFileInfo(): $CancellablePromise<void> {
@@ -149,6 +156,13 @@ export function Greet(name: string): $CancellablePromise<string> {
 }
 
 /**
+ * HideProgressWindow hides the progress window.
+ */
+export function HideProgressWindow(): $CancellablePromise<void> {
+    return $Call.ByID(3377482730);
+}
+
+/**
  * ListTasks lists all tasks
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
@@ -172,17 +186,17 @@ export function MinimiseProgressWindow(): $CancellablePromise<void> {
 }
 
 /**
- * HideProgressWindow hides the progress window.
- */
-export function HideProgressWindow(): $CancellablePromise<void> {
-    return $Call.ByID(3377482730);
-}
-
-/**
  * OnSettingsUpdated emits wails event to the frontend whenever settings change
  */
 export function OnSettingsUpdated(s: config$0.Settings | null): $CancellablePromise<void> {
     return $Call.ByID(3585324432, s);
+}
+
+/**
+ * OnTaskDeleted emits wails event to the frontend whenever a task is deleted
+ */
+export function OnTaskDeleted(taskID: string): $CancellablePromise<void> {
+    return $Call.ByID(2686073826, taskID);
 }
 
 /**
@@ -241,6 +255,13 @@ export function ResetAndDownloadWithNewURL(taskID: string, newURL: string, heade
 }
 
 /**
+ * ResolveCategoryDirectory resolves the target directory for a given filename based on current settings.
+ */
+export function ResolveCategoryDirectory(filename: string): $CancellablePromise<string> {
+    return $Call.ByID(154355798, filename);
+}
+
+/**
  * ResolveDuplicate resolves a duplicate task using strategies "continue", "redownload", "copy", or "show_completed".
  */
 export function ResolveDuplicate(taskID: string, strategy: string, dir: string, filename: string, maxConn: number): $CancellablePromise<task$0.Task | null> {
@@ -257,6 +278,13 @@ export function ResumeTask(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * RetryProcessingTask retries media processing for a task.
+ */
+export function RetryProcessingTask(id: string): $CancellablePromise<void> {
+    return $Call.ByID(2793104495, id);
+}
+
+/**
  * RetryTask retries a failed task
  */
 export function RetryTask(id: string): $CancellablePromise<void> {
@@ -265,13 +293,6 @@ export function RetryTask(id: string): $CancellablePromise<void> {
 
 export function SelectDirectory(): $CancellablePromise<string> {
     return $Call.ByID(1735672136);
-}
-
-/**
- * RetryProcessingTask retries media processing for a task
- */
-export function RetryProcessingTask(id: string): $CancellablePromise<void> {
-    return $Call.ByID(2793104495, id);
 }
 
 /**

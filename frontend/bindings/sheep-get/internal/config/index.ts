@@ -3,6 +3,7 @@
 
 export {
     AppearanceConfig,
+    CategoryConfig,
     DownloadConfig,
     DuplicateURLPolicy,
     Settings,

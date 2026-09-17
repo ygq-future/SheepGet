@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToRgb } from './stores/settings';
+import * as configModels from '../bindings/sheep-get/internal/config/models';
 
 describe('settings store utilities', () => {
   it('converts 3-digit hex color to RGB correctly', () => {
@@ -19,5 +20,40 @@ describe('settings store utilities', () => {
     expect(hexToRgb('#12345')).toBeNull();
     expect(hexToRgb('#1234567')).toBeNull();
     expect(hexToRgb('')).toBeNull();
+  });
+});
+
+describe('settings models and defaults', () => {
+  it('instantiates DownloadConfig with category rules and server file time', () => {
+    const download = new configModels.DownloadConfig({
+      defaultDirectory: '/test/downloads',
+      tempDirectory: '/test/temp',
+      useServerFileTime: true,
+      builtinCategories: [
+        new configModels.CategoryConfig({
+          id: 'builtin-video',
+          name: '视频',
+          directory: '/test/downloads/Videos',
+          extensions: ['mp4', 'mkv'],
+          isBuiltin: true,
+        }),
+      ],
+      customCategories: [
+        new configModels.CategoryConfig({
+          id: 'custom-1',
+          name: '工作文档',
+          directory: '/test/work',
+          extensions: ['docx', 'xlsx'],
+          isBuiltin: false,
+        }),
+      ],
+    });
+
+    expect(download.defaultDirectory).toBe('/test/downloads');
+    expect(download.tempDirectory).toBe('/test/temp');
+    expect(download.useServerFileTime).toBe(true);
+    expect(download.builtinCategories).toHaveLength(1);
+    expect(download.customCategories).toHaveLength(1);
+    expect(download.customCategories[0].name).toBe('工作文档');
   });
 });

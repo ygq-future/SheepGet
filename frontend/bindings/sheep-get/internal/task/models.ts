@@ -74,6 +74,7 @@ export class Task {
     "url": string;
     "filename": string;
     "directory": string;
+    "tempDir"?: string;
     "totalBytes": number;
     "downloaded": number;
 
@@ -147,14 +148,14 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField15_0 = $$createType1;
-        const $$createField16_0 = $$createType2;
+        const $$createField16_0 = $$createType1;
+        const $$createField17_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField15_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField16_0($$parsedSource["chunks"]);
         }
         if ("requestHeaders" in $$parsedSource) {
-            $$parsedSource["requestHeaders"] = $$createField16_0($$parsedSource["requestHeaders"]);
+            $$parsedSource["requestHeaders"] = $$createField17_0($$parsedSource["requestHeaders"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
