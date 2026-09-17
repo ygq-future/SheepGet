@@ -4,8 +4,13 @@
 export {
     AppearanceConfig,
     CategoryConfig,
+    ClipboardConfig,
     DownloadConfig,
     DuplicateURLPolicy,
+    GeneralConfig,
+    ProxyConfig,
+    ProxyMode,
     Settings,
+    TakeoverConfig,
     ThemeMode
 } from "./models.js";

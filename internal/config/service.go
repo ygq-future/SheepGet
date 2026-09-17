@@ -64,23 +64,25 @@ func (s *SettingsService) Get() Settings {
 // Update validates, atomically persists, updates in-memory state, and notifies listeners.
 func (s *SettingsService) Update(req Settings) (Settings, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	validated := req.ValidateAndFallback(s.fallbackDownloadDir, s.fallbackTempDir)
 
 	data, err := json.MarshalIndent(validated, "", "  ")
 	if err != nil {
+		s.mu.Unlock()
 		return s.current, fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
 	// Atomic write: write to temp file, flush, then rename
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		s.mu.Unlock()
 		return s.current, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
 	tempFile := filepath.Join(dir, fmt.Sprintf(".config.json.tmp-%d", os.Getpid()))
 	if err := os.WriteFile(tempFile, data, 0644); err != nil {
+		s.mu.Unlock()
 		return s.current, fmt.Errorf("failed to write temp config file: %w", err)
 	}
 
@@ -91,6 +93,7 @@ func (s *SettingsService) Update(req Settings) (Settings, error) {
 		_ = os.Remove(backupFile)
 		if err := os.Rename(s.filePath, backupFile); err != nil {
 			_ = os.Remove(tempFile)
+			s.mu.Unlock()
 			return s.current, fmt.Errorf("failed to backup existing config file: %w", err)
 		}
 	}
@@ -100,6 +103,7 @@ func (s *SettingsService) Update(req Settings) (Settings, error) {
 			_ = os.Rename(backupFile, s.filePath)
 		}
 		_ = os.Remove(tempFile)
+		s.mu.Unlock()
 		return s.current, fmt.Errorf("failed to replace config file: %w", err)
 	}
 	if hasExisting {
@@ -107,6 +111,7 @@ func (s *SettingsService) Update(req Settings) (Settings, error) {
 	}
 
 	s.current = validated
+	s.mu.Unlock()
 
 	if s.onChanged != nil {
 		snapshot := validated

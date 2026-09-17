@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,9 +45,12 @@ type HTTPProbeInfo struct {
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
 type HTTPDownloader struct {
 	client            *http.Client
+	customClient      bool
 	mu                sync.RWMutex
 	tempDirectory     string
 	useServerFileTime bool
+	proxyMode         string
+	customProxyAddr   string
 }
 
 // SetTempDirectory updates the default temporary directory for in-progress part files.
@@ -77,6 +81,87 @@ func (d *HTTPDownloader) GetUseServerFileTime() bool {
 	return d.useServerFileTime
 }
 
+// SetProxy configures the proxy mode ("direct", "system", "custom") and custom address.
+func (d *HTTPDownloader) SetProxy(mode, customAddr string) error {
+	transport, err := createHTTPTransport(mode, customAddr)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.proxyMode = mode
+	d.customProxyAddr = customAddr
+	if !d.customClient {
+		d.client = &http.Client{
+			Transport: transport,
+			Timeout:   0,
+		}
+	}
+	return nil
+}
+
+// GetProxy returns the current proxy mode and custom address.
+func (d *HTTPDownloader) GetProxy() (string, string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.proxyMode, d.customProxyAddr
+}
+
+// GetClientForDownload returns an *http.Client configured with the current proxy mode for a task run.
+func (d *HTTPDownloader) GetClientForDownload() *http.Client {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.customClient {
+		return d.client
+	}
+	transport, err := createHTTPTransport(d.proxyMode, d.customProxyAddr)
+	if err != nil {
+		return d.client
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   0,
+	}
+}
+
+func createHTTPTransport(proxyMode, customAddr string) (*http.Transport, error) {
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	switch proxyMode {
+	case "direct":
+		proxyFunc = nil
+	case "custom":
+		trimmed := strings.TrimSpace(customAddr)
+		if trimmed != "" {
+			parsed, err := url.Parse(trimmed)
+			if err != nil {
+				return nil, fmt.Errorf("invalid proxy URL: %w", err)
+			}
+			proxyFunc = http.ProxyURL(parsed)
+		} else {
+			proxyFunc = nil
+		}
+	default: // "system"
+		proxyFunc = http.ProxyFromEnvironment
+	}
+
+	return &http.Transport{
+		Proxy: proxyFunc,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}, nil
+}
+
 // GetPartPath returns the temporary file path for a task.
 func (d *HTTPDownloader) GetPartPath(t *task.Task) string {
 	d.mu.RLock()
@@ -101,29 +186,21 @@ func (d *HTTPDownloader) GetPartPath(t *task.Task) string {
 
 // NewHTTPDownloader creates a new HTTPDownloader with robust Transport settings.
 func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
-	if client == nil {
-		transport := &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   15 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     false,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   16,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		}
+	customClient := false
+	if client != nil {
+		customClient = true
+	} else {
+		transport, _ := createHTTPTransport("system", "")
 		client = &http.Client{
 			Transport: transport,
 			Timeout:   0,
 		}
 	}
-	return &HTTPDownloader{client: client}
+	return &HTTPDownloader{
+		client:       client,
+		customClient: customClient,
+		proxyMode:    "system",
+	}
 }
 
 // Probe inspects URL metadata without downloading the body. headers carries the request
@@ -273,15 +350,18 @@ func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, onProgress 
 		return fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 
+	client := d.GetClientForDownload()
+
 	// If the resource is not resumable or total size is unknown, fallback to single-stream download
 	if !t.Resumable || t.TotalBytes <= 0 {
-		return d.downloadSingleStream(ctx, t, partPath, destPath, onProgress)
+		return d.downloadSingleStream(ctx, t, partPath, destPath, onProgress, client)
 	}
 
-	return d.downloadChunks(ctx, t, partPath, destPath, onProgress)
+	return d.downloadChunks(ctx, t, partPath, destPath, onProgress, client)
 }
 
-func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc) error {
+func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc, client *http.Client) error {
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
 	if err != nil {
 		return err
@@ -298,7 +378,7 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	}
 	defer func() { _ = file.Close() }()
 
-	resp, err := d.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -434,15 +514,17 @@ type chunkCoordinator struct {
 	trackers   map[int]*chunkTracker
 	onProgress ProgressFunc
 	downloader *HTTPDownloader
+	client     *http.Client
 }
 
-func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, onProgress ProgressFunc) *chunkCoordinator {
+func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, client *http.Client, onProgress ProgressFunc) *chunkCoordinator {
 	coord := &chunkCoordinator{
 		t:          t,
 		file:       file,
 		trackers:   make(map[int]*chunkTracker),
 		onProgress: onProgress,
 		downloader: downloader,
+		client:     client,
 	}
 	now := time.Now()
 	for i := range t.Chunks {
@@ -714,7 +796,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 		req.Header.Set("If-Unmodified-Since", coord.t.LastModified)
 	}
 
-	resp, err := coord.downloader.client.Do(req)
+	resp, err := coord.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -831,7 +913,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	return nil
 }
 
-func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc) error {
+func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc, client *http.Client) error {
 	if len(t.Chunks) == 0 {
 		t.Chunks = splitChunks(t.TotalBytes, t.MaxConcurrency)
 	}
@@ -846,7 +928,7 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 		return fmt.Errorf("failed to truncate part file: %w", err)
 	}
 
-	coord := newChunkCoordinator(t, file, d, onProgress)
+	coord := newChunkCoordinator(t, file, d, client, onProgress)
 
 	numWorkers := t.MaxConcurrency
 	if numWorkers <= 0 {

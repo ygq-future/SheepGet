@@ -32,7 +32,7 @@ func main() {
 		},
 	})
 
-	app.SetApplication(wailsApp)
+	app.setApplication(wailsApp)
 
 	// Create main window (Name: "main")
 	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -125,6 +125,11 @@ func main() {
 	trayMenu.Add("显示主窗口").OnClick(func(_ *application.Context) {
 		mainWindow.Show()
 		mainWindow.Focus()
+	})
+	trayMenu.Add("偏好设置").OnClick(func(_ *application.Context) {
+		mainWindow.Show()
+		mainWindow.Focus()
+		wailsApp.Event.Emit("app:open-settings")
 	})
 	trayMenu.Add("新建下载").OnClick(func(_ *application.Context) {
 		_, _ = app.OpenNewDownload()

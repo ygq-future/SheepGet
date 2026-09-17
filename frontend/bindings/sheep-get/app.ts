@@ -12,9 +12,6 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as application$0 from "../github.com/wailsapp/wails/v3/pkg/application/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as config$0 from "./internal/config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -163,6 +160,13 @@ export function HideProgressWindow(): $CancellablePromise<void> {
 }
 
 /**
+ * IsLaunchAtStartup reports whether autostart is enabled in system/settings.
+ */
+export function IsLaunchAtStartup(): $CancellablePromise<boolean> {
+    return $Call.ByID(1534902556);
+}
+
+/**
  * ListTasks lists all tasks
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
@@ -271,16 +275,6 @@ export function ResolveDuplicate(taskID: string, strategy: string, dir: string, 
 }
 
 /**
- * ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
- * cleans stale duplicate tasks, and registers the file as a completed task.
- */
-export function ReuseExistingFile(existingTaskID: string, targetDir: string, targetFilename: string): $CancellablePromise<task$0.Task | null> {
-    return $Call.ByID(3163272336, existingTaskID, targetDir, targetFilename).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
  * ResumeTask resumes a paused or errored task
  */
 export function ResumeTask(id: string): $CancellablePromise<void> {
@@ -301,13 +295,19 @@ export function RetryTask(id: string): $CancellablePromise<void> {
     return $Call.ByID(3354333520, id);
 }
 
+/**
+ * ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
+ * cleans stale duplicate tasks, and registers the file as a completed task.
+ */
+export function ReuseExistingFile(existingTaskID: string, targetDir: string, targetFilename: string): $CancellablePromise<task$0.Task | null> {
+    return $Call.ByID(3163272336, existingTaskID, targetDir, targetFilename).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
 export function SelectDirectory(): $CancellablePromise<string> {
     return $Call.ByID(1735672136);
 }
-
-/**
- * SetApplication sets the Wails application reference
- */
 
 /**
  * SetCategoryDirectory sets the save directory for a category by ID and updates settings.
@@ -315,15 +315,19 @@ export function SelectDirectory(): $CancellablePromise<string> {
 export function SetCategoryDirectory(targetCategoryID: string, directory: string): $CancellablePromise<void> {
     return $Call.ByID(67109910, targetCategoryID, directory);
 }
-export function SetApplication(app: application$0.App | null): $CancellablePromise<void> {
-    return $Call.ByID(4121261467, app);
-}
 
 /**
  * SetFileInfoWindowHeight dynamically adjusts the fileinfo window's height to wrap its content.
  */
 export function SetFileInfoWindowHeight(height: number): $CancellablePromise<void> {
     return $Call.ByID(2015656026, height);
+}
+
+/**
+ * SetLaunchAtStartup configures whether SheepGet starts at system login.
+ */
+export function SetLaunchAtStartup(enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(749774982, enabled);
 }
 
 /**

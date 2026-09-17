@@ -128,10 +128,14 @@ export function App() {
     const unsubscribeDeleted = Events.On('task:deleted', onDeleted);
 
     const unsubscribe = Events.On('task:updated', onUpdated);
+    const unsubscribeOpenSettings = Events.On('app:open-settings', () => {
+      setFilter('settings');
+    });
     return () => {
       ignore = true;
       unsubscribe();
       unsubscribeDeleted();
+      unsubscribeOpenSettings();
       unlistenSettings();
     };
   }, [loadSettings]);

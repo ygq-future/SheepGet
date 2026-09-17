@@ -141,6 +141,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
     // Merge settings
     const merged = new configModels.Settings({
+      general: new configModels.GeneralConfig({
+        ...current.general,
+        ...partialSettings.general,
+      }),
       appearance: new configModels.AppearanceConfig({
         ...current.appearance,
         ...partialSettings.appearance,
@@ -148,6 +152,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       download: new configModels.DownloadConfig({
         ...current.download,
         ...partialSettings.download,
+      }),
+      proxy: new configModels.ProxyConfig({
+        ...current.proxy,
+        ...partialSettings.proxy,
+      }),
+      takeover: new configModels.TakeoverConfig({
+        ...current.takeover,
+        ...partialSettings.takeover,
+      }),
+      clipboard: new configModels.ClipboardConfig({
+        ...current.clipboard,
+        ...partialSettings.clipboard,
       }),
     });
 

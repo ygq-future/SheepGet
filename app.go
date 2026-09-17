@@ -3,19 +3,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
-
-	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // FileConflictResult represents whether target file exists and suggests an alternative filename.
@@ -37,6 +37,7 @@ type App struct {
 	settings           *config.SettingsService
 	windowQueue        *window.QueueController
 	progressPositioned bool
+	clipboardWatcher   *clipboard.Watcher
 }
 
 type wailsWindowView struct {
@@ -129,6 +130,7 @@ func NewApp() *App {
 	downloader := engine.NewHTTPDownloader(nil)
 	downloader.SetTempDirectory(activeSettings.Download.TempDirectory)
 	downloader.SetUseServerFileTime(activeSettings.Download.UseServerFileTime)
+	_ = downloader.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr)
 
 	mgr := engine.NewManager(store, downloader, engine.Config{
 		MaxActiveTasks:    activeSettings.Download.MaxConcurrentDownloads,
@@ -148,10 +150,22 @@ func NewApp() *App {
 }
 
 // SetApplication sets the Wails application reference
-func (a *App) SetApplication(app *application.App) {
+func (a *App) setApplication(app *application.App) {
 	a.app = app
+	if a.clipboardWatcher == nil && app != nil && app.Clipboard != nil {
+		a.clipboardWatcher = clipboard.NewWatcher(
+			app.Clipboard,
+			a.GetSettings,
+			func(urlStr string) {
+				_, _ = a.TriggerDownload(window.DownloadRequest{URL: urlStr})
+			},
+		)
+		st := a.GetSettings()
+		if st.Clipboard.Enabled {
+			a.clipboardWatcher.Start()
+		}
+	}
 }
-
 func (a *App) getApp() *application.App {
 	if a.app != nil {
 		return a.app
@@ -173,6 +187,9 @@ func (a *App) startup(ctx context.Context) {
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
 func (a *App) Shutdown() {
+	if a.clipboardWatcher != nil {
+		a.clipboardWatcher.Stop()
+	}
 	if a.manager != nil {
 		a.manager.Close()
 	}
@@ -202,6 +219,10 @@ func (a *App) OnSettingsUpdated(s *config.Settings) {
 		a.manager.SetMaxActiveTasks(s.Download.MaxConcurrentDownloads)
 		a.manager.SetTempDirectory(s.Download.TempDirectory)
 		a.manager.SetUseServerFileTime(s.Download.UseServerFileTime)
+		_ = a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr)
+	}
+	if a.clipboardWatcher != nil {
+		a.clipboardWatcher.OnSettingsUpdated(s)
 	}
 	if app := a.getApp(); app != nil {
 		app.Event.Emit("settings:updated", s)
@@ -221,7 +242,48 @@ func (a *App) UpdateSettings(s config.Settings) (config.Settings, error) {
 	if a.settings == nil {
 		return s, fmt.Errorf("settings service not initialized")
 	}
-	return a.settings.Update(s)
+	prev := a.settings.Get()
+	updated, err := a.settings.Update(s)
+	if err == nil && prev.General.LaunchAtStartup != updated.General.LaunchAtStartup {
+		a.syncLaunchAtStartup(updated.General.LaunchAtStartup)
+	}
+	return updated, err
+}
+
+func (a *App) syncLaunchAtStartup(enabled bool) {
+	wailsApp := a.getApp()
+	if wailsApp != nil && wailsApp.Autostart != nil {
+		if enabled {
+			_ = wailsApp.Autostart.Enable()
+		} else {
+			_ = wailsApp.Autostart.Disable()
+		}
+	}
+}
+
+// SetLaunchAtStartup configures whether SheepGet starts at system login.
+func (a *App) SetLaunchAtStartup(enabled bool) error {
+	if a.settings == nil {
+		return fmt.Errorf("settings service not initialized")
+	}
+	current := a.settings.Get()
+	current.General.LaunchAtStartup = enabled
+	_, err := a.UpdateSettings(current)
+	return err
+}
+
+// IsLaunchAtStartup reports whether autostart is enabled in system/settings.
+func (a *App) IsLaunchAtStartup() bool {
+	wailsApp := a.getApp()
+	if wailsApp != nil && wailsApp.Autostart != nil {
+		if enabled, err := wailsApp.Autostart.IsEnabled(); err == nil {
+			return enabled
+		}
+	}
+	if a.settings != nil {
+		return a.settings.Get().General.LaunchAtStartup
+	}
+	return false
 }
 
 // GetStorageInfo returns current storage mode and directories
@@ -290,6 +352,12 @@ func (a *App) SetCategoryDirectory(targetCategoryID, directory string) error {
 
 // AddTask adds a new download task
 func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
+	if maxConn <= 0 && a.settings != nil {
+		maxConn = a.settings.Get().Download.DefaultConnectionsPerTask
+	}
+	if maxConn <= 0 {
+		maxConn = 8
+	}
 	if dir == "" {
 		if filename != "" {
 			dir = a.ResolveCategoryDirectory(filename)

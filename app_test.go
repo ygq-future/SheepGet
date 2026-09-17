@@ -835,3 +835,20 @@ func TestApp_CheckURLFilesExist_MultiStaleDuplicates_AllCleaned(t *testing.T) {
 		t.Errorf("expected remaining task to be %s, got %s", subTask.ID, tasks[0].ID)
 	}
 }
+
+func TestApp_ToggleClipboardSettingsNoDeadlock(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	// Rapidly toggle clipboard enabled back and forth
+	for i := 0; i < 10; i++ {
+		st := app.GetSettings()
+		st.Clipboard.Enabled = !st.Clipboard.Enabled
+		updated, err := app.UpdateSettings(st)
+		if err != nil {
+			t.Fatalf("UpdateSettings failed on iteration %d: %v", i, err)
+		}
+		if updated.Clipboard.Enabled != st.Clipboard.Enabled {
+			t.Errorf("iteration %d: expected Clipboard.Enabled %v, got %v", i, st.Clipboard.Enabled, updated.Clipboard.Enabled)
+		}
+	}
+}

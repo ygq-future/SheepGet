@@ -1046,6 +1046,16 @@ func (m *Manager) SetUseServerFileTime(enabled bool) {
 	}
 }
 
+// SetProxy updates the proxy configuration on the downloader.
+func (m *Manager) SetProxy(mode, customAddr string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.downloader != nil {
+		return m.downloader.SetProxy(mode, customAddr)
+	}
+	return nil
+}
+
 func (m *Manager) schedule() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

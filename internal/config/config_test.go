@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefaultSettings(t *testing.T) {
@@ -38,6 +39,27 @@ func TestDefaultSettings(t *testing.T) {
 	}
 	if s.Download.AutoRemoveCompletedOnOpen {
 		t.Errorf("expected AutoRemoveCompletedOnOpen false by default")
+	}
+	if s.General.LaunchAtStartup != false {
+		t.Errorf("expected LaunchAtStartup false by default")
+	}
+	if s.Proxy.Mode != ProxyModeSystem {
+		t.Errorf("expected ProxyModeSystem, got %s", s.Proxy.Mode)
+	}
+	if s.Proxy.CustomAddr != "" {
+		t.Errorf("expected empty CustomAddr, got %s", s.Proxy.CustomAddr)
+	}
+	if len(s.Takeover.Extensions) == 0 {
+		t.Errorf("expected non-empty default takeover extensions")
+	}
+	if s.Takeover.PauseShortcut != "Alt" {
+		t.Errorf("expected default pause shortcut Alt, got %s", s.Takeover.PauseShortcut)
+	}
+	if s.Takeover.ForceShortcut != "Ctrl" {
+		t.Errorf("expected default force shortcut Ctrl, got %s", s.Takeover.ForceShortcut)
+	}
+	if s.Clipboard.Enabled != false {
+		t.Errorf("expected Clipboard.Enabled false by default")
 	}
 }
 
@@ -107,6 +129,18 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	}
 	if validated.Download.DefaultDirectory != "/fallback/dir" {
 		t.Errorf("expected fallback dir, got %s", validated.Download.DefaultDirectory)
+	}
+	if validated.Proxy.Mode != ProxyModeSystem {
+		t.Errorf("expected fallback to ProxyModeSystem, got %s", validated.Proxy.Mode)
+	}
+	if len(validated.Takeover.Extensions) == 0 {
+		t.Errorf("expected fallback to default takeover extensions")
+	}
+	if validated.Takeover.PauseShortcut != "Alt" {
+		t.Errorf("expected fallback to Alt, got %s", validated.Takeover.PauseShortcut)
+	}
+	if validated.Takeover.ForceShortcut != "Ctrl" {
+		t.Errorf("expected fallback to Ctrl, got %s", validated.Takeover.ForceShortcut)
 	}
 }
 
@@ -526,5 +560,97 @@ func TestSettings_SetCategoryDirectory(t *testing.T) {
 	_, changedNone := s.Download.SetCategoryDirectory("non-existent", "/some/path")
 	if changedNone {
 		t.Errorf("expected changed=false for non-existent category")
+	}
+}
+
+func TestSiteMatchesExcluded(t *testing.T) {
+	excluded := []string{
+		"example.com",
+		"https://github.com/path",
+		"download.mysite.org:8080",
+		"*.bilibili.com",
+		"*cdn*",
+	}
+
+	norm := NormalizeSites(excluded)
+	expected := []string{"example.com", "github.com", "download.mysite.org", "*.bilibili.com", "*cdn*"}
+	if len(norm) != len(expected) {
+		t.Fatalf("expected %d normalized sites, got %d: %v", len(expected), len(norm), norm)
+	}
+	for i, exp := range expected {
+		if norm[i] != exp {
+			t.Errorf("expected norm[%d] == %s, got %s", i, exp, norm[i])
+		}
+	}
+	// Test matching
+	tests := []struct {
+		page     string
+		expected bool
+	}{
+		{"example.com", true},
+		{"sub.example.com", true},
+		{"deep.nested.sub.example.com", true},
+		{"notexample.com", false},
+		{"github.com", true},
+		{"api.github.com", true},
+		{"mygithub.com", false},
+		{"download.mysite.org", true},
+		{"bilibili.com", true},
+		{"www.bilibili.com", true},
+		{"api.live.bilibili.com", true},
+		{"notbilibili.com", false},
+		{"fastcdn.org", true},
+		{"static-cdn-asset.com", true},
+		{"other.org", false},
+		{"", false},
+	}
+
+	for _, tc := range tests {
+		got := SiteMatchesExcluded(tc.page, norm)
+		if got != tc.expected {
+			t.Errorf("SiteMatchesExcluded(%q) = %v, want %v", tc.page, got, tc.expected)
+		}
+	}
+}
+
+func TestProxyModeValidation(t *testing.T) {
+	s := Settings{
+		Proxy: ProxyConfig{
+			Mode:       ProxyModeCustom,
+			CustomAddr: "  http://127.0.0.1:7890  ",
+		},
+	}
+	validated := s.ValidateAndFallback("/d", "/t")
+	if validated.Proxy.Mode != ProxyModeCustom {
+		t.Errorf("expected ProxyModeCustom, got %s", validated.Proxy.Mode)
+	}
+	if validated.Proxy.CustomAddr != "http://127.0.0.1:7890" {
+		t.Errorf("expected trimmed customAddr, got %q", validated.Proxy.CustomAddr)
+	}
+}
+
+func TestSettingsService_ReentrantDeadlock(t *testing.T) {
+	tempDir := t.TempDir()
+	configFile := filepath.Join(tempDir, "config.json")
+
+	var service *SettingsService
+	service = NewSettingsService(configFile, "/dl", "/temp", func(updated *Settings) {
+		// Attempting to read settings inside onChanged callback (exact calling chain of watcher.Start())
+		_ = service.Get()
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st := service.Get()
+		st.Clipboard.Enabled = true
+		_, _ = service.Update(st)
+	}()
+
+	select {
+	case <-done:
+		// Succeeded without deadlock
+	case <-time.After(1 * time.Second):
+		t.Fatal("DEADLOCK: service.Update deadlocked when onChanged callback called service.Get()")
 	}
 }

@@ -78,6 +78,30 @@ export class CategoryConfig {
 }
 
 /**
+ * ClipboardConfig specifies clipboard monitoring settings.
+ */
+export class ClipboardConfig {
+    "enabled": boolean;
+
+    /** Creates a new ClipboardConfig instance. */
+    constructor($$source: Partial<ClipboardConfig> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ClipboardConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ClipboardConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ClipboardConfig($$parsedSource as Partial<ClipboardConfig>);
+    }
+}
+
+/**
  * DownloadConfig specifies download engine and directory rules.
  */
 export class DownloadConfig {
@@ -118,10 +142,10 @@ export class DownloadConfig {
             this["useServerFileTime"] = false;
         }
         if (!("showProgressWindow" in $$source)) {
-            this["showProgressWindow"] = true;
+            this["showProgressWindow"] = false;
         }
         if (!("keepCompletedInfo" in $$source)) {
-            this["keepCompletedInfo"] = true;
+            this["keepCompletedInfo"] = false;
         }
         if (!("autoRemoveCompletedOnOpen" in $$source)) {
             this["autoRemoveCompletedOnOpen"] = false;
@@ -178,19 +202,101 @@ export enum DuplicateURLPolicy {
 };
 
 /**
+ * GeneralConfig specifies general application settings like autostart.
+ */
+export class GeneralConfig {
+    "launchAtStartup": boolean;
+
+    /** Creates a new GeneralConfig instance. */
+    constructor($$source: Partial<GeneralConfig> = {}) {
+        if (!("launchAtStartup" in $$source)) {
+            this["launchAtStartup"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GeneralConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GeneralConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GeneralConfig($$parsedSource as Partial<GeneralConfig>);
+    }
+}
+
+/**
+ * ProxyConfig specifies application network proxy settings.
+ */
+export class ProxyConfig {
+    "mode": ProxyMode;
+    "customAddr": string;
+
+    /** Creates a new ProxyConfig instance. */
+    constructor($$source: Partial<ProxyConfig> = {}) {
+        if (!("mode" in $$source)) {
+            this["mode"] = ProxyMode.$zero;
+        }
+        if (!("customAddr" in $$source)) {
+            this["customAddr"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProxyConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProxyConfig {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProxyConfig($$parsedSource as Partial<ProxyConfig>);
+    }
+}
+
+/**
+ * ProxyMode specifies the proxy strategy.
+ */
+export enum ProxyMode {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ProxyModeDirect = "direct",
+    ProxyModeSystem = "system",
+    ProxyModeCustom = "custom",
+};
+
+/**
  * Settings represents the root settings structure.
  */
 export class Settings {
+    "general": GeneralConfig;
     "appearance": AppearanceConfig;
     "download": DownloadConfig;
+    "proxy": ProxyConfig;
+    "takeover": TakeoverConfig;
+    "clipboard": ClipboardConfig;
 
     /** Creates a new Settings instance. */
     constructor($$source: Partial<Settings> = {}) {
+        if (!("general" in $$source)) {
+            this["general"] = (new GeneralConfig());
+        }
         if (!("appearance" in $$source)) {
             this["appearance"] = (new AppearanceConfig());
         }
         if (!("download" in $$source)) {
             this["download"] = (new DownloadConfig());
+        }
+        if (!("proxy" in $$source)) {
+            this["proxy"] = (new ProxyConfig());
+        }
+        if (!("takeover" in $$source)) {
+            this["takeover"] = (new TakeoverConfig());
+        }
+        if (!("clipboard" in $$source)) {
+            this["clipboard"] = (new ClipboardConfig());
         }
 
         Object.assign(this, $$source);
@@ -202,14 +308,74 @@ export class Settings {
     static createFrom($$source: any = {}): Settings {
         const $$createField0_0 = $$createType3;
         const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType5;
+        const $$createField3_0 = $$createType6;
+        const $$createField4_0 = $$createType7;
+        const $$createField5_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("general" in $$parsedSource) {
+            $$parsedSource["general"] = $$createField0_0($$parsedSource["general"]);
+        }
         if ("appearance" in $$parsedSource) {
-            $$parsedSource["appearance"] = $$createField0_0($$parsedSource["appearance"]);
+            $$parsedSource["appearance"] = $$createField1_0($$parsedSource["appearance"]);
         }
         if ("download" in $$parsedSource) {
-            $$parsedSource["download"] = $$createField1_0($$parsedSource["download"]);
+            $$parsedSource["download"] = $$createField2_0($$parsedSource["download"]);
+        }
+        if ("proxy" in $$parsedSource) {
+            $$parsedSource["proxy"] = $$createField3_0($$parsedSource["proxy"]);
+        }
+        if ("takeover" in $$parsedSource) {
+            $$parsedSource["takeover"] = $$createField4_0($$parsedSource["takeover"]);
+        }
+        if ("clipboard" in $$parsedSource) {
+            $$parsedSource["clipboard"] = $$createField5_0($$parsedSource["clipboard"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
+    }
+}
+
+/**
+ * TakeoverConfig specifies automatic browser takeover rules, independent of file categories.
+ */
+export class TakeoverConfig {
+    "extensions": string[];
+    "excludedSites": string[];
+    "pauseShortcut": string;
+    "forceShortcut": string;
+
+    /** Creates a new TakeoverConfig instance. */
+    constructor($$source: Partial<TakeoverConfig> = {}) {
+        if (!("extensions" in $$source)) {
+            this["extensions"] = [];
+        }
+        if (!("excludedSites" in $$source)) {
+            this["excludedSites"] = [];
+        }
+        if (!("pauseShortcut" in $$source)) {
+            this["pauseShortcut"] = "";
+        }
+        if (!("forceShortcut" in $$source)) {
+            this["forceShortcut"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TakeoverConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TakeoverConfig {
+        const $$createField0_0 = $$createType0;
+        const $$createField1_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("extensions" in $$parsedSource) {
+            $$parsedSource["extensions"] = $$createField0_0($$parsedSource["extensions"]);
+        }
+        if ("excludedSites" in $$parsedSource) {
+            $$parsedSource["excludedSites"] = $$createField1_0($$parsedSource["excludedSites"]);
+        }
+        return new TakeoverConfig($$parsedSource as Partial<TakeoverConfig>);
     }
 }
 
@@ -231,5 +397,9 @@ export enum ThemeMode {
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = CategoryConfig.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = AppearanceConfig.createFrom;
-const $$createType4 = DownloadConfig.createFrom;
+const $$createType3 = GeneralConfig.createFrom;
+const $$createType4 = AppearanceConfig.createFrom;
+const $$createType5 = DownloadConfig.createFrom;
+const $$createType6 = ProxyConfig.createFrom;
+const $$createType7 = TakeoverConfig.createFrom;
+const $$createType8 = ClipboardConfig.createFrom;

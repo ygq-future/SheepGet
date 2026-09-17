@@ -56,4 +56,43 @@ describe('settings models and defaults', () => {
     expect(download.customCategories).toHaveLength(1);
     expect(download.customCategories[0].name).toBe('工作文档');
   });
+
+  it('instantiates General, Proxy, Takeover, and Clipboard configs correctly', () => {
+    const general = new configModels.GeneralConfig({ launchAtStartup: true });
+    expect(general.launchAtStartup).toBe(true);
+
+    const proxy = new configModels.ProxyConfig({
+      mode: configModels.ProxyMode.ProxyModeCustom,
+      customAddr: 'http://127.0.0.1:7890',
+    });
+    expect(proxy.mode).toBe(configModels.ProxyMode.ProxyModeCustom);
+    expect(proxy.customAddr).toBe('http://127.0.0.1:7890');
+
+    const takeover = new configModels.TakeoverConfig({
+      extensions: ['zip', 'rar', 'mp4'],
+      excludedSites: ['github.com', 'example.org'],
+      pauseShortcut: 'Alt',
+      forceShortcut: 'Ctrl',
+    });
+    expect(takeover.extensions).toEqual(['zip', 'rar', 'mp4']);
+    expect(takeover.excludedSites).toEqual(['github.com', 'example.org']);
+    expect(takeover.pauseShortcut).toBe('Alt');
+    expect(takeover.forceShortcut).toBe('Ctrl');
+
+    const clipboard = new configModels.ClipboardConfig({ enabled: true });
+    expect(clipboard.enabled).toBe(true);
+
+    const root = new configModels.Settings({
+      general,
+      proxy,
+      takeover,
+      clipboard,
+      appearance: new configModels.AppearanceConfig(),
+      download: new configModels.DownloadConfig(),
+    });
+    expect(root.general.launchAtStartup).toBe(true);
+    expect(root.proxy.mode).toBe(configModels.ProxyMode.ProxyModeCustom);
+    expect(root.takeover.extensions).toContain('zip');
+    expect(root.clipboard.enabled).toBe(true);
+  });
 });

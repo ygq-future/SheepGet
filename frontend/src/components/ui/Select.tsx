@@ -43,7 +43,7 @@ export function Select<T extends string | number>({
           align="start"
           sideOffset={4}
           collisionPadding={8}
-          className="animate-in fade-in-80 zoom-in-95 z-[9999] max-h-52 min-w-(--radix-dropdown-menu-trigger-width) overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-primary)] shadow-2xl backdrop-blur-xl"
+          className="animate-in fade-in-80 zoom-in-95 z-[9999] flex max-h-52 min-w-(--radix-dropdown-menu-trigger-width) flex-col gap-1 overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-primary)] shadow-2xl backdrop-blur-xl"
         >
           {options.map((opt) => {
             const isSelected = opt.value === value;

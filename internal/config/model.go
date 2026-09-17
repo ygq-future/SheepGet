@@ -4,6 +4,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -98,10 +101,47 @@ func (d *DownloadConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// GeneralConfig specifies general application settings like autostart.
+type GeneralConfig struct {
+	LaunchAtStartup bool `json:"launchAtStartup"`
+}
+
+// ProxyMode specifies the proxy strategy.
+type ProxyMode string
+
+const (
+	ProxyModeDirect ProxyMode = "direct"
+	ProxyModeSystem ProxyMode = "system"
+	ProxyModeCustom ProxyMode = "custom"
+)
+
+// ProxyConfig specifies application network proxy settings.
+type ProxyConfig struct {
+	Mode       ProxyMode `json:"mode"`
+	CustomAddr string    `json:"customAddr"`
+}
+
+// TakeoverConfig specifies automatic browser takeover rules, independent of file categories.
+type TakeoverConfig struct {
+	Extensions    []string `json:"extensions"`
+	ExcludedSites []string `json:"excludedSites"`
+	PauseShortcut string   `json:"pauseShortcut"`
+	ForceShortcut string   `json:"forceShortcut"`
+}
+
+// ClipboardConfig specifies clipboard monitoring settings.
+type ClipboardConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
 // Settings represents the root settings structure.
 type Settings struct {
+	General    GeneralConfig    `json:"general"`
 	Appearance AppearanceConfig `json:"appearance"`
 	Download   DownloadConfig   `json:"download"`
+	Proxy      ProxyConfig      `json:"proxy"`
+	Takeover   TakeoverConfig   `json:"takeover"`
+	Clipboard  ClipboardConfig  `json:"clipboard"`
 }
 
 // DefaultBuiltinCategories returns the 6 preset built-in categories with their default directories and extensions.
@@ -170,9 +210,107 @@ func NormalizeExtensions(exts []string) []string {
 	return result
 }
 
+// DefaultTakeoverExtensions returns the preset common downloadable file extensions.
+func DefaultTakeoverExtensions() []string {
+	return []string{
+		"zip", "rar", "7z", "tar", "gz", "bz2", "iso", "dmg", "pkg",
+		"exe", "msi", "apk",
+		"mp4", "mkv", "avi", "mov", "wmv", "flv",
+		"mp3", "flac", "wav", "aac",
+		"pdf", "docx", "xlsx", "pptx", "torrent",
+	}
+}
+
+// NormalizeSite cleans a domain/hostname pattern, stripping scheme, port, and trailing paths while preserving wildcards.
+func NormalizeSite(site string) string {
+	site = strings.TrimSpace(strings.ToLower(site))
+	if site == "" {
+		return ""
+	}
+	if strings.Contains(site, "://") {
+		if u, err := url.Parse(site); err == nil && u.Host != "" {
+			site = u.Host
+		}
+	}
+	if host, _, err := net.SplitHostPort(site); err == nil {
+		site = host
+	}
+	site = strings.Trim(site, "/")
+	if idx := strings.Index(site, "/"); idx != -1 {
+		site = site[:idx]
+	}
+	site = strings.TrimPrefix(site, ".")
+	return site
+}
+
+// NormalizeSites deduplicates and normalizes a list of sites.
+func NormalizeSites(sites []string) []string {
+	if len(sites) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(sites))
+	result := make([]string, 0, len(sites))
+	for _, s := range sites {
+		norm := NormalizeSite(s)
+		if norm == "" {
+			continue
+		}
+		if _, exists := seen[norm]; !exists {
+			seen[norm] = struct{}{}
+			result = append(result, norm)
+		}
+	}
+	return result
+}
+
+// SiteMatchesExcluded checks if a page host matches an excluded site pattern.
+// Supports:
+// 1. Exact match and subdomains: "github.com" matches "github.com" and "*.github.com".
+// 2. Wildcard prefix: "*.github.com" matches "github.com", "api.github.com", "sub.api.github.com".
+// 3. General glob wildcard patterns: e.g. "*cdn*", "*.org", "dl-*.site.com".
+func SiteMatchesExcluded(pageSite string, excludedSites []string) bool {
+	normPage := NormalizeSite(pageSite)
+	if normPage == "" {
+		return false
+	}
+	for _, excluded := range excludedSites {
+		pattern := NormalizeSite(excluded)
+		if pattern == "" {
+			continue
+		}
+		// Exact domain match
+		if normPage == pattern {
+			return true
+		}
+		// Pattern starts with "*." like "*.github.com"
+		if strings.HasPrefix(pattern, "*.") {
+			root := strings.TrimPrefix(pattern, "*.")
+			if normPage == root || strings.HasSuffix(normPage, "."+root) {
+				return true
+			}
+		}
+		// Plain domain pattern "github.com" matches subdomains "api.github.com"
+		if !strings.Contains(pattern, "*") {
+			if strings.HasSuffix(normPage, "."+pattern) {
+				return true
+			}
+		}
+		// General wildcard matching via path.Match
+		if strings.Contains(pattern, "*") {
+			if matched, _ := path.Match(pattern, normPage); matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // DefaultSettings returns valid default settings with provided default download and temp directories.
 func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 	return Settings{
+		General: GeneralConfig{
+			LaunchAtStartup: false,
+		},
 		Appearance: AppearanceConfig{
 			Theme:       ThemeSystem,
 			AccentColor: DefaultAccentColor,
@@ -190,6 +328,19 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			AutoRemoveCompletedOnOpen: false,
 			BuiltinCategories:         DefaultBuiltinCategories(defaultDownloadDir),
 			CustomCategories:          []CategoryConfig{},
+		},
+		Proxy: ProxyConfig{
+			Mode:       ProxyModeSystem,
+			CustomAddr: "",
+		},
+		Takeover: TakeoverConfig{
+			Extensions:    DefaultTakeoverExtensions(),
+			ExcludedSites: []string{},
+			PauseShortcut: "Alt",
+			ForceShortcut: "Ctrl",
+		},
+		Clipboard: ClipboardConfig{
+			Enabled: false,
 		},
 	}
 }
@@ -316,6 +467,36 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 		}
 		s.Download.CustomCategories = validCustom
 	}
+	// Validate Proxy
+	switch s.Proxy.Mode {
+	case ProxyModeDirect, ProxyModeSystem, ProxyModeCustom:
+	default:
+		s.Proxy.Mode = defaults.Proxy.Mode
+	}
+	s.Proxy.CustomAddr = strings.TrimSpace(s.Proxy.CustomAddr)
+
+	// Validate Takeover
+	if len(s.Takeover.Extensions) == 0 {
+		s.Takeover.Extensions = defaults.Takeover.Extensions
+	} else {
+		s.Takeover.Extensions = NormalizeExtensions(s.Takeover.Extensions)
+	}
+	if s.Takeover.ExcludedSites == nil {
+		s.Takeover.ExcludedSites = []string{}
+	} else {
+		s.Takeover.ExcludedSites = NormalizeSites(s.Takeover.ExcludedSites)
+	}
+	s.Takeover.PauseShortcut = strings.TrimSpace(s.Takeover.PauseShortcut)
+	if s.Takeover.PauseShortcut == "" {
+		s.Takeover.PauseShortcut = defaults.Takeover.PauseShortcut
+	}
+	s.Takeover.ForceShortcut = strings.TrimSpace(s.Takeover.ForceShortcut)
+	if s.Takeover.ForceShortcut == "" {
+		s.Takeover.ForceShortcut = defaults.Takeover.ForceShortcut
+	}
+
+	// Validate Clipboard
+	// Boolean fields are retained as-is
 
 	return s
 }

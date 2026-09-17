@@ -177,7 +177,7 @@ export class FileInfoSubmission {
     "maxConn": number;
 
     /**
-     * "prompt", "continue", "redownload", "copy", "continue_overwrite", "show_completed"
+     * "prompt", "continue", "redownload", "copy", "continue_overwrite", "show_completed", "reuse"
      */
     "duplicateStrategy"?: string;
     "preDownload": boolean;
