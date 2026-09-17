@@ -9,6 +9,28 @@ export interface StorageInfo {
   dataDir: string;
 }
 
+// 后端校验可能改写提交值；这里只报告提交与落盘的差异，判定本身仍由 Go 侧负责。
+export interface SettingsCorrection {
+  field: 'proxy';
+  message: string;
+}
+
+function detectCorrections(
+  submitted: configModels.Settings,
+  saved: configModels.Settings,
+): SettingsCorrection[] {
+  const corrections: SettingsCorrection[] = [];
+  const wasCustom = submitted.proxy?.mode === configModels.ProxyMode.ProxyModeCustom;
+  const isCustom = saved.proxy?.mode === configModels.ProxyMode.ProxyModeCustom;
+  if (wasCustom && !isCustom) {
+    corrections.push({
+      field: 'proxy',
+      message: `自定义代理地址「${submitted.proxy?.customAddr || ''}」不可用，已回退为系统代理`,
+    });
+  }
+  return corrections;
+}
+
 interface SettingsState {
   settings: configModels.Settings | null;
   storageInfo: StorageInfo | null;
@@ -16,7 +38,7 @@ interface SettingsState {
   error: string | null;
 
   loadSettings: () => Promise<void>;
-  updateSettings: (newSettings: Partial<configModels.Settings>) => Promise<void>;
+  updateSettings: (newSettings: Partial<configModels.Settings>) => Promise<SettingsCorrection[]>;
   applyThemeAndAccent: (settings: configModels.Settings) => void;
 }
 
@@ -137,7 +159,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   updateSettings: async (partialSettings: Partial<configModels.Settings>) => {
     const current = get().settings;
-    if (!current) return;
+    if (!current) return [];
 
     // Merge settings
     const merged = new configModels.Settings({
@@ -171,6 +193,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const saved = await UpdateSettings(merged);
       set({ settings: saved });
       get().applyThemeAndAccent(saved);
+      return detectCorrections(merged, saved);
     } catch (err) {
       set({ error: String(err) });
       throw err;

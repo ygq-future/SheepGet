@@ -8,8 +8,9 @@ import (
 	"sync"
 )
 
-// OnSettingsChangedFunc is invoked whenever settings are updated.
-type OnSettingsChangedFunc func(updated *Settings)
+// OnSettingsChangedFunc is invoked whenever settings are updated. Returning an error
+// reports a failure to apply the new settings back to the caller performing the update.
+type OnSettingsChangedFunc func(updated *Settings) error
 
 // SettingsService manages reading, atomic writing, and broadcasting of settings.
 type SettingsService struct {
@@ -115,7 +116,9 @@ func (s *SettingsService) Update(req Settings) (Settings, error) {
 
 	if s.onChanged != nil {
 		snapshot := validated
-		s.onChanged(&snapshot)
+		if err := s.onChanged(&snapshot); err != nil {
+			return validated, err
+		}
 	}
 
 	return validated, nil

@@ -120,8 +120,8 @@ func NewApp() *App {
 		storeDir.ConfigFile(),
 		defaultDownloadDir,
 		defaultTempDir,
-		func(updated *config.Settings) {
-			app.OnSettingsUpdated(updated)
+		func(updated *config.Settings) error {
+			return app.OnSettingsUpdated(updated)
 		},
 	)
 	app.settings = settingsSvc
@@ -130,7 +130,11 @@ func NewApp() *App {
 	downloader := engine.NewHTTPDownloader(nil)
 	downloader.SetTempDirectory(activeSettings.Download.TempDirectory)
 	downloader.SetUseServerFileTime(activeSettings.Download.UseServerFileTime)
-	_ = downloader.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr)
+	// 配置层已保证自定义代理地址可解析；这里失败说明默认值或校验被破坏，
+	// 与上面的初始化失败同等处理，不能让不生效的代理留在运行中的下载器上。
+	if err := downloader.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr); err != nil {
+		panic(fmt.Sprintf("failed to apply stored proxy settings: %v", err))
+	}
 
 	mgr := engine.NewManager(store, downloader, engine.Config{
 		MaxActiveTasks:    activeSettings.Download.MaxConcurrentDownloads,
@@ -213,13 +217,16 @@ func (a *App) Greet(name string) string {
 	return fmt.Sprintf("Hello %s, It's show time!", name)
 }
 
-// OnSettingsUpdated emits wails event to the frontend whenever settings change
-func (a *App) OnSettingsUpdated(s *config.Settings) {
+// OnSettingsUpdated applies changed settings to the running engine and broadcasts them.
+// 应用代理可能失败，错误交回发起更新的调用方，避免界面继续显示一个实际未生效的代理。
+func (a *App) OnSettingsUpdated(s *config.Settings) error {
 	if a.manager != nil && s != nil {
 		a.manager.SetMaxActiveTasks(s.Download.MaxConcurrentDownloads)
 		a.manager.SetTempDirectory(s.Download.TempDirectory)
 		a.manager.SetUseServerFileTime(s.Download.UseServerFileTime)
-		_ = a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr)
+		if err := a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr); err != nil {
+			return err
+		}
 	}
 	if a.clipboardWatcher != nil {
 		a.clipboardWatcher.OnSettingsUpdated(s)
@@ -227,6 +234,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) {
 	if app := a.getApp(); app != nil {
 		app.Event.Emit("settings:updated", s)
 	}
+	return nil
 }
 
 // GetSettings returns current active settings

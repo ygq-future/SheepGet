@@ -887,7 +887,9 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 		if t.Filename == "" {
 			t.Filename = extractFilenameFromURL(urlStr)
 		}
-		_ = m.store.Save(ctx, t)
+		if saveErr := m.store.Save(ctx, t); saveErr != nil {
+			return nil, saveErr
+		}
 		m.notify(t)
 		return t, nil
 	}

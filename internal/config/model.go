@@ -121,6 +121,19 @@ type ProxyConfig struct {
 	CustomAddr string    `json:"customAddr"`
 }
 
+// proxySchemes lists the protocols the transport layer can apply as a custom proxy.
+var proxySchemes = map[string]bool{"http": true, "https": true, "socks5": true}
+
+// isValidProxyAddr reports whether addr can be applied as a custom proxy: an
+// absolute URL with a supported scheme and a host.
+func isValidProxyAddr(addr string) bool {
+	parsed, err := url.Parse(addr)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return proxySchemes[strings.ToLower(parsed.Scheme)]
+}
+
 // TakeoverConfig specifies automatic browser takeover rules, independent of file categories.
 type TakeoverConfig struct {
 	Extensions    []string `json:"extensions"`
@@ -474,6 +487,11 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 		s.Proxy.Mode = defaults.Proxy.Mode
 	}
 	s.Proxy.CustomAddr = strings.TrimSpace(s.Proxy.CustomAddr)
+	// 自定义地址是传输层构造代理的唯一输入，必须是可解析的受支持协议 URL。
+	// 非法地址在这里整组回退默认代理，避免留下"显示已启用、实际直连"的配置。
+	if s.Proxy.Mode == ProxyModeCustom && !isValidProxyAddr(s.Proxy.CustomAddr) {
+		s.Proxy = defaults.Proxy
+	}
 
 	// Validate Takeover
 	if len(s.Takeover.Extensions) == 0 {

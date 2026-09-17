@@ -2,7 +2,7 @@
 
 ## 当前状态与入口
 
-当前是 Wails Greet 脚手架，下载业务尚未实现。质量基础设施与业务验收分别报告；无业务测试不是“所有测试通过”。
+下载核心（HTTP 分块传输、任务队列与持久化）、配置中心、文件信息窗口、共享下载进度窗口与设置中心已实现并纳入业务测试；浏览器扩展、HLS 媒体处理与跨平台安装包在计划中。质量基础设施与业务验收分别报告；无业务测试不是“所有测试通过”。
 
 默认入口：`node scripts/quality-gate.mjs`，等价于 `bun run quality`。阶段定义以该脚本为唯一来源。
 
@@ -30,20 +30,20 @@ Vite 与 React 插件配套升级，依据[Vite 迁移指南](https://vite.dev/g
 
 ## 能力矩阵
 
-| 能力                   | 提供者及任务                                                                      | 范围                                               | 阶段 / 严重性   | 状态与证据                                             |
-| ---------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- | --------------- | ------------------------------------------------------ |
-| 格式                   | gofmt；Prettier 3 与 Tailwind 插件                                                | 维护的 Go、前端、根脚本/配置、工作流和质量相关文档 | 默认 / 失败阻断 | 已配置；非空 gofmt 输出即失败，Tailwind 类排序有正反例 |
-| 语法与类型             | TypeScript 严格检查；Go build/分析                                                | 前端 src、Vite 配置、全部维护的 Go 包              | 默认 / error    | 已配置；不只检查根包                                   |
-| Lint                   | ESLint recommended、typed recommended、React Hooks                                | 前端 TS/TSX、JS 配置；根脚本 JS 基础规则           | 默认 / 零警告   | 已配置；Hooks、any、Promise 反例已验证                 |
-| 弃用 API               | TS no-deprecated；Staticcheck SA1019                                              | 有类型和弃用标记的 TS、Go                          | 默认 / error    | 正反例验证；不是检测工具配置的弃用来代替 API 检测      |
-| 静态分析               | golangci-lint 明确规则集；类型感知 ESLint                                         | 维护的源码                                         | 默认 / error    | 已配置并验证新版本在本机工作                           |
-| 未使用/不可达/可疑代码 | unused、ineffassign、Staticcheck、ESLint、TS unreachable                          | 同上                                               | 默认 / error    | 明确责任；不宣称覆盖所有 IDE 提示                      |
-| 测试                   | Go test；Vitest；Node test                                                        | Go 包、前端 src 测试、质量设施测试                 | 默认 / failure  | 基础设施测试存在；Go/前端业务测试待 Ticket 01          |
-| 构建                   | Vite、Go build；Wails build                                                       | 本机开发构建；三平台本机构建矩阵                   | 默认 / CI       | 默认不修改维护文件；跨平台结果独立记录                 |
-| 依赖与配置             | go mod verify、tidy -diff；Bun frozen dry-run；golangci config verify、actionlint | 两套锁文件、Go 模块、分析配置、CI 工作流           | 默认 / error    | 冻结锁冲突已验证会失败；verify 仅证明缓存完整性        |
-| 提交信息               | 根依赖中固定的 commitlint                                                         | 实际消息或整个提交范围                             | commit-msg / CI | 合法和非法输入已验证；不经 bun x 动态取包              |
-| Git hooks              | 入库的 .githooks + bootstrap                                                      | 当前仓库                                           | 本地            | 已配置；克隆后必须执行 bootstrap                       |
-| CI                     | GitHub Actions 三平台矩阵与 required 汇总                                         | Windows、macOS、Ubuntu                             | 合并/发布前     | 工作流已配置，远端执行与分支保护待验证                 |
+| 能力                   | 提供者及任务                                                                      | 范围                                               | 阶段 / 严重性   | 状态与证据                                                                                         |
+| ---------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------- |
+| 格式                   | gofmt；Prettier 3 与 Tailwind 插件                                                | 维护的 Go、前端、根脚本/配置、工作流和质量相关文档 | 默认 / 失败阻断 | 已配置；非空 gofmt 输出即失败，Tailwind 类排序有正反例                                             |
+| 语法与类型             | TypeScript 严格检查；Go build/分析                                                | 前端 src、Vite 配置、全部维护的 Go 包              | 默认 / error    | 已配置；不只检查根包                                                                               |
+| Lint                   | ESLint recommended、typed recommended、React Hooks                                | 前端 TS/TSX、JS 配置；根脚本 JS 基础规则           | 默认 / 零警告   | 已配置；Hooks、any、Promise 反例已验证                                                             |
+| 弃用 API               | TS no-deprecated；Staticcheck SA1019                                              | 有类型和弃用标记的 TS、Go                          | 默认 / error    | 正反例验证；不是检测工具配置的弃用来代替 API 检测                                                  |
+| 静态分析               | golangci-lint 明确规则集；类型感知 ESLint                                         | 维护的源码                                         | 默认 / error    | 已配置并验证新版本在本机工作                                                                       |
+| 未使用/不可达/可疑代码 | unused、ineffassign、Staticcheck、ESLint、TS unreachable                          | 同上                                               | 默认 / error    | 明确责任；不宣称覆盖所有 IDE 提示                                                                  |
+| 测试                   | Go test；Vitest；Node test                                                        | Go 包、前端 src 测试、质量设施测试                 | 默认 / failure  | 基础设施与业务测试均已存在；下载引擎、配置中心、任务存储、窗口队列、剪贴板与前端工具函数有行为测试 |
+| 构建                   | Vite、Go build；Wails build                                                       | 本机开发构建；三平台本机构建矩阵                   | 默认 / CI       | 默认不修改维护文件；跨平台结果独立记录                                                             |
+| 依赖与配置             | go mod verify、tidy -diff；Bun frozen dry-run；golangci config verify、actionlint | 两套锁文件、Go 模块、分析配置、CI 工作流           | 默认 / error    | 冻结锁冲突已验证会失败；verify 仅证明缓存完整性                                                    |
+| 提交信息               | 根依赖中固定的 commitlint                                                         | 实际消息或整个提交范围                             | commit-msg / CI | 合法和非法输入已验证；不经 bun x 动态取包                                                          |
+| Git hooks              | 入库的 .githooks + bootstrap                                                      | 当前仓库                                           | 本地            | 已配置；克隆后必须执行 bootstrap                                                                   |
+| CI                     | GitHub Actions 三平台矩阵与 required 汇总                                         | Windows、macOS、Ubuntu                             | 合并/发布前     | 工作流已配置，远端执行与分支保护待验证                                                             |
 
 ## 检查范围与生成输入
 
@@ -62,9 +62,9 @@ React Hooks 和 TypeScript 语义规则已覆盖；JS 配置只做基础 ESLint�
 
 只接受有证据的历史问题归因。当前没有允许忽略历史诊断的基线；真实误报或兼容例外须有精确诊断、范围、理由、负责人及复核条件，并经用户确认。不得关闭规则、删除有效测试或使用 --no-verify 绕过失败。
 
-## 脚手架测试边界
+## 测试范围与豁免
 
-`scripts/test-scope.json` 中 scaffoldOnly 当前为 true，仅用于这次空业务脚手架阶段。发现测试后会实际执行；无测试时打印 PARTIAL，而非伪造成功。第一项下载行为实施时必须设为 false，并补充 Go 与前端真实行为测试；false 时缺测试直接失败。该豁免不允许延伸至已有业务代码。
+`scripts/test-scope.json` 中 scaffoldOnly 为 false，Go 与前端真实行为测试均已落地并实际执行，任一侧缺测试直接失败。无测试时打印 PARTIAL，而非伪造成功。该豁免仅在业务实现之前、两侧都还没有测试的空脚手架阶段有效，不延伸至已有业务代码。
 
 质量设施测试验证格式类排序、类型错误、Hooks、Promise、弃用引用、缺失工具、失败退出传播和提交信息校验；Go 反例仅在临时隔离目录运行，清理后再次验证通过。
 
@@ -90,6 +90,7 @@ Ubuntu 24.04 依赖 GTK4 与 WebKitGTK 6.0（libgtk-4-dev、libwebkitgtk-6.0-dev
 - `git hook run commit-msg` 对合法消息返回 0，对非法消息返回 1；未创建提交。
 - `git hook run pre-commit` 在当前含未暂存变更时返回 1，符合索引一致性约束；没有为测试而暂存用户文件。
 - actionlint 验证工作流语法和表达式通过；冻结锁文件与清单不一致的反例返回非零。
-- Go 与前端业务测试仍为 PARTIAL，待首个下载行为实施；质量设施自测不是业务测试替代品。
+- Go 与前端业务测试实际执行并通过；质量设施自测不是业务测试替代品。
+- `GOOS=darwin GOARCH=arm64 go build ./internal/...` 与 `GOOS=linux GOARCH=amd64 go build ./internal/...` 通过，业务包已不含平台专属编译依赖（平台能力按构建约束分文件）。完整应用的三平台构建仍须各平台原生 runner：Wails v3 依赖 cgo 与平台工具链，自 Windows 交叉编译不具备该条件。
 
 macOS/Linux 运行结果及远端强制执行均未观察到，不能标为已通过。未建立历史问题忽略基线。

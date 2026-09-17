@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import { useSettingsStore } from '../stores/settings';
+import type { SettingsCorrection } from '../stores/settings';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Select } from './ui/Select';
 import { Input } from './ui/Input';
@@ -355,6 +356,14 @@ export function SettingsPanel() {
     }
   };
 
+  // 后端校验回退了提交值时，用错误提示代替成功提示，让用户知道该值未被采用。
+  const reportCorrections = (corrections: SettingsCorrection[]): boolean => {
+    const [first] = corrections;
+    if (!first) return false;
+    showToast(first.message, 'error', '代理地址无效');
+    return true;
+  };
+
   const handleProxyModeChange = async (mode: configModels.ProxyMode) => {
     setSelectedProxyMode(mode);
     setProxyError('');
@@ -363,13 +372,15 @@ export function SettingsPanel() {
       if (proxy.customAddr && proxy.customAddr.trim() !== '') {
         if (mode === proxy.mode) return;
         try {
-          await updateSettings({
+          const corrections = await updateSettings({
             proxy: new configModels.ProxyConfig({
               ...proxy,
               mode: configModels.ProxyMode.ProxyModeCustom,
             }),
           });
-          showToast('已切换至自定义代理', 'success');
+          if (!reportCorrections(corrections)) {
+            showToast('已切换至自定义代理', 'success');
+          }
         } catch (err) {
           showToast(`切换代理失败: ${String(err)}`, 'error');
         }
@@ -379,18 +390,20 @@ export function SettingsPanel() {
 
     if (mode === proxy.mode) return;
     try {
-      await updateSettings({
+      const corrections = await updateSettings({
         proxy: new configModels.ProxyConfig({
           ...proxy,
           mode,
         }),
       });
-      showToast(
-        mode === configModels.ProxyMode.ProxyModeDirect
-          ? '已切换至直连模式'
-          : '已切换至系统代理模式',
-        'success',
-      );
+      if (!reportCorrections(corrections)) {
+        showToast(
+          mode === configModels.ProxyMode.ProxyModeDirect
+            ? '已切换至直连模式'
+            : '已切换至系统代理模式',
+          'success',
+        );
+      }
     } catch (err) {
       showToast(`更新代理模式失败: ${String(err)}`, 'error');
     }
@@ -429,13 +442,19 @@ export function SettingsPanel() {
 
     setProxyError('');
     try {
-      await updateSettings({
+      const corrections = await updateSettings({
         proxy: new configModels.ProxyConfig({
           ...proxy,
           mode: configModels.ProxyMode.ProxyModeCustom,
           customAddr: trimmed,
         }),
       });
+      if (reportCorrections(corrections)) {
+        // 后端未采用该地址并回退到系统代理，草稿与选中模式同步为实际生效值。
+        setCustomProxyDraft('');
+        setSelectedProxyMode(configModels.ProxyMode.ProxyModeSystem);
+        return;
+      }
       setLastSavedProxyAddr(trimmed);
       setSelectedProxyMode(configModels.ProxyMode.ProxyModeCustom);
       showToast('自定义代理已保存并启用', 'success');

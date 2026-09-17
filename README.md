@@ -2,7 +2,7 @@
 
 面向 Windows、macOS 和 Linux 的轻量桌面下载管理器。
 
-当前仓库为 **Wails Greet 脚手架与质量基础设施**，尚未实现下载业务。计划能力包括 Chrome/Edge 下载接管、可恢复的 HTTP 分块下载、共享进度窗口和 Native Go 点播媒体处理；完整范围见 [产品规格](docs/spec.md)。
+当前已实现可恢复的 HTTP 分块下载引擎、任务队列与持久化、独立文件信息窗口、共享下载进度窗口、配置中心与设置页。计划能力包括 Chrome/Edge 下载接管、Native Go 点播媒体处理和各平台安装包；完整范围见 [产品规格](docs/spec.md)。
 
 ## 技术方向
 
@@ -43,7 +43,7 @@ bun run dev
 node scripts/quality-gate.mjs
 ```
 
-默认检查格式、依赖一致性、类型、lint/静态分析、测试和本机构建；检查不会自动修复维护文件。业务测试尚待实现时会明确打印 PARTIAL。质量设施自测可单独运行：
+默认检查格式、依赖一致性、类型、lint/静态分析、测试和本机构建；检查不会自动修复维护文件。任一侧缺少测试时会明确打印 PARTIAL，而不是伪造成功。质量设施自测可单独运行：
 
 ```sh
 bun run quality:verify

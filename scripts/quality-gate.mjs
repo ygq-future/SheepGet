@@ -208,7 +208,7 @@ try {
     }
     if (stageError) throw stageError;
     console.log(
-      'Declared checks passed; scaffold behavior-test gaps and unrun platform CI remain documented.',
+      'Declared checks passed; cross-platform CI and real-device results are reported separately from local verification.',
     );
   }
 } catch (error) {

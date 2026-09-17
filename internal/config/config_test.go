@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,8 +150,9 @@ func TestSettingsService_AtomicPersistenceAndBroadcast(t *testing.T) {
 	configFile := filepath.Join(tempDir, "config.json")
 
 	var notified *Settings
-	service := NewSettingsService(configFile, "/default/downloads", "/default/temp", func(updated *Settings) {
+	service := NewSettingsService(configFile, "/default/downloads", "/default/temp", func(updated *Settings) error {
 		notified = updated
+		return nil
 	})
 
 	// Initial load without file should give default settings
@@ -629,14 +631,63 @@ func TestProxyModeValidation(t *testing.T) {
 	}
 }
 
+// TestProxyCustomAddrValidation pins the invariant the transport layer relies on:
+// a custom proxy address reaching it is always a parseable absolute URL, so an
+// unusable address can never stay in settings while the UI reports it as active.
+func TestProxyCustomAddrValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		addr string
+	}{
+		{"empty address", ""},
+		{"malformed scheme", "://bad-url"},
+		{"missing scheme", "127.0.0.1:7890"},
+		{"missing host", "http://"},
+		{"unsupported scheme", "ftp://127.0.0.1:7890"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := Settings{Proxy: ProxyConfig{Mode: ProxyModeCustom, CustomAddr: tc.addr}}
+			validated := s.ValidateAndFallback("/d", "/t")
+			if validated.Proxy.Mode != ProxyModeSystem {
+				t.Fatalf(
+					"expected fallback to ProxyModeSystem for %q, got %s",
+					tc.addr,
+					validated.Proxy.Mode,
+				)
+			}
+			if validated.Proxy.CustomAddr != "" {
+				t.Fatalf("expected cleared customAddr for %q, got %q", tc.addr, validated.Proxy.CustomAddr)
+			}
+		})
+	}
+}
+
+// TestSettingsService_ReportsApplyFailure 保证应用新设置失败时错误回到发起更新的调用方，
+// 而不是被丢弃后让界面显示一个没有生效的状态。
+func TestSettingsService_ReportsApplyFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	configFile := filepath.Join(tempDir, "config.json")
+	applyErr := errors.New("apply rejected")
+
+	service := NewSettingsService(configFile, "/dl", "/temp", func(updated *Settings) error {
+		return applyErr
+	})
+
+	if _, err := service.Update(DefaultSettings("/dl", "/temp")); !errors.Is(err, applyErr) {
+		t.Fatalf("expected apply failure to reach the caller, got %v", err)
+	}
+}
+
 func TestSettingsService_ReentrantDeadlock(t *testing.T) {
 	tempDir := t.TempDir()
 	configFile := filepath.Join(tempDir, "config.json")
 
 	var service *SettingsService
-	service = NewSettingsService(configFile, "/dl", "/temp", func(updated *Settings) {
+	service = NewSettingsService(configFile, "/dl", "/temp", func(updated *Settings) error {
 		// Attempting to read settings inside onChanged callback (exact calling chain of watcher.Start())
 		_ = service.Get()
+		return nil
 	})
 
 	done := make(chan struct{})

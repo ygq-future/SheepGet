@@ -178,9 +178,25 @@ func TestWatcher_StartStopAndSettingsUpdate(t *testing.T) {
 	var triggered []string
 	var trigMu sync.Mutex
 
-	w := clipboard.NewWatcher(mockClip, func() config.Settings {
+	// st 由测试协程写入、由轮询协程经 getSettings 读取，必须共用同一把锁。
+	// 取快照后在锁外调用 watcher：watcher 内部持自己的 mu 时才会回调 getSettings，
+	// 持 stMu 进入 watcher 会构成锁序反转。
+	var stMu sync.Mutex
+	var w *clipboard.Watcher
+	readSettings := func() config.Settings {
+		stMu.Lock()
+		defer stMu.Unlock()
 		return st
-	}, func(urlStr string) {
+	}
+	updateEnabled := func(enabled bool) {
+		stMu.Lock()
+		st.Clipboard.Enabled = enabled
+		snapshot := st
+		stMu.Unlock()
+		w.OnSettingsUpdated(&snapshot)
+	}
+
+	w = clipboard.NewWatcher(mockClip, readSettings, func(urlStr string) {
 		trigMu.Lock()
 		defer trigMu.Unlock()
 		triggered = append(triggered, urlStr)
@@ -195,8 +211,7 @@ func TestWatcher_StartStopAndSettingsUpdate(t *testing.T) {
 	}
 
 	// Update settings to enabled
-	st.Clipboard.Enabled = true
-	w.OnSettingsUpdated(&st)
+	updateEnabled(true)
 	if !w.IsRunning() {
 		t.Fatalf("expected watcher running after setting enabled")
 	}
@@ -212,8 +227,7 @@ func TestWatcher_StartStopAndSettingsUpdate(t *testing.T) {
 	trigMu.Unlock()
 
 	// Update settings to disabled
-	st.Clipboard.Enabled = false
-	w.OnSettingsUpdated(&st)
+	updateEnabled(false)
 	if w.IsRunning() {
 		t.Fatalf("expected watcher stopped after setting disabled")
 	}
