@@ -271,6 +271,16 @@ export function ResolveDuplicate(taskID: string, strategy: string, dir: string, 
 }
 
 /**
+ * ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
+ * cleans stale duplicate tasks, and registers the file as a completed task.
+ */
+export function ReuseExistingFile(existingTaskID: string, targetDir: string, targetFilename: string): $CancellablePromise<task$0.Task | null> {
+    return $Call.ByID(3163272336, existingTaskID, targetDir, targetFilename).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * ResumeTask resumes a paused or errored task
  */
 export function ResumeTask(id: string): $CancellablePromise<void> {
@@ -298,6 +308,13 @@ export function SelectDirectory(): $CancellablePromise<string> {
 /**
  * SetApplication sets the Wails application reference
  */
+
+/**
+ * SetCategoryDirectory sets the save directory for a category by ID and updates settings.
+ */
+export function SetCategoryDirectory(targetCategoryID: string, directory: string): $CancellablePromise<void> {
+    return $Call.ByID(67109910, targetCategoryID, directory);
+}
 export function SetApplication(app: application$0.App | null): $CancellablePromise<void> {
     return $Call.ByID(4121261467, app);
 }

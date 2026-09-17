@@ -20,8 +20,11 @@ import (
 
 // FileConflictResult represents whether target file exists and suggests an alternative filename.
 type FileConflictResult struct {
-	Exists            bool   `json:"exists"`
-	SuggestedFilename string `json:"suggestedFilename"`
+	Exists               bool   `json:"exists"`
+	SuggestedFilename    string `json:"suggestedFilename"`
+	ExistingPath         string `json:"existingPath,omitempty"`
+	ExistingTaskID       string `json:"existingTaskID,omitempty"`
+	CanReuseExistingFile bool   `json:"canReuseExistingFile,omitempty"`
 }
 
 // App struct
@@ -270,6 +273,21 @@ func (a *App) AssignExtensionToCategory(ext, targetCategoryID string) error {
 	return err
 }
 
+// SetCategoryDirectory sets the save directory for a category by ID and updates settings.
+func (a *App) SetCategoryDirectory(targetCategoryID, directory string) error {
+	if a.settings == nil {
+		return fmt.Errorf("settings service not initialized")
+	}
+	current := a.settings.Get()
+	updatedDownload, changed := current.Download.SetCategoryDirectory(targetCategoryID, directory)
+	if !changed {
+		return nil
+	}
+	current.Download = updatedDownload
+	_, err := a.settings.Update(current)
+	return err
+}
+
 // AddTask adds a new download task
 func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
 	if dir == "" {
@@ -437,10 +455,30 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 	} else {
 		suggested = filename
 	}
-	return FileConflictResult{
+	res := FileConflictResult{
 		Exists:            exists,
 		SuggestedFilename: suggested,
 	}
+
+	// 3. If file does not exist in target dir, check if identical completed file exists in another directory
+	if !exists && a.manager != nil && urlStr != "" {
+		if tasks, err := a.manager.List(a.ctx); err == nil {
+			for _, t := range tasks {
+				if t.URL == urlStr && t.Directory != "" && !engine.SamePath(t.Directory, dir) {
+					targetPath := filepath.Join(t.Directory, t.Filename)
+					if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() {
+						if t.Status == task.StatusCompleted && t.TotalBytes > 0 && fi.Size() == t.TotalBytes {
+							res.CanReuseExistingFile = true
+							res.ExistingPath = targetPath
+							res.ExistingTaskID = t.ID
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	return res
 }
 
 // ResolveDuplicate resolves a duplicate task using strategies "continue", "redownload", "copy", or "show_completed".
@@ -449,6 +487,15 @@ func (a *App) ResolveDuplicate(taskID, strategy, dir, filename string, maxConn i
 		dir = getDefaultDownloadDir()
 	}
 	return a.manager.ResolveDuplicate(a.ctx, taskID, strategy, dir, filename, maxConn)
+}
+
+// ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
+// cleans stale duplicate tasks, and registers the file as a completed task.
+func (a *App) ReuseExistingFile(existingTaskID, targetDir, targetFilename string) (*task.Task, error) {
+	if a.manager == nil {
+		return nil, fmt.Errorf("manager not initialized")
+	}
+	return a.manager.ReuseExistingFile(a.ctx, existingTaskID, targetDir, targetFilename)
 }
 
 // StartPreDownload starts downloading in the background while file info dialog is displayed.

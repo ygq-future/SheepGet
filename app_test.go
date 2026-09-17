@@ -694,3 +694,144 @@ func TestApp_CheckURLFilesExist_DiskFileNotExists_ReportsNotExistsAndDirectDownl
 		t.Errorf("expected exactly 1 task in store, got %d", len(tasks))
 	}
 }
+
+func TestApp_SetCategoryDirectory(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+	customDir := filepath.Join(tmpDir, "custom_video")
+
+	// Update builtin category directory
+	err := app.SetCategoryDirectory("builtin-video", customDir)
+	if err != nil {
+		t.Fatalf("SetCategoryDirectory failed: %v", err)
+	}
+
+	settings := app.GetSettings()
+	found := false
+	for _, b := range settings.Download.BuiltinCategories {
+		if b.ID == "builtin-video" {
+			found = true
+			if b.Directory != customDir {
+				t.Errorf("expected %s, got %s", customDir, b.Directory)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("builtin-video not found in settings")
+	}
+}
+
+func TestApp_CheckURLFilesExist_CrossDirectoryReuse(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/reuse_target.bin"
+	content := []byte("reuse-identical-payload-content-12345")
+
+	dirOld := filepath.Join(tmpDir, "old_folder")
+	_ = os.MkdirAll(dirOld, 0755)
+	oldFilePath := filepath.Join(dirOld, "reuse_target.bin")
+	_ = os.WriteFile(oldFilePath, content, 0644)
+
+	oldTask := &task.Task{
+		ID:         "task_old_complete",
+		URL:        targetURL,
+		Filename:   "reuse_target.bin",
+		Directory:  dirOld,
+		Status:     task.StatusCompleted,
+		TotalBytes: int64(len(content)),
+		Downloaded: int64(len(content)),
+	}
+	_ = store.Save(ctx, oldTask)
+
+	dirNew := filepath.Join(tmpDir, "new_folder")
+	_ = os.MkdirAll(dirNew, 0755)
+
+	// 1. CheckURLFilesExist in dirNew should detect the identical file in dirOld
+	res := app.CheckURLFilesExist(targetURL, dirNew, "reuse_target.bin")
+	if res.Exists {
+		t.Errorf("expected exists=false in dirNew, got true")
+	}
+	if !res.CanReuseExistingFile {
+		t.Fatalf("expected CanReuseExistingFile=true")
+	}
+	if res.ExistingTaskID != oldTask.ID {
+		t.Errorf("expected existing task ID %s, got %s", oldTask.ID, res.ExistingTaskID)
+	}
+	if res.ExistingPath != oldFilePath {
+		t.Errorf("expected existing path %s, got %s", oldFilePath, res.ExistingPath)
+	}
+
+	// 2. Perform ReuseExistingFile
+	reusedTask, err := app.ReuseExistingFile(oldTask.ID, dirNew, "reuse_target.bin")
+	if err != nil {
+		t.Fatalf("ReuseExistingFile failed: %v", err)
+	}
+	if reusedTask.Directory != dirNew {
+		t.Errorf("expected directory %s, got %s", dirNew, reusedTask.Directory)
+	}
+	if reusedTask.Status != task.StatusCompleted {
+		t.Errorf("expected status completed, got %s", reusedTask.Status)
+	}
+
+	// Verify file was moved to dirNew
+	newFilePath := filepath.Join(dirNew, "reuse_target.bin")
+	if _, err := os.Stat(newFilePath); err != nil {
+		t.Errorf("expected file to exist at %s, got error: %v", newFilePath, err)
+	}
+}
+
+func TestApp_CheckURLFilesExist_MultiStaleDuplicates_AllCleaned(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/multi_stale.bin"
+
+	// Multiple duplicate tasks in store whose physical files are gone
+	t1 := &task.Task{
+		ID:        "t_stale_1",
+		URL:       targetURL,
+		Filename:  "multi_stale.bin",
+		Directory: tmpDir,
+		Status:    task.StatusCompleted,
+	}
+	t2 := &task.Task{
+		ID:        "t_stale_2",
+		URL:       targetURL,
+		Filename:  "multi_stale.bin",
+		Directory: tmpDir,
+		Status:    task.StatusError,
+	}
+	_ = store.Save(ctx, t1)
+	_ = store.Save(ctx, t2)
+
+	enqResp, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       targetURL,
+		Directory: tmpDir,
+		Filename:  "multi_stale.bin",
+	})
+	if err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+
+	subTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID:         enqResp.RequestID,
+		URL:               targetURL,
+		Filename:          "multi_stale.bin",
+		Directory:         tmpDir,
+		DuplicateStrategy: "", // Prompted "此前已下载过此链接，当前目录下无同名文件", clicked confirm
+		MaxConn:           2,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	if subTask == nil {
+		t.Fatalf("expected subTask created")
+	}
+
+	// All stale tasks should be cleaned!
+	tasks, _ := store.List(ctx)
+	if len(tasks) != 1 {
+		t.Fatalf("expected only 1 task remaining, got %d", len(tasks))
+	}
+	if tasks[0].ID != subTask.ID {
+		t.Errorf("expected remaining task to be %s, got %s", subTask.ID, tasks[0].ID)
+	}
+}

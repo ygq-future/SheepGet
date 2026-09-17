@@ -41,8 +41,9 @@ export function Select<T extends string | number>({
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           align="start"
-          sideOffset={6}
-          className="animate-in fade-in-80 zoom-in-95 z-50 min-w-(--radix-dropdown-menu-trigger-width) overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-primary)] shadow-2xl backdrop-blur-xl"
+          sideOffset={4}
+          collisionPadding={8}
+          className="animate-in fade-in-80 zoom-in-95 z-[9999] max-h-52 min-w-(--radix-dropdown-menu-trigger-width) overflow-y-auto rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 text-[var(--text-primary)] shadow-2xl backdrop-blur-xl"
         >
           {options.map((opt) => {
             const isSelected = opt.value === value;

@@ -182,6 +182,7 @@ export class FileInfoSubmission {
     "duplicateStrategy"?: string;
     "preDownload": boolean;
     "overwriteConflict": boolean;
+    "reuseTaskId"?: string;
 
     /** Creates a new FileInfoSubmission instance. */
     constructor($$source: Partial<FileInfoSubmission> = {}) {

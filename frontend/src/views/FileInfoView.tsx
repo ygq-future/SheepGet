@@ -13,6 +13,8 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  FileCheck,
+  FolderInput,
 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
@@ -31,6 +33,7 @@ import {
   SwitchFileInfoActive,
   ResolveCategoryDirectory,
   AssignExtensionToCategory,
+  SetCategoryDirectory,
 } from '../../bindings/sheep-get/app';
 import type * as windowModels from '../../bindings/sheep-get/internal/window/models';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
@@ -56,6 +59,10 @@ interface ItemDraftState {
   selectedCategoryId: string;
   rememberCategory: boolean;
   categoryEdited: boolean;
+  keepCategoryPath?: boolean;
+  canReuseExistingFile?: boolean;
+  existingPath?: string;
+  existingTaskID?: string;
 }
 
 export function FileInfoView() {
@@ -82,6 +89,25 @@ export function FileInfoView() {
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
   const [rememberCategory, setRememberCategory] = useState(false);
   const [categoryEdited, setCategoryEdited] = useState(false);
+  const [keepCategoryPath, setKeepCategoryPath] = useState(false);
+  const [canReuseExistingFile, setCanReuseExistingFile] = useState(false);
+  const [existingPath, setExistingPath] = useState('');
+  const [existingTaskID, setExistingTaskID] = useState('');
+
+  const applyReuseState = useCallback(
+    (conf: { canReuseExistingFile?: boolean; existingPath?: string; existingTaskID?: string }) => {
+      if (conf.canReuseExistingFile && conf.existingPath && conf.existingTaskID) {
+        setCanReuseExistingFile(true);
+        setExistingPath(conf.existingPath);
+        setExistingTaskID(conf.existingTaskID);
+      } else {
+        setCanReuseExistingFile(false);
+        setExistingPath('');
+        setExistingTaskID('');
+      }
+    },
+    [],
+  );
   const nameEditedRef = useRef(false);
   const dirEditedRef = useRef(false);
   const originalFilenameRef = useRef('');
@@ -115,6 +141,10 @@ export function FileInfoView() {
       selectedCategoryId,
       rememberCategory,
       categoryEdited,
+      keepCategoryPath,
+      canReuseExistingFile,
+      existingPath,
+      existingTaskID,
     };
   }, [
     filename,
@@ -129,111 +159,127 @@ export function FileInfoView() {
     selectedCategoryId,
     rememberCategory,
     categoryEdited,
+    keepCategoryPath,
+    canReuseExistingFile,
+    existingPath,
+    existingTaskID,
   ]);
 
-  const initItem = useCallback(async (item: windowModels.FileInfoItem) => {
-    activeItemIdRef.current = item.id;
-    const existingDraft = itemDraftsRef.current[item.id];
-    if (existingDraft) {
+  const initItem = useCallback(
+    async (item: windowModels.FileInfoItem) => {
+      activeItemIdRef.current = item.id;
+      const existingDraft = itemDraftsRef.current[item.id];
+      if (existingDraft) {
+        setActiveItem((prev) => ({
+          ...item,
+          queueIndex: item.queueIndex || prev?.queueIndex || 1,
+          queueTotal: item.queueTotal || prev?.queueTotal || 1,
+        }));
+        setUrl(item.url || '');
+        setFilename(existingDraft.filename);
+        setDirectory(existingDraft.directory);
+        setMaxConn(existingDraft.maxConn);
+        setPreDownload(existingDraft.preDownload);
+        setDuplicateStrategy(existingDraft.duplicateStrategy);
+        setDupFileExists(existingDraft.dupFileExists);
+        setFileConflict(existingDraft.fileConflict);
+        setSuggestedFilename(existingDraft.suggestedFilename);
+        setOverwriteConflict(existingDraft.overwriteConflict);
+        nameEditedRef.current = existingDraft.nameEdited;
+        dirEditedRef.current = existingDraft.dirEdited;
+        setCategoryEdited(existingDraft.categoryEdited || false);
+        setSelectedCategoryId(existingDraft.selectedCategoryId || '');
+        setKeepCategoryPath(existingDraft.keepCategoryPath || false);
+        setCanReuseExistingFile(existingDraft.canReuseExistingFile || false);
+        setExistingPath(existingDraft.existingPath || '');
+        setExistingTaskID(existingDraft.existingTaskID || '');
+        setLoading(false);
+        return;
+      }
+
+      const currentSettings = useSettingsStore.getState().settings;
+      const currentPolicy =
+        item.duplicatePolicy ||
+        currentSettings?.download?.duplicateUrlPolicy ||
+        configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
+
+      const dir = item.directory || currentSettings?.download?.defaultDirectory || '';
+      const initialName = !item.url && item.filename === 'download.bin' ? '' : item.filename || '';
+      originalFilenameRef.current = initialName;
+
+      let initialStrategy: string | undefined = undefined;
+      let dupExistsOnDisk = false;
+      let chosenName = initialName;
+      // Check duplicate URL and disk existence
+      if (item.duplicateTask && dir && initialName) {
+        const conf = await CheckURLFilesExist(item.url || '', dir, initialName);
+        dupExistsOnDisk = conf.exists;
+        applyReuseState(conf);
+        // Handle duplicate policies
+        const policyStr = String(currentPolicy);
+        if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
+          // Automatically show completed progress window, keep current file info open
+          if (item.duplicateTask.id) {
+            void ShowProgressWindow(item.duplicateTask.id);
+          }
+        } else if (dupExistsOnDisk) {
+          if (policyStr === 'continue_overwrite' || policyStr === 'overwrite') {
+            initialStrategy = 'continue_overwrite';
+          } else if (policyStr === 'numbered_copy') {
+            initialStrategy = 'copy';
+            chosenName = conf.suggestedFilename;
+          }
+        }
+      }
       setActiveItem((prev) => ({
         ...item,
         queueIndex: item.queueIndex || prev?.queueIndex || 1,
         queueTotal: item.queueTotal || prev?.queueTotal || 1,
       }));
       setUrl(item.url || '');
-      setFilename(existingDraft.filename);
-      setDirectory(existingDraft.directory);
-      setMaxConn(existingDraft.maxConn);
-      setPreDownload(existingDraft.preDownload);
-      setDuplicateStrategy(existingDraft.duplicateStrategy);
-      setDupFileExists(existingDraft.dupFileExists);
-      setFileConflict(existingDraft.fileConflict);
-      setSuggestedFilename(existingDraft.suggestedFilename);
-      setOverwriteConflict(existingDraft.overwriteConflict);
-      nameEditedRef.current = existingDraft.nameEdited;
-      dirEditedRef.current = existingDraft.dirEdited;
-      setCategoryEdited(existingDraft.categoryEdited || false);
-      setSelectedCategoryId(existingDraft.selectedCategoryId || '');
+      setFilename(chosenName);
+      setDirectory(dir);
+      setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8);
+      setPreDownload(item.preDownload ?? !!currentSettings?.download?.preDownload);
+      setDupFileExists(dupExistsOnDisk);
+      setFileConflict(dupExistsOnDisk ? false : !!item.fileConflict);
+      setSuggestedFilename(item.suggestedFilename || '');
+      setDuplicateStrategy(initialStrategy);
+      setOverwriteConflict(false);
+      setError(null);
       setLoading(false);
-      return;
-    }
-
-    const currentSettings = useSettingsStore.getState().settings;
-    const currentPolicy =
-      item.duplicatePolicy ||
-      currentSettings?.download?.duplicateUrlPolicy ||
-      configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
-
-    const dir = item.directory || currentSettings?.download?.defaultDirectory || '';
-    const initialName = !item.url && item.filename === 'download.bin' ? '' : item.filename || '';
-    originalFilenameRef.current = initialName;
-
-    let initialStrategy: string | undefined = undefined;
-    let dupExistsOnDisk = false;
-    let chosenName = initialName;
-    // Check duplicate URL and disk existence
-    if (item.duplicateTask && dir && initialName) {
-      const conf = await CheckURLFilesExist(item.url || '', dir, initialName);
-      dupExistsOnDisk = conf.exists;
-
-      // Handle duplicate policies
-      const policyStr = String(currentPolicy);
-      if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
-        // Automatically show completed progress window, keep current file info open
-        if (item.duplicateTask.id) {
-          void ShowProgressWindow(item.duplicateTask.id);
-        }
-      } else if (dupExistsOnDisk) {
-        if (policyStr === 'continue_overwrite' || policyStr === 'overwrite') {
-          initialStrategy = 'continue_overwrite';
-        } else if (policyStr === 'numbered_copy') {
-          initialStrategy = 'copy';
-          chosenName = conf.suggestedFilename;
-        }
-      }
-    }
-    setActiveItem((prev) => ({
-      ...item,
-      queueIndex: item.queueIndex || prev?.queueIndex || 1,
-      queueTotal: item.queueTotal || prev?.queueTotal || 1,
-    }));
-    setUrl(item.url || '');
-    setFilename(chosenName);
-    setDirectory(dir);
-    setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8);
-    setPreDownload(item.preDownload ?? !!currentSettings?.download?.preDownload);
-    setDupFileExists(dupExistsOnDisk);
-    setFileConflict(dupExistsOnDisk ? false : !!item.fileConflict);
-    setSuggestedFilename(item.suggestedFilename || '');
-    setDuplicateStrategy(initialStrategy);
-    setOverwriteConflict(false);
-    setError(null);
-    setLoading(false);
-    nameEditedRef.current = false;
-    dirEditedRef.current = false;
-    setCategoryEdited(false);
-    const initialCat = resolveCategory(initialName, currentSettings).category;
-    const initialCatId = initialCat?.id || 'builtin-file';
-    setSelectedCategoryId(initialCatId);
-    setRememberCategory(false);
-    itemDraftsRef.current[item.id] = {
-      filename: chosenName,
-      directory: dir,
-      maxConn: item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8,
-      preDownload: item.preDownload ?? !!currentSettings?.download?.preDownload,
-      duplicateStrategy: initialStrategy,
-      dupFileExists: dupExistsOnDisk,
-      fileConflict: dupExistsOnDisk ? false : !!item.fileConflict,
-      suggestedFilename: item.suggestedFilename || '',
-      overwriteConflict: false,
-      nameEdited: false,
-      dirEdited: false,
-      categoryEdited: false,
-      selectedCategoryId: initialCatId,
-      rememberCategory: false,
-      originalFilename: initialName,
-    };
-  }, []);
+      nameEditedRef.current = false;
+      dirEditedRef.current = false;
+      setCategoryEdited(false);
+      const initialCat = resolveCategory(initialName, currentSettings).category;
+      const initialCatId = initialCat?.id || 'builtin-file';
+      setSelectedCategoryId(initialCatId);
+      setRememberCategory(false);
+      setKeepCategoryPath(false);
+      itemDraftsRef.current[item.id] = {
+        filename: chosenName,
+        directory: dir,
+        maxConn: item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8,
+        preDownload: item.preDownload ?? !!currentSettings?.download?.preDownload,
+        duplicateStrategy: initialStrategy,
+        dupFileExists: dupExistsOnDisk,
+        fileConflict: dupExistsOnDisk ? false : !!item.fileConflict,
+        suggestedFilename: item.suggestedFilename || '',
+        overwriteConflict: false,
+        nameEdited: false,
+        dirEdited: false,
+        categoryEdited: false,
+        selectedCategoryId: initialCatId,
+        rememberCategory: false,
+        keepCategoryPath: false,
+        canReuseExistingFile: false,
+        existingPath: '',
+        existingTaskID: '',
+        originalFilename: initialName,
+      };
+    },
+    [applyReuseState],
+  );
 
   useEffect(() => {
     void loadSettings();
@@ -304,6 +350,7 @@ export function FileInfoView() {
               if (conf.suggestedFilename) {
                 setSuggestedFilename(conf.suggestedFilename);
               }
+              applyReuseState(conf);
             }
           })();
         }
@@ -315,7 +362,7 @@ export function FileInfoView() {
       unlistenQueue();
       unlistenUpdated();
     };
-  }, [loadSettings, initItem]);
+  }, [loadSettings, initItem, applyReuseState]);
 
   // Handle URL probe when URL is changed manually
   const probeManualURL = async (rawUrl: string) => {
@@ -363,6 +410,7 @@ export function FileInfoView() {
         if (result.duplicateTask) {
           const conf = await CheckURLFilesExist(trimmed, effectiveDir, rawName);
           dupExistsOnDisk = conf.exists;
+          applyReuseState(conf);
           const policyStr = String(currentPolicy);
           if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
             // Auto open completed progress window, do NOT close file info dialog
@@ -447,6 +495,21 @@ export function FileInfoView() {
     }
   };
 
+  const selectedCategory = useMemo(() => {
+    const allCats = [
+      ...(currentSettings?.download?.customCategories || []),
+      ...(currentSettings?.download?.builtinCategories || []),
+    ];
+    return allCats.find((c) => c.id === effectiveCategoryId);
+  }, [currentSettings, effectiveCategoryId]);
+
+  const originalCategoryDir =
+    selectedCategory?.directory || currentSettings?.download?.defaultDirectory || '';
+  const canKeepCategoryPath =
+    Boolean(effectiveCategoryId) &&
+    directory.trim().length > 0 &&
+    directory.trim() !== originalCategoryDir.trim();
+
   const handleSelectDir = async () => {
     try {
       const selected = await SelectDirectory();
@@ -458,6 +521,7 @@ export function FileInfoView() {
             const conf = await CheckURLFilesExist(url, selected, filename);
             setDupFileExists(conf.exists);
             setSuggestedFilename(conf.suggestedFilename);
+            applyReuseState(conf);
           } else {
             const conf = await CheckFileConflict(selected, filename);
             setFileConflict(conf.exists);
@@ -486,9 +550,10 @@ export function FileInfoView() {
         return;
       }
 
-      const effectiveStrategy = strategyOverride ?? duplicateStrategy;
-
-      // Duplicate URL + file exists on disk: user MUST choose one of the three options!
+      let effectiveStrategy = strategyOverride ?? duplicateStrategy;
+      if (!dupFileExists && activeItem?.duplicateTask && !effectiveStrategy) {
+        effectiveStrategy = 'redownload';
+      }
       if (activeItem?.duplicateTask && dupFileExists && !effectiveStrategy) {
         setError('已有相同的下载链接和文件，请确认处理方式');
         return;
@@ -515,7 +580,14 @@ export function FileInfoView() {
         }
       }
 
-      setLoading(true);
+      if (keepCategoryPath && canKeepCategoryPath && effectiveCategoryId) {
+        try {
+          await SetCategoryDirectory(effectiveCategoryId, directory.trim());
+          await loadSettings();
+        } catch (catDirErr) {
+          console.error('Failed to set category directory:', catDirErr);
+        }
+      }
       setError(null);
       const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 8));
 
@@ -529,6 +601,7 @@ export function FileInfoView() {
           duplicateStrategy: effectiveStrategy,
           preDownload,
           overwriteConflict: overwriteConflict || isOverwrite,
+          reuseTaskId: effectiveStrategy === 'reuse' ? existingTaskID : undefined,
         });
         if (activeItem?.id) {
           delete itemDraftsRef.current[activeItem.id];
@@ -554,9 +627,11 @@ export function FileInfoView() {
       preDownload,
       rememberCategory,
       url,
+      canKeepCategoryPath,
+      existingTaskID,
+      keepCategoryPath,
     ],
   );
-
   const handleCancel = useCallback(async () => {
     try {
       if (activeItem?.id) {
@@ -835,25 +910,57 @@ export function FileInfoView() {
                     </div>
                   </>
                 ) : (
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
-                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                      <span className="text-[11px] font-medium text-[var(--text-secondary)]">
-                        此前已下载过此链接，当前目录下无同名文件
-                      </span>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        <span className="text-[11px] font-medium text-[var(--text-secondary)]">
+                          此前已下载过此链接，当前目录下无同名文件
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (activeItem.duplicateTask?.id) {
+                            void ShowProgressWindow(activeItem.duplicateTask.id);
+                          }
+                        }}
+                        className="flex items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)]"
+                      >
+                        <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                        <span>查看完成记录</span>
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (activeItem.duplicateTask?.id) {
-                          void ShowProgressWindow(activeItem.duplicateTask.id);
-                        }
-                      }}
-                      className="flex items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)]"
-                    >
-                      <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                      <span>查看完成记录</span>
-                    </button>
+
+                    {canReuseExistingFile && existingPath && (
+                      <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-2.5 text-[11px] text-blue-900 dark:text-blue-200">
+                        <div className="flex items-start gap-2">
+                          <FileCheck className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                          <div className="flex-1 space-y-1">
+                            <p className="font-medium text-[var(--text-primary)]">
+                              在其他历史目录中发现相同文件
+                            </p>
+                            <p className="font-mono text-[10px] break-all text-[var(--text-muted)]">
+                              {existingPath}
+                            </p>
+                            <div className="flex items-center gap-2 pt-1">
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                className="h-6 gap-1 px-2 text-[11px]"
+                                onClick={() => void handleConfirm('reuse')}
+                              >
+                                <FolderInput className="h-3 w-3" />
+                                <span>复用并移动到当前目录 (免下载)</span>
+                              </Button>
+                              <span className="text-[10px] text-[var(--text-muted)]">
+                                或点击下方“开始下载”重新下载
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1007,27 +1114,53 @@ export function FileInfoView() {
                 </Button>
               </div>
 
-              {/* Checkbox: 保持此类型文件为该分类 */}
+              {/* Checkboxes: 保持此类型文件为该分类 & 保持此分类为此路径 */}
               {(() => {
                 const currentExt = extractExtension(filename);
                 return (
-                  <div className="flex items-center gap-2 pt-0.5">
-                    <Checkbox
-                      id="remember-category-checkbox"
-                      checked={rememberCategory}
-                      onCheckedChange={(checked) => setRememberCategory(Boolean(checked))}
-                      disabled={!currentExt}
-                    />
-                    <label
-                      htmlFor="remember-category-checkbox"
-                      className={`cursor-pointer text-[11px] select-none ${
-                        currentExt
-                          ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                          : 'cursor-not-allowed text-[var(--text-muted)]'
-                      }`}
-                    >
-                      保持此类型文件{currentExt ? ` (.${currentExt})` : ''}为该分类
-                    </label>
+                  <div className="flex flex-wrap items-center gap-4 px-0.5 py-0.5">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="remember-category-checkbox"
+                        checked={rememberCategory}
+                        onCheckedChange={(checked) => setRememberCategory(Boolean(checked))}
+                        disabled={!currentExt}
+                      />
+                      <label
+                        htmlFor="remember-category-checkbox"
+                        className={`cursor-pointer text-[11px] select-none ${
+                          currentExt
+                            ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                            : 'cursor-not-allowed text-[var(--text-muted)]'
+                        }`}
+                      >
+                        记住此后缀分类{currentExt ? ` (.${currentExt})` : ''}
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="keep-category-path-checkbox"
+                        checked={keepCategoryPath}
+                        onCheckedChange={(checked) => setKeepCategoryPath(Boolean(checked))}
+                        disabled={!canKeepCategoryPath}
+                      />
+                      <label
+                        htmlFor="keep-category-path-checkbox"
+                        className={`cursor-pointer text-[11px] select-none ${
+                          canKeepCategoryPath
+                            ? 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                            : 'cursor-not-allowed text-[var(--text-muted)]'
+                        }`}
+                        title={
+                          canKeepCategoryPath
+                            ? '下载时将此分类的默认保存路径更新为当前路径'
+                            : '仅在选择分类并修改路径后可用'
+                        }
+                      >
+                        更新此分类默认路径
+                      </label>
+                    </div>
                   </div>
                 );
               })()}

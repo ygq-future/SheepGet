@@ -35,6 +35,7 @@ type DownloadEngine interface {
 	CancelPreDownload(ctx context.Context, taskID string) error
 	ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error)
 	NumberedCopyName(ctx context.Context, dir, filename string) (string, error)
+	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
 }
 
 // SettingsProvider provides active application configuration.
@@ -88,9 +89,10 @@ type FileInfoSubmission struct {
 	Filename          string `json:"filename"`
 	Directory         string `json:"directory"`
 	MaxConn           int    `json:"maxConn"`
-	DuplicateStrategy string `json:"duplicateStrategy,omitempty"` // "prompt", "continue", "redownload", "copy", "continue_overwrite", "show_completed"
+	DuplicateStrategy string `json:"duplicateStrategy,omitempty"` // "prompt", "continue", "redownload", "copy", "continue_overwrite", "show_completed", "reuse"
 	PreDownload       bool   `json:"preDownload"`
 	OverwriteConflict bool   `json:"overwriteConflict"`
+	ReuseTaskID       string `json:"reuseTaskId,omitempty"`
 }
 
 // QueueController coordinates the single-instance FileInfo window and its FIFO queue.
@@ -370,6 +372,19 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 	}
 }
 
+func mapPolicyToStrategy(policy config.DuplicateURLPolicy) string {
+	switch policy {
+	case config.DuplicatePolicyContinueOverwrite, config.DuplicatePolicyOverwriteLegacy:
+		return "continue_overwrite"
+	case config.DuplicatePolicyNumberedCopy:
+		return "copy"
+	case config.DuplicatePolicySkipShowCompleted, config.DuplicatePolicySkipShowLegacy:
+		return "show_completed"
+	default:
+		return ""
+	}
+}
+
 // Submit confirms the active file info item with final user choices.
 func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (*task.Task, error) {
 	qc.mu.Lock()
@@ -400,44 +415,50 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 	strategy := sub.DuplicateStrategy
 	destFileExists := engine.FileExists(filepath.Join(sub.Directory, sub.Filename))
 
-	if strategy == "" && active.DuplicateTask != nil {
-		if !destFileExists && active.DuplicateTask.Status == task.StatusCompleted && engine.SamePath(active.DuplicateTask.Directory, sub.Directory) {
-			// Disk file does not exist for completed task in the same directory:
-			// user directly downloads and we clean the stale duplicate task
-			strategy = "redownload"
-		} else {
-			switch active.DuplicatePolicy {
-			case config.DuplicatePolicyContinueOverwrite, config.DuplicatePolicyOverwriteLegacy:
-				strategy = "continue_overwrite"
-			case config.DuplicatePolicyNumberedCopy:
-				strategy = "copy"
-			case config.DuplicatePolicySkipShowCompleted, config.DuplicatePolicySkipShowLegacy:
-				strategy = "show_completed"
-			}
-		}
-	}
-
-	if strategy != "" && active.DuplicateTask != nil {
-		if strategy == "continue_overwrite" {
-			if active.DuplicateTask.Status == task.StatusCompleted {
-				strategy = "redownload"
-			} else {
-				strategy = "continue"
-			}
-		}
-		resTask, err = qc.engine.ResolveDuplicate(ctx, active.DuplicateTask.ID, strategy, sub.Directory, sub.Filename, sub.MaxConn)
-		if err != nil {
-			return nil, err
-		}
-	} else if active.PreDownloadTaskID != "" {
-		resTask, err = qc.engine.ConfirmPreDownload(ctx, active.PreDownloadTaskID, sub.Directory, sub.Filename, sub.MaxConn)
+	if strategy == "reuse" && sub.ReuseTaskID != "" {
+		resTask, err = qc.engine.ReuseExistingFile(ctx, sub.ReuseTaskID, sub.Directory, sub.Filename)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		resTask, err = qc.engine.AddTaskWithHeaders(ctx, sub.URL, sub.Directory, sub.Filename, sub.MaxConn, active.Headers)
-		if err != nil {
-			return nil, err
+		if strategy == "" && active.DuplicateTask != nil {
+			if !destFileExists {
+				if active.DuplicateTask.Status == task.StatusCompleted ||
+					active.DuplicatePolicy == config.DuplicatePolicyAsk ||
+					active.DuplicatePolicy == config.DuplicatePolicyPrompt {
+					strategy = "redownload"
+				} else if mapped := mapPolicyToStrategy(active.DuplicatePolicy); mapped != "" {
+					strategy = mapped
+				} else {
+					strategy = "redownload"
+				}
+			} else {
+				strategy = mapPolicyToStrategy(active.DuplicatePolicy)
+			}
+		}
+
+		if strategy != "" && active.DuplicateTask != nil {
+			if strategy == "continue_overwrite" {
+				if active.DuplicateTask.Status == task.StatusCompleted {
+					strategy = "redownload"
+				} else {
+					strategy = "continue"
+				}
+			}
+			resTask, err = qc.engine.ResolveDuplicate(ctx, active.DuplicateTask.ID, strategy, sub.Directory, sub.Filename, sub.MaxConn)
+			if err != nil {
+				return nil, err
+			}
+		} else if active.PreDownloadTaskID != "" {
+			resTask, err = qc.engine.ConfirmPreDownload(ctx, active.PreDownloadTaskID, sub.Directory, sub.Filename, sub.MaxConn)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			resTask, err = qc.engine.AddTaskWithHeaders(ctx, sub.URL, sub.Directory, sub.Filename, sub.MaxConn, active.Headers)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 

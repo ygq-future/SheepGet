@@ -523,6 +523,7 @@ func TestQueueController_ManualEmptyURL_DuplicateCompletedTask_Recognized(t *tes
 		TotalBytes: 8192,
 	}
 	_ = store.Save(ctx, existingTask)
+	_ = os.WriteFile(filepath.Join(tmpDir, "manual_dup.bin"), make([]byte, 8192), 0644)
 
 	// 1. User opens new download with empty URL
 	resp, err := qc.Enqueue(ctx, DownloadRequest{

@@ -8,12 +8,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sheep-get/internal/task"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"sheep-get/internal/task"
 )
 
 var (
@@ -308,7 +307,16 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		}
 		if existingList, err := m.store.List(ctx); err == nil {
 			for _, et := range existingList {
-				if et.ID != taskID && et.URL == t.URL && SamePath(et.Directory, dir) && SameFilename(et.Filename, filename) {
+				if et.ID == taskID || et.URL != t.URL {
+					continue
+				}
+				if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
+					continue
+				}
+				targetFilePath := filepath.Join(et.Directory, et.Filename)
+				isSameDest := SamePath(et.Directory, dir) && SameFilename(et.Filename, filename)
+				isStaleGhost := SameFilename(et.Filename, filename) && !FileExists(targetFilePath)
+				if isSameDest || isStaleGhost {
 					_ = m.Delete(ctx, et.ID)
 				}
 			}
@@ -379,6 +387,72 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 	default:
 		return nil, fmt.Errorf("unknown duplicate strategy: %s", strategy)
 	}
+}
+
+// ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
+// cleans any duplicate stale tasks whose files do not exist, and registers/updates the file as a completed task.
+func (m *Manager) ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error) {
+	t, err := m.store.Get(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("task not found: %w", err)
+	}
+	if t.Status != task.StatusCompleted {
+		return nil, fmt.Errorf("task is not completed (status: %s)", t.Status)
+	}
+
+	srcPath := filepath.Join(t.Directory, t.Filename)
+	if !FileExists(srcPath) {
+		return nil, fmt.Errorf("source file does not exist on disk: %s", srcPath)
+	}
+
+	if targetFilename == "" {
+		targetFilename = t.Filename
+	}
+	if targetDir == "" {
+		targetDir = t.Directory
+	}
+
+	destPath := filepath.Join(targetDir, targetFilename)
+	if !SamePath(srcPath, destPath) {
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create target directory: %w", err)
+		}
+		if err := os.Rename(srcPath, destPath); err != nil {
+			if xErr := safeTransferCrossDevice(srcPath, destPath); xErr != nil {
+				return nil, fmt.Errorf("failed to move file to %s: %w", destPath, xErr)
+			}
+			_ = os.Remove(srcPath)
+		}
+	}
+
+	// Clean other duplicate tasks for this URL where disk file does not exist
+	if existingList, err := m.store.List(ctx); err == nil {
+		for _, et := range existingList {
+			if et.ID == taskID || et.URL != t.URL {
+				continue
+			}
+			if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
+				continue
+			}
+			targetFilePath := filepath.Join(et.Directory, et.Filename)
+			if !FileExists(targetFilePath) {
+				_ = m.Delete(ctx, et.ID)
+			}
+		}
+	}
+
+	t.Directory = targetDir
+	t.Filename = targetFilename
+	t.Status = task.StatusCompleted
+	t.Downloaded = t.TotalBytes
+	t.ErrorMsg = ""
+	t.UpdatedAt = time.Now()
+
+	if err := m.store.Save(ctx, t); err != nil {
+		return nil, err
+	}
+	m.notify(t)
+	return t, nil
 }
 
 // CleanMissingNumberedCopies scans tasks in dir matching the numbered copy pattern for filename

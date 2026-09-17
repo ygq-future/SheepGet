@@ -11,6 +11,9 @@ import { Create as $Create } from "@wailsio/runtime";
 export class FileConflictResult {
     "exists": boolean;
     "suggestedFilename": string;
+    "existingPath"?: string;
+    "existingTaskID"?: string;
+    "canReuseExistingFile"?: boolean;
 
     /** Creates a new FileConflictResult instance. */
     constructor($$source: Partial<FileConflictResult> = {}) {

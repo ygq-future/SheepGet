@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useSettingsStore } from '../stores/settings';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Select } from './ui/Select';
@@ -22,10 +22,11 @@ import {
   Plus,
   Trash2,
   GripVertical,
+  X,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
 import { normalizeExtensions } from '../lib/category';
-import { motion } from 'motion/react';
+import { motion, Reorder, useDragControls } from 'motion/react';
 
 const PRESET_ACCENTS = [
   { name: '极客绿', hex: '#10b981' },
@@ -37,6 +38,225 @@ const PRESET_ACCENTS = [
   { name: '活力橙', hex: '#f97316' },
   { name: '琥珀金', hex: '#f59e0b' },
 ];
+
+interface CustomCategoryItemProps {
+  cat: configModels.CategoryConfig;
+  idx: number;
+  total: number;
+  catNameDrafts: Record<string, string>;
+  setCatNameDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  catDirDrafts: Record<string, string>;
+  setCatDirDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  addingExtCatId: string | null;
+  setAddingExtCatId: (id: string | null) => void;
+  newExtVal: string;
+  setNewExtVal: (val: string) => void;
+  handleMoveCustomCategory: (index: number, direction: 'up' | 'down') => Promise<void>;
+  handleCommitCategoryName: (catId: string, idx: number) => Promise<void>;
+  handleCommitCategoryDirectory: (
+    isCustom: boolean,
+    index: number,
+    rawPath: string,
+  ) => Promise<void>;
+  handleSelectCategoryDirectory: (isCustom: boolean, index: number) => Promise<void>;
+  handleDeleteCustomCategory: (index: number) => Promise<void>;
+  handleRemoveExtension: (isCustom: boolean, index: number, ext: string) => Promise<void>;
+  handleCommitNewExtension: (isCustom: boolean, index: number) => Promise<void>;
+}
+
+function CustomCategoryItem({
+  cat,
+  idx,
+  total,
+  catNameDrafts,
+  setCatNameDrafts,
+  catDirDrafts,
+  setCatDirDrafts,
+  addingExtCatId,
+  setAddingExtCatId,
+  newExtVal,
+  setNewExtVal,
+  handleMoveCustomCategory,
+  handleCommitCategoryName,
+  handleCommitCategoryDirectory,
+  handleSelectCategoryDirectory,
+  handleDeleteCustomCategory,
+  handleRemoveExtension,
+  handleCommitNewExtension,
+}: CustomCategoryItemProps) {
+  const dragControls = useDragControls();
+
+  return (
+    <Reorder.Item
+      value={cat}
+      dragListener={false}
+      dragControls={dragControls}
+      className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
+    >
+      {/* Row 1: Name, Directory, Actions */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div
+            onPointerDown={(e) => dragControls.start(e)}
+            className="cursor-grab p-0.5 text-[var(--text-muted)] select-none hover:text-[var(--text-primary)] active:cursor-grabbing"
+            title="拖动排序"
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </div>
+          <div className="flex flex-col">
+            <button
+              type="button"
+              disabled={idx === 0}
+              onClick={() => {
+                void handleMoveCustomCategory(idx, 'up');
+              }}
+              className="rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-20"
+              title="上移"
+            >
+              <ArrowUp className="h-2.5 w-2.5" />
+            </button>
+            <button
+              type="button"
+              disabled={idx === total - 1}
+              onClick={() => {
+                void handleMoveCustomCategory(idx, 'down');
+              }}
+              className="rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-20"
+              title="下移"
+            >
+              <ArrowDown className="h-2.5 w-2.5" />
+            </button>
+          </div>
+          <Input
+            value={cat.id in catNameDrafts ? catNameDrafts[cat.id] : cat.name}
+            onChange={(e) => {
+              setCatNameDrafts((prev) => ({ ...prev, [cat.id]: e.target.value }));
+            }}
+            onBlur={() => {
+              void handleCommitCategoryName(cat.id, idx);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleCommitCategoryName(cat.id, idx);
+              }
+            }}
+            placeholder="分类名称"
+            className="h-7 w-28 px-2 text-xs font-semibold"
+          />
+        </div>
+
+        <div className="flex max-w-sm min-w-0 flex-1 items-center justify-end gap-1.5">
+          <Input
+            value={cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''}
+            onChange={(e) => {
+              setCatDirDrafts((prev) => ({ ...prev, [cat.id]: e.target.value }));
+            }}
+            onBlur={() => {
+              const val = cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
+              void handleCommitCategoryDirectory(true, idx, val);
+              setCatDirDrafts((prev) => {
+                const next = { ...prev };
+                delete next[cat.id];
+                return next;
+              });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                const val = cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
+                void handleCommitCategoryDirectory(true, idx, val);
+                setCatDirDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[cat.id];
+                  return next;
+                });
+              }
+            }}
+            placeholder="默认保存位置"
+            className="h-7 flex-1 px-2 font-mono text-xs"
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              void handleSelectCategoryDirectory(true, idx);
+            }}
+            className="h-7 shrink-0 gap-1 px-2 text-xs"
+          >
+            <Folder className="h-3 w-3" />
+            <span>浏览</span>
+          </Button>
+          <button
+            type="button"
+            onClick={() => {
+              void handleDeleteCustomCategory(idx);
+            }}
+            className="rounded p-1 text-red-500 transition-colors hover:bg-red-500/10 hover:text-red-600"
+            title="删除分类"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Row 2: Tag stream with inline Add button */}
+      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+        {(cat.extensions || []).map((ext) => (
+          <span
+            key={ext}
+            className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+          >
+            <span>.{ext}</span>
+            <button
+              type="button"
+              onClick={() => void handleRemoveExtension(true, idx, ext)}
+              className="opacity-50 hover:text-red-500 hover:opacity-100"
+              title={`移除 .${ext}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+
+        {addingExtCatId === cat.id ? (
+          <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+            <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
+            <input
+              autoFocus
+              type="text"
+              value={newExtVal}
+              onChange={(e) => setNewExtVal(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleCommitNewExtension(true, idx);
+                } else if (e.key === 'Escape') {
+                  setAddingExtCatId(null);
+                }
+              }}
+              onBlur={() => void handleCommitNewExtension(true, idx)}
+              placeholder="后缀"
+              className="w-14 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+            />
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              setAddingExtCatId(cat.id);
+              setNewExtVal('');
+            }}
+            className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+          >
+            <Plus className="h-3 w-3" />
+            <span>添加</span>
+          </button>
+        )}
+      </div>
+    </Reorder.Item>
+  );
+}
 
 export function SettingsPanel() {
   const { settings, updateSettings } = useSettingsStore();
@@ -60,10 +280,14 @@ export function SettingsPanel() {
     setLastSavedTempDir(download.tempDirectory);
     setTempDirInput(download.tempDirectory);
   }
-  const [extDrafts, setExtDrafts] = useState<Record<string, string>>({});
   const [catDirDrafts, setCatDirDrafts] = useState<Record<string, string>>({});
   const [catNameDrafts, setCatNameDrafts] = useState<Record<string, string>>({});
-  const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
+  const [addingExtCatId, setAddingExtCatId] = useState<string | null>(null);
+  const [newExtVal, setNewExtVal] = useState('');
+  const reorderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [reorderedCategories, setReorderedCategories] = useState<
+    configModels.CategoryConfig[] | null
+  >(null);
   if (!settings) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-xs text-[var(--text-muted)]">
@@ -258,13 +482,27 @@ export function SettingsPanel() {
     });
   };
 
+  const isCategoryNameDuplicate = (name: string, excludeId?: string): boolean => {
+    const clean = name.trim().toLowerCase();
+    if (!clean) return false;
+    const all = [...(download.customCategories || []), ...(download.builtinCategories || [])];
+    return all.some((c) => c.id !== excludeId && c.name.trim().toLowerCase() === clean);
+  };
+
   const handleAddCustomCategory = async () => {
     const defaultDir = download.defaultDirectory || '';
+    const baseName = '新建分类';
+    let name = baseName;
+    let counter = 2;
+    while (isCategoryNameDuplicate(name)) {
+      name = `${baseName} ${counter}`;
+      counter++;
+    }
     const newCat = new configModels.CategoryConfig({
       id: `custom_${Date.now()}`,
-      name: '新建分类',
+      name,
       directory: defaultDir,
-      extensions: ['ext'],
+      extensions: [],
       isBuiltin: false,
     });
     const updatedList = [newCat, ...(download.customCategories || [])];
@@ -274,7 +512,25 @@ export function SettingsPanel() {
         customCategories: updatedList,
       }),
     });
-    showToast('已新建自定义分类（已置顶）', 'success');
+    showToast('已添加自定义分类', 'success');
+  };
+
+  const handleCommitCategoryName = async (catId: string, idx: number) => {
+    if (!(catId in catNameDrafts)) return;
+    const trimmed = catNameDrafts[catId].trim();
+    const cat = download.customCategories?.[idx];
+    const next = { ...catNameDrafts };
+    delete next[catId];
+    setCatNameDrafts(next);
+
+    if (!trimmed || !cat || trimmed === cat.name) {
+      return;
+    }
+    if (isCategoryNameDuplicate(trimmed, catId)) {
+      showToast(`分类名称【${trimmed}】已存在`, 'error', '名称冲突');
+      return;
+    }
+    await handleUpdateCustomCategory(idx, { name: trimmed });
   };
 
   const handleMoveCustomCategory = async (index: number, direction: 'up' | 'down') => {
@@ -292,6 +548,24 @@ export function SettingsPanel() {
     });
   };
 
+  const handleReorderCustomCategories = (newOrder: configModels.CategoryConfig[]) => {
+    setReorderedCategories(newOrder);
+    if (reorderTimerRef.current) {
+      clearTimeout(reorderTimerRef.current);
+    }
+    reorderTimerRef.current = setTimeout(() => {
+      void (async () => {
+        await updateSettings({
+          download: new configModels.DownloadConfig({
+            ...download,
+            customCategories: newOrder,
+          }),
+        });
+        setReorderedCategories(null);
+      })();
+    }, 250);
+  };
+
   const handleDeleteCustomCategory = async (index: number) => {
     const list = [...(download.customCategories || [])];
     list.splice(index, 1);
@@ -301,38 +575,8 @@ export function SettingsPanel() {
         customCategories: list,
       }),
     });
-    showToast('已删除自定义分类，匹配规则已回退', 'info');
+    showToast('已删除自定义分类', 'info');
   };
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedIdx(index);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
-
-  const handleDrop = async (e: React.DragEvent, targetIndex: number) => {
-    e.preventDefault();
-    if (draggedIdx === null || draggedIdx === targetIndex) {
-      setDraggedIdx(null);
-      return;
-    }
-    const list = [...(download.customCategories || [])];
-    const [moved] = list.splice(draggedIdx, 1);
-    list.splice(targetIndex, 0, moved);
-    setDraggedIdx(null);
-    await updateSettings({
-      download: new configModels.DownloadConfig({
-        ...download,
-        customCategories: list,
-      }),
-    });
-    showToast('已更新分类排序', 'success');
-  };
-
   const handleUpdateCustomCategory = async (
     index: number,
     updates: Partial<configModels.CategoryConfig>,
@@ -412,6 +656,71 @@ export function SettingsPanel() {
     } catch {
       showToast('目录校验异常', 'error');
     }
+  };
+
+  const handleRemoveExtension = async (isCustom: boolean, index: number, extToRemove: string) => {
+    const cat = isCustom ? download.customCategories?.[index] : download.builtinCategories?.[index];
+    if (!cat) return;
+    const nextExts = (cat.extensions || []).filter(
+      (e) => e.toLowerCase() !== extToRemove.toLowerCase(),
+    );
+    if (isCustom) {
+      await handleUpdateCustomCategory(index, { extensions: nextExts });
+    } else {
+      await handleUpdateBuiltinCategory(index, { extensions: nextExts });
+    }
+  };
+
+  const handleCommitNewExtension = async (isCustom: boolean, index: number) => {
+    const cat = isCustom ? download.customCategories?.[index] : download.builtinCategories?.[index];
+    if (!cat) {
+      setAddingExtCatId(null);
+      return;
+    }
+    const parsed = normalizeExtensions(newExtVal);
+    if (parsed.length > 0) {
+      const existingLower = new Set((cat.extensions || []).map((e) => e.toLowerCase()));
+      const validToAdd: string[] = [];
+
+      for (const ext of parsed) {
+        const extLower = ext.toLowerCase();
+        if (existingLower.has(extLower)) {
+          continue;
+        }
+        if (isCustom) {
+          const conflict = (download.customCategories || []).find(
+            (c, cIdx) =>
+              cIdx !== index && (c.extensions || []).some((e) => e.toLowerCase() === extLower),
+          );
+          if (conflict) {
+            showToast(`后缀 .${ext} 已存在于自定义分类【${conflict.name}】中`, 'error', '后缀重复');
+            continue;
+          }
+        } else {
+          const conflict = (download.builtinCategories || []).find(
+            (c, cIdx) =>
+              cIdx !== index && (c.extensions || []).some((e) => e.toLowerCase() === extLower),
+          );
+          if (conflict) {
+            showToast(`后缀 .${ext} 已存在于内置分类【${conflict.name}】中`, 'error', '后缀重复');
+            continue;
+          }
+        }
+        validToAdd.push(ext);
+        existingLower.add(extLower);
+      }
+
+      if (validToAdd.length > 0) {
+        const nextExts = [...(cat.extensions || []), ...validToAdd];
+        if (isCustom) {
+          await handleUpdateCustomCategory(index, { extensions: nextExts });
+        } else {
+          await handleUpdateBuiltinCategory(index, { extensions: nextExts });
+        }
+      }
+    }
+    setAddingExtCatId(null);
+    setNewExtVal('');
   };
 
   return (
@@ -763,7 +1072,7 @@ export function SettingsPanel() {
                     options={[
                       {
                         value: configModels.DuplicateURLPolicy.DuplicatePolicyAsk,
-                        label: '询问我 (默认)',
+                        label: '每次询问',
                       },
                       {
                         value: configModels.DuplicateURLPolicy.DuplicatePolicySkipShowDone,
@@ -805,11 +1114,10 @@ export function SettingsPanel() {
                 <div className="flex items-center justify-between">
                   <div className="pr-4">
                     <label className="text-xs font-semibold text-[var(--text-primary)]">
-                      使用服务器文件修改时间 (Last-Modified)
+                      使用服务器修改时间
                     </label>
                     <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                      下载完成后将本地文件修改时间设置为服务器返回的 Last-Modified。注意：HTTP
-                      仅提供修改时间（非创建时间），支持跨平台保留资源原始修改时间；未提供则保留完成时间。
+                      下载完成后将本地文件修改时间设置为服务器提供的修改时间，未提供则使用完成时间。
                     </p>
                   </div>
                   <Switch
@@ -884,9 +1192,9 @@ export function SettingsPanel() {
 
         {/* Categories Tab */}
         {activeTab === 'categories' && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             {/* Header info */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3">
               <div className="flex items-center gap-2">
                 <FolderTree className="h-4 w-4 text-[var(--accent)]" />
                 <span className="text-xs font-semibold text-[var(--text-primary)]">
@@ -894,12 +1202,12 @@ export function SettingsPanel() {
                 </span>
               </div>
               <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                配置不同文件类型的归档目录与后缀规则。新建下载时根据后缀自动选择保存目录；新建下载对话框中的手动选择优先。
+                根据文件后缀自动分类并分配保存目录；新建下载窗口中的手动指定优先。
               </p>
             </div>
 
             {/* Custom Categories */}
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <div className="flex items-center justify-between px-1">
                 <div className="flex items-center gap-2">
                   <h3 className="text-xs font-semibold text-[var(--text-primary)]">自定义分类</h3>
@@ -911,168 +1219,82 @@ export function SettingsPanel() {
                   onClick={() => {
                     void handleAddCustomCategory();
                   }}
-                  className="gap-1.5"
+                  className="h-7 gap-1 px-2.5 text-xs"
                 >
                   <Plus className="h-3.5 w-3.5" />
                   <span>新建分类</span>
                 </Button>
               </div>
-              <p className="px-1 text-[11px] text-[var(--text-muted)]">
-                自定义分类规则从上至下优先匹配，命中首个分类即停止；新建分类自动置顶，支持调整优先级。
-              </p>
 
               {(!download.customCategories || download.customCategories.length === 0) && (
-                <div className="rounded-xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)] py-8 text-center text-xs text-[var(--text-muted)]">
-                  暂无自定义分类。点击右上角“新建分类”添加，自定义规则优先级高于内置分类。
+                <div className="rounded-xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)] py-6 text-center text-xs text-[var(--text-muted)]">
+                  暂无自定义分类。点击右上角“新建分类”添加规则。
                 </div>
               )}
 
-              {download.customCategories?.map((cat, idx) => (
-                <div
-                  key={cat.id || idx}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, idx)}
-                  onDragOver={handleDragOver}
-                  onDrop={(e) => void handleDrop(e, idx)}
-                  className={`space-y-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 transition-all hover:border-[var(--border-focus)] ${
-                    draggedIdx === idx ? 'opacity-50' : ''
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex flex-1 items-center gap-2">
-                      <div
-                        className="cursor-grab p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] active:cursor-grabbing"
-                        title="拖动排序"
-                      >
-                        <GripVertical className="h-4 w-4" />
-                      </div>
-                      <div className="flex flex-col gap-0.5">
-                        <button
-                          type="button"
-                          disabled={idx === 0}
-                          onClick={() => {
-                            void handleMoveCustomCategory(idx, 'up');
-                          }}
-                          className="rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] disabled:opacity-30"
-                          title="上移（提高优先级）"
-                        >
-                          <ArrowUp className="h-3 w-3" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={idx === (download.customCategories?.length || 0) - 1}
-                          onClick={() => {
-                            void handleMoveCustomCategory(idx, 'down');
-                          }}
-                          className="rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)] disabled:opacity-30"
-                          title="下移（降低优先级）"
-                        >
-                          <ArrowDown className="h-3 w-3" />
-                        </button>
-                      </div>
-                      <Input
-                        value={cat.id in catNameDrafts ? catNameDrafts[cat.id] : cat.name}
-                        onChange={(e) => {
-                          setCatNameDrafts({ ...catNameDrafts, [cat.id]: e.target.value });
-                        }}
-                        onBlur={() => {
-                          if (cat.id in catNameDrafts) {
-                            const trimmed = catNameDrafts[cat.id].trim();
-                            if (trimmed && trimmed !== cat.name) {
-                              void handleUpdateCustomCategory(idx, { name: trimmed });
-                            }
-                            const next = { ...catNameDrafts };
-                            delete next[cat.id];
-                            setCatNameDrafts(next);
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            if (cat.id in catNameDrafts) {
-                              const trimmed = catNameDrafts[cat.id].trim();
-                              if (trimmed && trimmed !== cat.name) {
-                                void handleUpdateCustomCategory(idx, { name: trimmed });
-                              }
-                              const next = { ...catNameDrafts };
-                              delete next[cat.id];
-                              setCatNameDrafts(next);
-                            }
-                          }
-                        }}
-                        placeholder="分类名称"
-                        className="w-40 text-xs font-semibold"
-                      />
-                      <Badge variant="outline" className="text-[10px]">
-                        优先级 #{idx + 1}
-                      </Badge>
-                    </div>
+              <Reorder.Group
+                as="div"
+                axis="y"
+                values={reorderedCategories ?? download.customCategories ?? []}
+                onReorder={(newOrder) => {
+                  handleReorderCustomCategories(newOrder);
+                }}
+                className="space-y-2.5"
+              >
+                {(reorderedCategories ?? download.customCategories ?? []).map((cat, idx) => (
+                  <CustomCategoryItem
+                    key={cat.id || idx}
+                    cat={cat}
+                    idx={idx}
+                    total={download.customCategories?.length || 0}
+                    catNameDrafts={catNameDrafts}
+                    setCatNameDrafts={setCatNameDrafts}
+                    catDirDrafts={catDirDrafts}
+                    setCatDirDrafts={setCatDirDrafts}
+                    addingExtCatId={addingExtCatId}
+                    setAddingExtCatId={setAddingExtCatId}
+                    newExtVal={newExtVal}
+                    setNewExtVal={setNewExtVal}
+                    handleMoveCustomCategory={handleMoveCustomCategory}
+                    handleCommitCategoryName={handleCommitCategoryName}
+                    handleCommitCategoryDirectory={handleCommitCategoryDirectory}
+                    handleSelectCategoryDirectory={handleSelectCategoryDirectory}
+                    handleDeleteCustomCategory={handleDeleteCustomCategory}
+                    handleRemoveExtension={handleRemoveExtension}
+                    handleCommitNewExtension={handleCommitNewExtension}
+                  />
+                ))}
+              </Reorder.Group>
+            </div>
 
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        void handleDeleteCustomCategory(idx);
-                      }}
-                      className="text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                      title="删除此分类"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+            {/* Builtin Categories */}
+            <div className="space-y-2.5 border-t border-[var(--border-subtle)] pt-4">
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-semibold text-[var(--text-primary)]">内置分类</h3>
+                  <Badge variant="outline">{download.builtinCategories?.length || 6}</Badge>
+                </div>
+              </div>
 
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                        匹配后缀（逗号或空格分隔）
-                      </label>
-                      <Input
-                        value={
-                          cat.id in extDrafts
-                            ? extDrafts[cat.id]
-                            : (cat.extensions || []).join(', ')
-                        }
-                        onChange={(e) => {
-                          setExtDrafts({ ...extDrafts, [cat.id]: e.target.value });
-                        }}
-                        onBlur={() => {
-                          if (cat.id in extDrafts) {
-                            const parsed = normalizeExtensions(extDrafts[cat.id]);
-                            void handleUpdateCustomCategory(idx, { extensions: parsed });
-                            const next = { ...extDrafts };
-                            delete next[cat.id];
-                            setExtDrafts(next);
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            if (cat.id in extDrafts) {
-                              const parsed = normalizeExtensions(extDrafts[cat.id]);
-                              void handleUpdateCustomCategory(idx, { extensions: parsed });
-                              const next = { ...extDrafts };
-                              delete next[cat.id];
-                              setExtDrafts(next);
-                            }
-                          }
-                        }}
-                        placeholder="例如: rar, 7z, tar"
-                        className="font-mono text-xs"
-                      />
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {(cat.extensions || []).map((ext) => (
-                          <Badge key={ext} variant="accent">
-                            .{ext}
-                          </Badge>
-                        ))}
+              {download.builtinCategories?.map((cat, idx) => {
+                const isFallback = cat.id === 'builtin-file' || cat.name === '文件';
+                return (
+                  <div
+                    key={cat.id || idx}
+                    className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3"
+                  >
+                    {/* Row 1: Name, Badge, Directory */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-[var(--text-primary)]">
+                          {cat.name}
+                        </span>
+                        <Badge variant={isFallback ? 'warning' : 'outline'}>
+                          {isFallback ? '默认' : '内置'}
+                        </Badge>
                       </div>
-                    </div>
 
-                    <div className="space-y-1">
-                      <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                        保存目录
-                      </label>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex max-w-sm min-w-0 flex-1 items-center justify-end gap-1.5">
                         <Input
                           value={
                             cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
@@ -1083,7 +1305,7 @@ export function SettingsPanel() {
                           onBlur={() => {
                             const val =
                               cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
-                            void handleCommitCategoryDirectory(true, idx, val);
+                            void handleCommitCategoryDirectory(false, idx, val);
                             const next = { ...catDirDrafts };
                             delete next[cat.id];
                             setCatDirDrafts(next);
@@ -1093,163 +1315,88 @@ export function SettingsPanel() {
                               e.preventDefault();
                               const val =
                                 cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
-                              void handleCommitCategoryDirectory(true, idx, val);
+                              void handleCommitCategoryDirectory(false, idx, val);
                               const next = { ...catDirDrafts };
                               delete next[cat.id];
                               setCatDirDrafts(next);
                             }
                           }}
                           placeholder="留空则使用默认保存位置"
-                          className="flex-1 font-mono text-xs"
+                          className="h-7 flex-1 px-2 font-mono text-xs"
                         />
                         <Button
                           variant="secondary"
-                          size="md"
+                          size="sm"
                           onClick={() => {
-                            void handleSelectCategoryDirectory(true, idx);
+                            void handleSelectCategoryDirectory(false, idx);
                           }}
-                          className="shrink-0 gap-1"
+                          className="h-7 shrink-0 gap-1 px-2 text-xs"
                         >
                           <Folder className="h-3 w-3" />
                           <span>浏览</span>
                         </Button>
                       </div>
                     </div>
-                  </div>
-                </div>
-              ))}
-            </div>
 
-            {/* Builtin Categories */}
-            <div className="space-y-3 border-t border-[var(--border-subtle)] pt-4">
-              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-semibold text-[var(--text-primary)]">内置分类</h3>
-                  <Badge variant="outline">{download.builtinCategories?.length || 6}</Badge>
-                </div>
-              </div>
-              <p className="px-1 text-[11px] text-[var(--text-muted)]">
-                预置分类不可删除；自定义分类未命中时，依次尝试匹配；未命中任何规则的文件统一归入【文件】分类。
-              </p>
-
-              {download.builtinCategories?.map((cat, idx) => {
-                const isFallback = cat.id === 'builtin-file' || cat.name === '文件';
-                return (
-                  <div
-                    key={cat.id || idx}
-                    className="space-y-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-[var(--text-primary)]">
-                          {cat.name}
+                    {/* Row 2: Tag stream with inline Add button */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      {(cat.extensions || []).map((ext) => (
+                        <span
+                          key={ext}
+                          className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                        >
+                          <span>.{ext}</span>
+                          <button
+                            type="button"
+                            onClick={() => void handleRemoveExtension(false, idx, ext)}
+                            className="opacity-50 hover:text-red-500 hover:opacity-100"
+                            title={`移除 .${ext}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
                         </span>
-                        <Badge variant={isFallback ? 'warning' : 'outline'}>
-                          {isFallback ? '兜底分类' : '内置'}
-                        </Badge>
-                      </div>
-                      {isFallback && (
-                        <span className="text-[11px] text-[var(--text-muted)]">
-                          未匹配任何后缀的文件默认保存至此目录
-                        </span>
-                      )}
-                    </div>
+                      ))}
 
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                          匹配后缀
-                        </label>
-                        <Input
-                          value={
-                            cat.id in extDrafts
-                              ? extDrafts[cat.id]
-                              : (cat.extensions || []).join(', ')
-                          }
-                          onChange={(e) => {
-                            setExtDrafts({ ...extDrafts, [cat.id]: e.target.value });
-                          }}
-                          onBlur={() => {
-                            if (cat.id in extDrafts) {
-                              const parsed = normalizeExtensions(extDrafts[cat.id]);
-                              void handleUpdateBuiltinCategory(idx, { extensions: parsed });
-                              const next = { ...extDrafts };
-                              delete next[cat.id];
-                              setExtDrafts(next);
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              if (cat.id in extDrafts) {
-                                const parsed = normalizeExtensions(extDrafts[cat.id]);
-                                void handleUpdateBuiltinCategory(idx, { extensions: parsed });
-                                const next = { ...extDrafts };
-                                delete next[cat.id];
-                                setExtDrafts(next);
-                              }
-                            }
-                          }}
-                          className="font-mono text-xs"
-                        />
-                        <div className="flex flex-wrap gap-1 pt-1">
-                          {(cat.extensions || []).map((ext) => (
-                            <Badge key={ext} variant="outline">
-                              .{ext}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                          保存目录
-                        </label>
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            value={
-                              cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
-                            }
-                            onChange={(e) => {
-                              setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
-                            }}
-                            onBlur={() => {
-                              const val =
-                                cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
-                              void handleCommitCategoryDirectory(false, idx, val);
-                              const next = { ...catDirDrafts };
-                              delete next[cat.id];
-                              setCatDirDrafts(next);
-                            }}
+                      {addingExtCatId === cat.id ? (
+                        <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+                          <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={newExtVal}
+                            onChange={(e) => setNewExtVal(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                 e.preventDefault();
-                                const val =
-                                  cat.id in catDirDrafts
-                                    ? catDirDrafts[cat.id]
-                                    : cat.directory || '';
-                                void handleCommitCategoryDirectory(false, idx, val);
-                                const next = { ...catDirDrafts };
-                                delete next[cat.id];
-                                setCatDirDrafts(next);
+                                void handleCommitNewExtension(false, idx);
+                              } else if (e.key === 'Escape') {
+                                setAddingExtCatId(null);
                               }
                             }}
-                            placeholder="留空则使用默认保存位置"
-                            className="flex-1 font-mono text-xs"
+                            onBlur={() => void handleCommitNewExtension(false, idx)}
+                            placeholder="后缀"
+                            className="w-14 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
                           />
-                          <Button
-                            variant="secondary"
-                            size="md"
-                            onClick={() => {
-                              void handleSelectCategoryDirectory(false, idx);
-                            }}
-                            className="shrink-0 gap-1"
-                          >
-                            <Folder className="h-3 w-3" />
-                            <span>浏览</span>
-                          </Button>
-                        </div>
-                      </div>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAddingExtCatId(cat.id);
+                            setNewExtVal('');
+                          }}
+                          className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                        >
+                          <Plus className="h-3 w-3" />
+                          <span>添加</span>
+                        </button>
+                      )}
+
+                      {isFallback && (
+                        <span className="pl-1 text-[10px] text-[var(--text-muted)]">
+                          未匹配后缀的文件默认归入此目录
+                        </span>
+                      )}
                     </div>
                   </div>
                 );

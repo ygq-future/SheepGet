@@ -482,3 +482,49 @@ func TestAssignExtensionToCategory(t *testing.T) {
 		}
 	}
 }
+
+func TestSettings_SetCategoryDirectory(t *testing.T) {
+	s := DefaultSettings("/dl", "/tmp")
+	s.Download.CustomCategories = []CategoryConfig{
+		{ID: "custom-1", Name: "文档", Directory: "/old/custom"},
+	}
+
+	// 1. Update custom category directory
+	updated, changed := s.Download.SetCategoryDirectory("custom-1", "/new/custom")
+	if !changed {
+		t.Fatalf("expected changed=true for custom category")
+	}
+	if updated.CustomCategories[0].Directory != "/new/custom" {
+		t.Errorf("expected /new/custom, got %s", updated.CustomCategories[0].Directory)
+	}
+
+	// 2. Same directory -> no change
+	_, changed = updated.SetCategoryDirectory("custom-1", "/new/custom")
+	if changed {
+		t.Errorf("expected changed=false when directory is identical")
+	}
+
+	// 3. Update builtin category directory
+	updatedBuiltin, changedBuiltin := s.Download.SetCategoryDirectory("builtin-video", "/new/videos")
+	if !changedBuiltin {
+		t.Fatalf("expected changed=true for builtin category")
+	}
+	found := false
+	for _, b := range updatedBuiltin.BuiltinCategories {
+		if b.ID == "builtin-video" {
+			found = true
+			if b.Directory != "/new/videos" {
+				t.Errorf("expected /new/videos, got %s", b.Directory)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("builtin-video not found")
+	}
+
+	// 4. Non-existent category -> no change
+	_, changedNone := s.Download.SetCategoryDirectory("non-existent", "/some/path")
+	if changedNone {
+		t.Errorf("expected changed=false for non-existent category")
+	}
+}

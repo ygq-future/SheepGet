@@ -536,3 +536,36 @@ func (d DownloadConfig) AssignExtensionToCategory(ext, targetCategoryID string) 
 	d.BuiltinCategories = newBuiltin
 	return d, changed
 }
+
+// SetCategoryDirectory updates the save directory for a category (custom or builtin) by ID.
+func (d DownloadConfig) SetCategoryDirectory(targetCategoryID, dir string) (DownloadConfig, bool) {
+	if targetCategoryID == "" {
+		return d, false
+	}
+	cleanDir := strings.TrimSpace(dir)
+	changed := false
+
+	// 1. Check custom categories
+	for i := range d.CustomCategories {
+		if d.CustomCategories[i].ID == targetCategoryID {
+			if d.CustomCategories[i].Directory != cleanDir {
+				d.CustomCategories[i].Directory = cleanDir
+				changed = true
+			}
+			return d, changed
+		}
+	}
+
+	// 2. Check builtin categories
+	for i := range d.BuiltinCategories {
+		if d.BuiltinCategories[i].ID == targetCategoryID {
+			if d.BuiltinCategories[i].Directory != cleanDir {
+				d.BuiltinCategories[i].Directory = cleanDir
+				changed = true
+			}
+			return d, changed
+		}
+	}
+
+	return d, false
+}
