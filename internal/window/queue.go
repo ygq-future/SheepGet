@@ -68,6 +68,7 @@ type FileInfoItem struct {
 	Filename          string                    `json:"filename"`
 	SuggestedFilename string                    `json:"suggestedFilename"`
 	Directory         string                    `json:"directory"`
+	CategoryID        string                    `json:"categoryId,omitempty"`
 	TotalBytes        int64                     `json:"totalBytes"`
 	MimeType          string                    `json:"mimeType"`
 	Resumable         bool                      `json:"resumable"`
@@ -235,12 +236,16 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 
 	dir := req.Directory
-	if dir == "" {
-		if filename != "" {
-			dir = activeSettings.Download.ResolveCategoryDirectory(filename)
-		} else {
-			dir = activeSettings.Download.DefaultDirectory
+	categoryID := ""
+	if filename != "" {
+		// 分类只决定目录；手动指定目录时仍然给出命中分类，供界面展示与"记住分类"使用。
+		cat, resolvedDir := activeSettings.Download.ResolveDestination(filename)
+		categoryID = cat.ID
+		if dir == "" {
+			dir = resolvedDir
 		}
+	} else if dir == "" {
+		dir = activeSettings.Download.DefaultDirectory
 	}
 
 	conflict := false
@@ -262,6 +267,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		Filename:          filename,
 		SuggestedFilename: suggested,
 		Directory:         dir,
+		CategoryID:        categoryID,
 		TotalBytes:        -1,
 		MimeType:          "",
 		Resumable:         false,

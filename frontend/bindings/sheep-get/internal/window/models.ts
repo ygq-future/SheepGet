@@ -88,6 +88,7 @@ export class FileInfoItem {
     "filename": string;
     "suggestedFilename": string;
     "directory": string;
+    "categoryId"?: string;
     "totalBytes": number;
     "mimeType": string;
     "resumable": boolean;
@@ -153,14 +154,14 @@ export class FileInfoItem {
      * Creates a new FileInfoItem instance from a string or object.
      */
     static createFrom($$source: any = {}): FileInfoItem {
-        const $$createField12_0 = $$createType2;
-        const $$createField16_0 = $$createType0;
+        const $$createField13_0 = $$createType2;
+        const $$createField17_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
-            $$parsedSource["duplicateTask"] = $$createField12_0($$parsedSource["duplicateTask"]);
+            $$parsedSource["duplicateTask"] = $$createField13_0($$parsedSource["duplicateTask"]);
         }
         if ("headers" in $$parsedSource) {
-            $$parsedSource["headers"] = $$createField16_0($$parsedSource["headers"]);
+            $$parsedSource["headers"] = $$createField17_0($$parsedSource["headers"]);
         }
         return new FileInfoItem($$parsedSource as Partial<FileInfoItem>);
     }

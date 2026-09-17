@@ -31,7 +31,7 @@ import {
   CheckURLFilesExist,
   ShowProgressWindow,
   SwitchFileInfoActive,
-  ResolveCategoryDirectory,
+  ResolveDestination,
   AssignExtensionToCategory,
   SetCategoryDirectory,
 } from '../../bindings/sheep-get/app';
@@ -42,7 +42,7 @@ import { unwrapEventData } from '../lib/utils';
 import { useSettingsStore } from '../stores/settings';
 import { Select } from '../components/ui/Select';
 import { Checkbox } from '../components/ui/Checkbox';
-import { extractExtension, resolveCategory } from '../lib/category';
+import { extractExtension } from '../lib/category';
 interface ItemDraftState {
   filename: string;
   directory: string;
@@ -57,6 +57,7 @@ interface ItemDraftState {
   dirEdited: boolean;
   originalFilename: string;
   selectedCategoryId: string;
+  autoCategoryId: string;
   rememberCategory: boolean;
   categoryEdited: boolean;
   keepCategoryPath?: boolean;
@@ -87,6 +88,8 @@ export function FileInfoView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
+  // 后端给出的命中分类，随文件名变化更新；分类规则只在后端实现。
+  const [autoCategoryId, setAutoCategoryId] = useState('builtin-file');
   const [rememberCategory, setRememberCategory] = useState(false);
   const [categoryEdited, setCategoryEdited] = useState(false);
   const [keepCategoryPath, setKeepCategoryPath] = useState(false);
@@ -139,6 +142,7 @@ export function FileInfoView() {
       dirEdited: dirEditedRef.current,
       originalFilename: originalFilenameRef.current,
       selectedCategoryId,
+      autoCategoryId,
       rememberCategory,
       categoryEdited,
       keepCategoryPath,
@@ -157,6 +161,7 @@ export function FileInfoView() {
     suggestedFilename,
     overwriteConflict,
     selectedCategoryId,
+    autoCategoryId,
     rememberCategory,
     categoryEdited,
     keepCategoryPath,
@@ -189,6 +194,7 @@ export function FileInfoView() {
         dirEditedRef.current = existingDraft.dirEdited;
         setCategoryEdited(existingDraft.categoryEdited || false);
         setSelectedCategoryId(existingDraft.selectedCategoryId || '');
+        setAutoCategoryId(existingDraft.autoCategoryId || 'builtin-file');
         setKeepCategoryPath(existingDraft.keepCategoryPath || false);
         setCanReuseExistingFile(existingDraft.canReuseExistingFile || false);
         setExistingPath(existingDraft.existingPath || '');
@@ -251,9 +257,10 @@ export function FileInfoView() {
       nameEditedRef.current = false;
       dirEditedRef.current = false;
       setCategoryEdited(false);
-      const initialCat = resolveCategory(initialName, currentSettings).category;
-      const initialCatId = initialCat?.id || 'builtin-file';
+      // 命中分类由后端在登记请求时判定，界面不重复实现分类规则。
+      const initialCatId = item.categoryId || 'builtin-file';
       setSelectedCategoryId(initialCatId);
+      setAutoCategoryId(initialCatId);
       setRememberCategory(false);
       setKeepCategoryPath(false);
       itemDraftsRef.current[item.id] = {
@@ -270,6 +277,7 @@ export function FileInfoView() {
         dirEdited: false,
         categoryEdited: false,
         selectedCategoryId: initialCatId,
+        autoCategoryId: initialCatId,
         rememberCategory: false,
         keepCategoryPath: false,
         canReuseExistingFile: false,
@@ -389,13 +397,15 @@ export function FileInfoView() {
 
       const currentDir = directoryRef.current;
       let effectiveDir = currentDir;
-      if (!dirEditedRef.current && rawName) {
+      if (rawName) {
         try {
-          const catDir = await ResolveCategoryDirectory(rawName);
-          if (catDir) {
-            effectiveDir = catDir;
-            if (catDir !== currentDir) {
-              setDirectory(catDir);
+          const dest = await ResolveDestination(rawName);
+          // 命中分类只取决于文件名，即使目录被用户手动改过也要更新。
+          setAutoCategoryId(dest.categoryId || 'builtin-file');
+          if (!dirEditedRef.current && dest.directory) {
+            effectiveDir = dest.directory;
+            if (dest.directory !== currentDir) {
+              setDirectory(dest.directory);
             }
           }
         } catch {
@@ -459,7 +469,6 @@ export function FileInfoView() {
   };
 
   const currentSettings = useSettingsStore((s) => s.settings);
-  const autoCategoryId = resolveCategory(filename, currentSettings).category?.id || 'builtin-file';
   const effectiveCategoryId =
     categoryEdited && selectedCategoryId ? selectedCategoryId : autoCategoryId;
   const categoryOptions = useMemo(() => {
@@ -1023,12 +1032,16 @@ export function FileInfoView() {
                     setFilename(newName);
 
                     const seq = ++filenameSeqRef.current;
-                    if (!dirEditedRef.current && newName) {
+                    if (newName) {
                       void (async () => {
                         try {
-                          const catDir = await ResolveCategoryDirectory(newName);
-                          if (seq === filenameSeqRef.current && catDir) {
-                            setDirectory(catDir);
+                          const dest = await ResolveDestination(newName);
+                          if (seq === filenameSeqRef.current) {
+                            // 命中分类跟随文件名变化；目录仅在用户未手动改过时跟随。
+                            setAutoCategoryId(dest.categoryId || 'builtin-file');
+                            if (!dirEditedRef.current && dest.directory) {
+                              setDirectory(dest.directory);
+                            }
                           }
                         } catch {
                           // ignore

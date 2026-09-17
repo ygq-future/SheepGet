@@ -6,6 +6,35 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
+ * DestinationInfo describes the resolved save location of a download: its directory and
+ * the category that matched the filename.
+ */
+export class DestinationInfo {
+    "directory": string;
+    "categoryId": string;
+
+    /** Creates a new DestinationInfo instance. */
+    constructor($$source: Partial<DestinationInfo> = {}) {
+        if (!("directory" in $$source)) {
+            this["directory"] = "";
+        }
+        if (!("categoryId" in $$source)) {
+            this["categoryId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DestinationInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DestinationInfo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DestinationInfo($$parsedSource as Partial<DestinationInfo>);
+    }
+}
+
+/**
  * FileConflictResult represents whether target file exists and suggests an alternative filename.
  */
 export class FileConflictResult {

@@ -639,3 +639,38 @@ func TestQueueController_CategoryDirectoryResolution_AndManualPriority(t *testin
 		t.Errorf("expected manual directory %s to take precedence, got %s", manualDir, item3.Directory)
 	}
 }
+
+// TestQueueController_ItemCarriesResolvedCategory pins that the file info window receives
+// the matched category from the backend instead of re-implementing the category rule.
+func TestQueueController_ItemCarriesResolvedCategory(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, _, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/clip.mp4",
+		Directory: tmpDir,
+	}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	active, err := qc.GetActive()
+	if err != nil || active == nil {
+		t.Fatalf("expected active item, got %v, err: %v", active, err)
+	}
+	if active.CategoryID == "" {
+		t.Fatalf("expected the queued item to carry the matched category")
+	}
+	// 分类只决定目录：手动指定目录时目录保持用户选择，命中分类仍然给出。
+	if active.Directory != tmpDir {
+		t.Fatalf("expected the manual directory to win, got %q", active.Directory)
+	}
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{URL: "https://example.com/other.zip"}); err != nil {
+		t.Fatalf("enqueue without directory failed: %v", err)
+	}
+	items := qc.GetQueueItems()
+	last := items[len(items)-1]
+	if last.Directory == "" {
+		t.Fatalf("expected the category rule to resolve a directory when none was given")
+	}
+}

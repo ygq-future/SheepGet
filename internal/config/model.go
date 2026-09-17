@@ -593,13 +593,21 @@ func (d DownloadConfig) ResolveCategory(filename string) (CategoryConfig, bool) 
 	}, false
 }
 
+// ResolveDestination returns the matched category and its save directory for a filename
+// in one step. 这是"文件名 → 落点"的唯一规则入口：目录、分类、界面展示都以它的结果为准。
+func (d DownloadConfig) ResolveDestination(filename string) (CategoryConfig, string) {
+	cat, _ := d.ResolveCategory(filename)
+	dir := cat.Directory
+	if dir == "" {
+		dir = d.DefaultDirectory
+	}
+	return cat, dir
+}
+
 // ResolveCategoryDirectory returns the save directory for a given filename.
 func (d DownloadConfig) ResolveCategoryDirectory(filename string) string {
-	cat, _ := d.ResolveCategory(filename)
-	if cat.Directory != "" {
-		return cat.Directory
-	}
-	return d.DefaultDirectory
+	_, dir := d.ResolveDestination(filename)
+	return dir
 }
 
 // AssignExtensionToCategory assigns an extension to the target category by ID.

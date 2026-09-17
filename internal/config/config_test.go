@@ -615,6 +615,32 @@ func TestSiteMatchesExcluded(t *testing.T) {
 	}
 }
 
+// TestResolveDestination_SingleRule 保证"命中分类"与"保存目录"出自同一规则，
+// 避免两条入口对同一文件名给出不同落点。
+func TestResolveDestination_SingleRule(t *testing.T) {
+	d := DownloadConfig{
+		DefaultDirectory: "/downloads",
+		BuiltinCategories: []CategoryConfig{
+			{ID: "builtin-video", Name: "视频", Directory: "/downloads/Videos", Extensions: []string{"mp4"}},
+			{ID: "builtin-file", Name: "文件", Directory: "/downloads/Files", Extensions: []string{"pdf"}},
+		},
+	}
+
+	cat, dir := d.ResolveDestination("clip.mp4")
+	if cat.ID != "builtin-video" || dir != "/downloads/Videos" {
+		t.Fatalf("expected video category and its directory, got %q / %q", cat.ID, dir)
+	}
+	if onlyDir := d.ResolveCategoryDirectory("clip.mp4"); onlyDir != dir {
+		t.Fatalf("ResolveCategoryDirectory gave %q but ResolveDestination gave %q", onlyDir, dir)
+	}
+
+	// 分类未配置自己的目录时落到默认目录。
+	d.BuiltinCategories[0].Directory = ""
+	if _, dir := d.ResolveDestination("clip.mp4"); dir != "/downloads" {
+		t.Fatalf("expected default directory fallback, got %q", dir)
+	}
+}
+
 func TestProxyModeValidation(t *testing.T) {
 	s := Settings{
 		Proxy: ProxyConfig{

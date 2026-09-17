@@ -27,6 +27,13 @@ type FileConflictResult struct {
 	CanReuseExistingFile bool   `json:"canReuseExistingFile,omitempty"`
 }
 
+// DestinationInfo describes the resolved save location of a download: its directory and
+// the category that matched the filename.
+type DestinationInfo struct {
+	Directory  string `json:"directory"`
+	CategoryID string `json:"categoryId"`
+}
+
 // App struct
 type App struct {
 	app                *application.App
@@ -319,13 +326,23 @@ func (a *App) GetDefaultDownloadDir() string {
 	return getDefaultDownloadDir()
 }
 
-// ResolveCategoryDirectory resolves the target directory for a given filename based on current settings.
-func (a *App) ResolveCategoryDirectory(filename string) string {
+// ResolveDestination resolves the save directory and matched category for a filename.
+// 分类规则只在后端实现一次：界面用它展示命中分类并填充目录，不再自建同一规则。
+func (a *App) ResolveDestination(filename string) DestinationInfo {
+	if a.settings == nil {
+		return DestinationInfo{Directory: getDefaultDownloadDir()}
+	}
+	cat, dir := a.settings.Get().Download.ResolveDestination(filename)
+	return DestinationInfo{Directory: dir, CategoryID: cat.ID}
+}
+
+// categoryDirectory returns only the save directory for internal callers that do not need
+// the matched category; the frontend uses ResolveDestination.
+func (a *App) categoryDirectory(filename string) string {
 	if a.settings == nil {
 		return a.GetDefaultDownloadDir()
 	}
-	cfg := a.settings.Get()
-	return cfg.Download.ResolveCategoryDirectory(filename)
+	return a.settings.Get().Download.ResolveCategoryDirectory(filename)
 }
 
 // AssignExtensionToCategory assigns an extension to a target category and updates settings.
@@ -368,7 +385,7 @@ func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, er
 	}
 	if dir == "" {
 		if filename != "" {
-			dir = a.ResolveCategoryDirectory(filename)
+			dir = a.categoryDirectory(filename)
 		} else {
 			dir = a.GetDefaultDownloadDir()
 		}
@@ -578,7 +595,7 @@ func (a *App) ReuseExistingFile(existingTaskID, targetDir, targetFilename string
 func (a *App) StartPreDownload(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
 	if dir == "" {
 		if filename != "" {
-			dir = a.ResolveCategoryDirectory(filename)
+			dir = a.categoryDirectory(filename)
 		} else {
 			dir = a.GetDefaultDownloadDir()
 		}

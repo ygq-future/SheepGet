@@ -260,10 +260,13 @@ export function ResetAndDownloadWithNewURL(taskID: string, newURL: string, heade
 }
 
 /**
- * ResolveCategoryDirectory resolves the target directory for a given filename based on current settings.
+ * ResolveDestination resolves the save directory and matched category for a filename.
+ * 分类规则只在后端实现一次：界面用它展示命中分类并填充目录，不再自建同一规则。
  */
-export function ResolveCategoryDirectory(filename: string): $CancellablePromise<string> {
-    return $Call.ByID(154355798, filename);
+export function ResolveDestination(filename: string): $CancellablePromise<$models.DestinationInfo> {
+    return $Call.ByID(177293617, filename).then(($result: any) => {
+        return $$createType15($result);
+    });
 }
 
 /**
@@ -436,3 +439,4 @@ const $$createType11 = window$0.DownloadResponse.createFrom;
 const $$createType12 = $Create.Nullable($$createType11);
 const $$createType13 = engine$0.ProbeResult.createFrom;
 const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = $models.DestinationInfo.createFrom;

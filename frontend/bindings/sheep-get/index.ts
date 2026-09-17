@@ -7,5 +7,6 @@ export {
 };
 
 export {
+    DestinationInfo,
     FileConflictResult
 } from "./models.js";

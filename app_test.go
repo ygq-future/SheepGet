@@ -852,3 +852,23 @@ func TestApp_ToggleClipboardSettingsNoDeadlock(t *testing.T) {
 		}
 	}
 }
+
+// TestApp_ResolveDestination pins the single source of truth for the frontend: the file
+// info window reads the matched category and directory from here instead of implementing
+// the category rule a second time in TypeScript.
+func TestApp_ResolveDestination(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	for _, name := range []string{"clip.mp4", "readme.pdf", "unknown.zzz", "Makefile"} {
+		got := app.ResolveDestination(name)
+		if got.CategoryID == "" {
+			t.Fatalf("expected a matched category for %q, got none", name)
+		}
+		if got.Directory == "" {
+			t.Fatalf("expected a resolved directory for %q, got none", name)
+		}
+		if want := app.settings.Get().Download.ResolveCategoryDirectory(name); want != got.Directory {
+			t.Fatalf("ResolveDestination(%q) directory %q disagrees with ResolveCategoryDirectory %q", name, got.Directory, want)
+		}
+	}
+}
