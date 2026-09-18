@@ -1,6 +1,6 @@
+import { MediaBarManager } from '../lib/mediabar';
 import { normalizeKeyName } from '../lib/shortcuts';
-import type { KeyStateMessage, ResetKeysMessage } from '../lib/types';
-
+import type { ExtensionMessage, KeyStateMessage, ResetKeysMessage } from '../lib/types';
 export default defineContentScript({
   matches: ['*://*/*'],
   runAt: 'document_start',
@@ -36,5 +36,33 @@ export default defineContentScript({
     window.addEventListener('keydown', handleKeyEvent, true);
     window.addEventListener('keyup', handleKeyEvent, true);
     window.addEventListener('blur', handleBlur);
+
+    // Initialize media floating bar manager
+    const mediaBar = new MediaBarManager();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => {
+        mediaBar.start();
+      });
+    } else {
+      mediaBar.start();
+    }
+
+    // Request currently detected media resources for this tab
+    try {
+      chrome.runtime.sendMessage({ type: 'GET_TAB_MEDIA' }, (res) => {
+        if (res && Array.isArray(res)) {
+          mediaBar.setResources(res);
+        }
+      });
+    } catch {
+      //
+    }
+
+    // Listen for media update messages from background
+    chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
+      if (msg && msg.type === 'GET_TAB_MEDIA') {
+        //
+      }
+    });
   },
 });
