@@ -1,0 +1,17 @@
+diff --git a/dist/core/builders/vite/index.mjs b/dist/core/builders/vite/index.mjs
+index bcd416f32d91b27b7aba1ba11dc6a150bf5bb593..b5de35b090572bccc3c901e2b6439b68d3faccb6 100644
+--- a/dist/core/builders/vite/index.mjs
++++ b/dist/core/builders/vite/index.mjs
+@@ -357,7 +357,11 @@ async function removeEmptyDirs(dir) {
+ 		if (stats.isDirectory()) await removeEmptyDirs(filePath);
+ 	}
+ 	try {
+-		await rmdir(dir);
++		// PATCH(sheepget): only remove the directory when it is really empty.
++		// Upstream relies on rmdir() rejecting a non-empty directory, but some
++		// filesystems (observed on Windows here) delete the whole tree instead,
++		// which silently wipes the freshly built extension output.
++		if ((await readdir(dir)).length === 0) await rmdir(dir);
+ 	} catch {}
+ }
+ function isRolldownVersion(version) {

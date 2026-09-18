@@ -1,3 +1,5 @@
+import type { MediaResource } from './media';
+
 export interface PageContext {
   pageUrl: string;
   referrer?: string;
@@ -55,7 +57,13 @@ export interface ResetKeysMessage {
 
 export interface GetTabMediaMessage {
   type: 'GET_TAB_MEDIA';
-  tabId: number;
+  // content script 不知道自己所在标签页的编号，只有 popup 会带上
+  tabId?: number;
+}
+
+export interface TabMediaUpdatedMessage {
+  type: 'TAB_MEDIA_UPDATED';
+  resources: MediaResource[];
 }
 
 export interface HandoverMediaMessage {
@@ -71,5 +79,20 @@ export interface HandoverMediaMessage {
   };
 }
 
+export interface DiscoverSessionMessage {
+  type: 'DISCOVER_SESSION';
+}
+
+export interface SetManualSessionMessage {
+  type: 'SET_MANUAL_SESSION';
+  session: SessionMetadata;
+}
+
 export type ExtensionMessage =
-  KeyStateMessage | ResetKeysMessage | GetTabMediaMessage | HandoverMediaMessage;
+  | KeyStateMessage
+  | ResetKeysMessage
+  | GetTabMediaMessage
+  | TabMediaUpdatedMessage
+  | HandoverMediaMessage
+  | DiscoverSessionMessage
+  | SetManualSessionMessage;

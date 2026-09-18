@@ -7,6 +7,10 @@ export default function App() {
   const [resources, setResources] = useState<MediaResource[]>([]);
   const [loading, setLoading] = useState(true);
   const [session, setSession] = useState<SessionMetadata | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [showManualConfig, setShowManualConfig] = useState(false);
+  const [manualPort, setManualPort] = useState('');
+  const [manualToken, setManualToken] = useState('');
   const [handoverStates, setHandoverStates] = useState<
     Record<string, 'idle' | 'sending' | 'success' | 'failed'>
   >({});
@@ -21,6 +25,10 @@ export default function App() {
     try {
       const storedSession = await getStoredSession();
       setSession(storedSession);
+      if (storedSession) {
+        setManualPort(String(storedSession.port));
+        setManualToken(storedSession.sessionToken);
+      }
 
       // Query active tab in current window
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -41,6 +49,56 @@ export default function App() {
     } catch {
       setLoading(false);
     }
+  }
+
+  function handleProbeNative() {
+    setProbing(true);
+    setErrorMessage(null);
+    chrome.runtime.sendMessage(
+      { type: 'DISCOVER_SESSION' },
+      (res: { success?: boolean; session?: SessionMetadata } | undefined) => {
+        setProbing(false);
+        if (res?.session) {
+          setSession(res.session);
+          setManualPort(String(res.session.port));
+          setManualToken(res.session.sessionToken);
+          setErrorMessage(null);
+        } else {
+          setErrorMessage('未探测到运行中的桌面端。请确保桌面端已启动，或手动配置端口。');
+        }
+      },
+    );
+  }
+
+  function handleSaveManual() {
+    const port = parseInt(manualPort.trim(), 10);
+    if (!port || port <= 0 || port > 65535) {
+      setErrorMessage('请输入有效端口号 (1-65535)');
+      return;
+    }
+    if (!manualToken.trim()) {
+      setErrorMessage('请输入 Session Token');
+      return;
+    }
+    setProbing(true);
+    setErrorMessage(null);
+    const manualSession: SessionMetadata = {
+      port,
+      sessionToken: manualToken.trim(),
+    };
+    chrome.runtime.sendMessage(
+      { type: 'SET_MANUAL_SESSION', session: manualSession },
+      (res: { success?: boolean; session?: SessionMetadata } | undefined) => {
+        setProbing(false);
+        if (res?.success) {
+          setSession(manualSession);
+          setShowManualConfig(false);
+          setErrorMessage(null);
+        } else {
+          setErrorMessage('连接测试失败：无法连通指定端口或 Token 校验未通过');
+        }
+      },
+    );
   }
 
   async function handleDownload(res: MediaResource) {
@@ -69,7 +127,7 @@ export default function App() {
         display: 'flex',
         flexDirection: 'column',
         width: '380px',
-        maxHeight: '480px',
+        maxHeight: '520px',
         backgroundColor: '#090d16',
         color: '#e2e8f0',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -121,18 +179,137 @@ export default function App() {
             {session ? '已就绪' : '未连接'}
           </span>
         </div>
-        <span
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {!session && (
+            <button
+              type="button"
+              onClick={handleProbeNative}
+              disabled={probing}
+              style={{
+                fontSize: '11px',
+                padding: '2px 8px',
+                backgroundColor: '#1e293b',
+                color: '#38bdf8',
+                border: '1px solid #334155',
+                borderRadius: '4px',
+                cursor: probing ? 'default' : 'pointer',
+              }}
+            >
+              {probing ? '探测中...' : '探测连接'}
+            </button>
+          )}
+          <span
+            style={{
+              fontSize: '11px',
+              color: '#64748b',
+              backgroundColor: '#1e293b',
+              padding: '2px 8px',
+              borderRadius: '4px',
+            }}
+          >
+            {resources.length} 个资源
+          </span>
+        </div>
+      </div>
+
+      {/* Disconnected notification banner */}
+      {!session && (
+        <div
           style={{
+            padding: '10px 14px',
+            backgroundColor: 'rgba(30, 41, 59, 0.7)',
+            borderBottom: '1px solid #1e293b',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
             fontSize: '11px',
-            color: '#64748b',
-            backgroundColor: '#1e293b',
-            padding: '2px 8px',
-            borderRadius: '4px',
           }}
         >
-          {resources.length} 个资源
-        </span>
-      </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ color: '#94a3b8' }}>未检测到活跃桌面端连接</span>
+            <button
+              type="button"
+              onClick={() => setShowManualConfig((v) => !v)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#38bdf8',
+                cursor: 'pointer',
+                padding: 0,
+                fontSize: '11px',
+                textDecoration: 'underline',
+              }}
+            >
+              {showManualConfig ? '收起配置' : '手动配置'}
+            </button>
+          </div>
+
+          {showManualConfig && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+                marginTop: '4px',
+                padding: '8px',
+                backgroundColor: '#090d16',
+                borderRadius: '4px',
+                border: '1px solid #334155',
+              }}
+            >
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="number"
+                  placeholder="端口 (如 61011)"
+                  value={manualPort}
+                  onChange={(e) => setManualPort(e.target.value)}
+                  style={{
+                    width: '110px',
+                    padding: '4px 6px',
+                    fontSize: '11px',
+                    backgroundColor: '#1e293b',
+                    border: '1px solid #334155',
+                    color: '#f8fafc',
+                    borderRadius: '3px',
+                  }}
+                />
+                <input
+                  type="text"
+                  placeholder="Session Token"
+                  value={manualToken}
+                  onChange={(e) => setManualToken(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '4px 6px',
+                    fontSize: '11px',
+                    backgroundColor: '#1e293b',
+                    border: '1px solid #334155',
+                    color: '#f8fafc',
+                    borderRadius: '3px',
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveManual}
+                disabled={probing}
+                style={{
+                  padding: '4px 8px',
+                  backgroundColor: '#10b981',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                  fontWeight: 500,
+                  fontSize: '11px',
+                }}
+              >
+                保存并连接
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Error alert if any */}
       {errorMessage && (

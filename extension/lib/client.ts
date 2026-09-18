@@ -131,7 +131,6 @@ export class DesktopClient {
     }
 
     return () => {
-      closed = true;
       if (ws) {
         try {
           ws.close();

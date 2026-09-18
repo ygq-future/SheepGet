@@ -53,11 +53,11 @@ func TestDefaultSettings(t *testing.T) {
 	if len(s.Takeover.Extensions) == 0 {
 		t.Errorf("expected non-empty default takeover extensions")
 	}
-	if s.Takeover.PauseShortcut != "Alt" {
-		t.Errorf("expected default pause shortcut Alt, got %s", s.Takeover.PauseShortcut)
+	if s.Takeover.PauseShortcut != "Delete" {
+		t.Errorf("expected default pause shortcut Delete, got %s", s.Takeover.PauseShortcut)
 	}
-	if s.Takeover.ForceShortcut != "Ctrl" {
-		t.Errorf("expected default force shortcut Ctrl, got %s", s.Takeover.ForceShortcut)
+	if s.Takeover.ForceShortcut != "Insert" {
+		t.Errorf("expected default force shortcut Insert, got %s", s.Takeover.ForceShortcut)
 	}
 	if s.Clipboard.Enabled != false {
 		t.Errorf("expected Clipboard.Enabled false by default")
@@ -137,11 +137,11 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	if len(validated.Takeover.Extensions) == 0 {
 		t.Errorf("expected fallback to default takeover extensions")
 	}
-	if validated.Takeover.PauseShortcut != "Alt" {
-		t.Errorf("expected fallback to Alt, got %s", validated.Takeover.PauseShortcut)
+	if validated.Takeover.PauseShortcut != "Delete" {
+		t.Errorf("expected fallback to Delete, got %s", validated.Takeover.PauseShortcut)
 	}
-	if validated.Takeover.ForceShortcut != "Ctrl" {
-		t.Errorf("expected fallback to Ctrl, got %s", validated.Takeover.ForceShortcut)
+	if validated.Takeover.ForceShortcut != "Insert" {
+		t.Errorf("expected fallback to Insert, got %s", validated.Takeover.ForceShortcut)
 	}
 }
 

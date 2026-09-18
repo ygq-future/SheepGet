@@ -355,8 +355,8 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 		Takeover: TakeoverConfig{
 			Extensions:    DefaultTakeoverExtensions(),
 			ExcludedSites: []string{},
-			PauseShortcut: "Alt",
-			ForceShortcut: "Ctrl",
+			PauseShortcut: "Delete",
+			ForceShortcut: "Insert",
 		},
 		Clipboard: ClipboardConfig{
 			Enabled: false,

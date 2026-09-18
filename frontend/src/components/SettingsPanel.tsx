@@ -1921,11 +1921,13 @@ export function SettingsPanel() {
                   </p>
                   <div className="mt-1.5 max-w-[180px]">
                     <Select
-                      value={takeover.pauseShortcut || 'Alt'}
+                      value={takeover.pauseShortcut || 'Delete'}
                       onChange={(val) => {
                         void handlePauseShortcutChange(val);
                       }}
                       options={[
+                        { value: 'Delete', label: 'Delete 键' },
+                        { value: 'Insert', label: 'Insert 键' },
                         { value: 'Alt', label: 'Alt 键' },
                         { value: 'Ctrl', label: 'Ctrl 键' },
                         { value: 'Shift', label: 'Shift 键' },
@@ -1942,11 +1944,13 @@ export function SettingsPanel() {
                   </p>
                   <div className="mt-1.5 max-w-[180px]">
                     <Select
-                      value={takeover.forceShortcut || 'Ctrl'}
+                      value={takeover.forceShortcut || 'Insert'}
                       onChange={(val) => {
                         void handleForceShortcutChange(val);
                       }}
                       options={[
+                        { value: 'Insert', label: 'Insert 键' },
+                        { value: 'Delete', label: 'Delete 键' },
                         { value: 'Ctrl', label: 'Ctrl 键' },
                         { value: 'Alt', label: 'Alt 键' },
                         { value: 'Shift', label: 'Shift 键' },

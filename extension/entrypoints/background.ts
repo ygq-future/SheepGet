@@ -2,10 +2,12 @@ import { DesktopClient } from '../lib/client';
 import { isMediaResponse, parseContentDispositionFilename, type MediaResource } from '../lib/media';
 import { decideTakeover } from '../lib/rules';
 import { updateKeyMask } from '../lib/shortcuts';
+import { addResourceOnce, resolveTabId } from '../lib/tabmedia';
 import {
   DEFAULT_TAKEOVER_CONFIG,
   getStoredSession,
   getStoredTakeoverConfig,
+  setStoredSession,
   setStoredTakeoverConfig,
 } from '../lib/storage';
 import type {
@@ -33,18 +35,35 @@ export default defineBackground(() => {
   void init();
 
   // 2. Listen for messages from content scripts & popup (shortcuts, blur, media requests)
-  chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendResponse) => {
     if (msg?.type === 'KEY_STATE_CHANGED') {
       currentKeyMask = updateKeyMask(currentKeyMask, msg.key, msg.isDown);
     } else if (msg?.type === 'RESET_KEYS') {
       currentKeyMask = 0;
     } else if (msg?.type === 'GET_TAB_MEDIA') {
-      sendResponse(tabMediaPool.get(msg.tabId) || []);
+      // content script 不知道自己所在标签页的编号，退回发送者标签页；
+      // popup 会显式带上 tabId，优先采用它。
+      const tabId = resolveTabId(msg.tabId, sender.tab?.id);
+      sendResponse(tabId === null ? [] : tabMediaPool.get(tabId) || []);
       return true;
     } else if (msg?.type === 'HANDOVER_MEDIA') {
       void (async () => {
         const result = await handleMediaHandover(msg.resource as MediaResource);
         sendResponse(result);
+      })();
+      return true;
+    } else if (msg?.type === 'DISCOVER_SESSION') {
+      void (async () => {
+        const success = await discoverSessionViaNativeHost();
+        sendResponse({ success, session: await getStoredSession() });
+      })();
+      return true;
+    } else if (msg?.type === 'SET_MANUAL_SESSION') {
+      void (async () => {
+        await setStoredSession(msg.session);
+        updateSession(msg.session);
+        const alive = await desktopClient?.ping(1500);
+        sendResponse({ success: alive, session: msg.session });
       })();
       return true;
     }
@@ -104,9 +123,6 @@ export default defineBackground(() => {
         tabMediaPool.set(details.tabId, list);
       }
 
-      // Avoid duplicate entries for identical URLs
-      if (list.some((r) => r.url === details.url)) return;
-
       const filename =
         parseContentDispositionFilename(contentDisposition) ||
         details.url.split('?')[0]?.split('/').pop() ||
@@ -122,8 +138,11 @@ export default defineBackground(() => {
         isHls: detected.isHls,
         foundAt: Date.now(),
       };
-      list.push(resource);
+      if (!addResourceOnce(list, resource)) return undefined;
       void updateBadge(details.tabId);
+      // 播放器可能晚于资源请求出现，也可能页面先就绪再触发媒体请求，
+      // 因此每次新增资源都推给该标签页，让悬浮条无需重新加载页面即可关联。
+      publishTabResources(details.tabId);
       return undefined;
     },
     { urls: ['<all_urls>'] },
@@ -141,6 +160,15 @@ export default defineBackground(() => {
     }
   });
 });
+
+// publishTabResources 把某个标签页的最新嗅探结果推给页面内的悬浮条。
+function publishTabResources(tabId: number) {
+  const resources = tabMediaPool.get(tabId) || [];
+  // 特权页与尚未注入 content script 的页面没有接收方，投递失败属正常情况
+  chrome.tabs.sendMessage(tabId, { type: 'TAB_MEDIA_UPDATED', resources }, () => {
+    void chrome.runtime.lastError;
+  });
+}
 
 async function updateBadge(tabId: number) {
   const count = tabMediaPool.get(tabId)?.length || 0;
@@ -196,8 +224,48 @@ async function init() {
   // Read local cache immediately to ensure millisecond responsiveness on wake-up
   currentConfig = await getStoredTakeoverConfig();
 
-  const session = await getStoredSession();
-  updateSession(session);
+  let session = await getStoredSession();
+  if (session) {
+    updateSession(session);
+    const alive = await desktopClient?.ping(1000);
+    if (!alive) {
+      session = null;
+    }
+  }
+
+  if (!session) {
+    await discoverSessionViaNativeHost();
+  }
+}
+
+async function discoverSessionViaNativeHost(): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  try {
+    chrome.runtime.sendNativeMessage(
+      'com.sheepget.host',
+      { action: 'query' },
+      (response?: { status?: string; port?: number; sessionToken?: string; running?: boolean }) => {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
+        if (response?.status === 'ok' && response.port && response.sessionToken) {
+          const newSession: SessionMetadata = {
+            port: response.port,
+            sessionToken: response.sessionToken,
+          };
+          void setStoredSession(newSession);
+          updateSession(newSession);
+          resolve(true);
+          return;
+        }
+        resolve(false);
+      },
+    );
+  } catch {
+    resolve(false);
+  }
+  return promise;
 }
 
 function updateSession(session: SessionMetadata | null) {
@@ -250,74 +318,89 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
 
   inFlightDownloads.add(item.id);
 
-  // Synchronous blocking suspension: pause download immediately in place
+  // 下载一旦被挂起，任何分支都必须给它一个结论（取消或恢复），
+  // 否则它会永久停在 paused：既不下发也不还给浏览器。
   try {
-    await chrome.downloads.pause(item.id);
-  } catch (err) {
-    console.warn('[SheepGet] Failed to pause download:', item.id, err);
-    inFlightDownloads.delete(item.id);
-    return;
-  }
-
-  // If no client is available, fallback and resume immediately
-  if (!desktopClient) {
-    console.log('[SheepGet] Desktop loopback client not available, resuming download');
-    await resumeDownload(item.id);
-    return;
-  }
-
-  // Gather cookies if available
-  let cookiesStr = '';
-  try {
-    const cookies = await chrome.cookies.getAll({ url });
-    cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
-  } catch {
-    // Cookie access may fail or be restricted
-  }
-
-  const handoverReq: HandoverRequest = {
-    sourceType: 'browser_takeover',
-    url,
-    filenameSuggestion: item.filename,
-    totalBytes: item.totalBytes && item.totalBytes > 0 ? item.totalBytes : undefined,
-    mimeType: item.mime,
-    pageContext: {
-      pageUrl: item.referrer || url,
-      referrer: item.referrer,
-    },
-    credentials: {
-      cookies: cookiesStr,
-      headers: {
-        'User-Agent': navigator.userAgent,
-        ...(item.referrer ? { Referer: item.referrer } : {}),
-      },
-    },
-  };
-
-  // Handover to desktop with 2.5 second timeout
-  const resp = await desktopClient.sendHandover(handoverReq, 2500);
-
-  if (resp.accepted) {
-    // Desktop accepted: cancel native download and clean up traces
+    // Synchronous blocking suspension: pause download immediately in place
     try {
-      await chrome.downloads.cancel(item.id);
-      await chrome.downloads.erase({ id: item.id });
-    } catch {
-      // Ignore cleanup error
+      await chrome.downloads.pause(item.id);
+    } catch (err) {
+      console.warn('[SheepGet] Failed to pause download:', item.id, err);
+      return;
     }
-  } else {
-    // Desktop rejected or timed out: resume native browser download smoothly
-    console.warn('[SheepGet] Handover rejected or timed out, resuming:', resp.reason);
-    await resumeDownload(item.id);
-  }
 
-  inFlightDownloads.delete(item.id);
+    // If no client is available, attempt on-demand native host discovery
+    if (!desktopClient) {
+      await discoverSessionViaNativeHost();
+    }
+
+    // If still not available, fallback and resume immediately
+    if (!desktopClient) {
+      console.log('[SheepGet] Desktop loopback client not available, resuming download');
+      await resumeDownload(item.id);
+      return;
+    }
+
+    // Gather cookies if available
+    let cookiesStr = '';
+    try {
+      const cookies = await chrome.cookies.getAll({ url });
+      cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+    } catch {
+      // Cookie access may fail or be restricted
+    }
+
+    const handoverReq: HandoverRequest = {
+      sourceType: 'browser_takeover',
+      url,
+      filenameSuggestion: item.filename,
+      totalBytes: item.totalBytes && item.totalBytes > 0 ? item.totalBytes : undefined,
+      mimeType: item.mime,
+      pageContext: {
+        pageUrl: item.referrer || url,
+        referrer: item.referrer,
+      },
+      credentials: {
+        cookies: cookiesStr,
+        headers: {
+          'User-Agent': navigator.userAgent,
+          ...(item.referrer ? { Referer: item.referrer } : {}),
+        },
+      },
+    };
+
+    // Handover to desktop with 2.5 second timeout
+    const resp = await desktopClient.sendHandover(handoverReq, 2500);
+
+    if (resp.accepted) {
+      // Desktop accepted: cancel native download and clean up traces
+      try {
+        await chrome.downloads.cancel(item.id);
+        await chrome.downloads.erase({ id: item.id });
+      } catch {
+        // Ignore cleanup error
+      }
+    } else {
+      // Desktop rejected or timed out: resume native browser download smoothly
+      console.warn('[SheepGet] Handover rejected or timed out, resuming:', resp.reason);
+      await resumeDownload(item.id);
+    }
+  } catch (err) {
+    console.warn('[SheepGet] Unexpected interception failure, resuming download:', item.id, err);
+    await resumeDownload(item.id);
+  } finally {
+    inFlightDownloads.delete(item.id);
+  }
 }
 
 async function resumeDownload(downloadId: number) {
   try {
     await chrome.downloads.resume(downloadId);
   } catch (err) {
-    console.warn('[SheepGet] Failed to resume download:', downloadId, err);
+    console.warn(
+      '[SheepGet] Failed to resume download, it stays paused in the browser:',
+      downloadId,
+      err,
+    );
   }
 }

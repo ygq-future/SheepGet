@@ -1,4 +1,5 @@
 import { MediaBarManager } from '../lib/mediabar';
+import type { MediaResource } from '../lib/media';
 import { normalizeKeyName } from '../lib/shortcuts';
 import type { ExtensionMessage, KeyStateMessage, ResetKeysMessage } from '../lib/types';
 export default defineContentScript({
@@ -49,19 +50,20 @@ export default defineContentScript({
 
     // Request currently detected media resources for this tab
     try {
-      chrome.runtime.sendMessage({ type: 'GET_TAB_MEDIA' }, (res) => {
+      chrome.runtime.sendMessage({ type: 'GET_TAB_MEDIA' }, (res: MediaResource[] | undefined) => {
         if (res && Array.isArray(res)) {
           mediaBar.setResources(res);
         }
       });
     } catch {
-      //
+      // Extension context might be invalidated
     }
 
-    // Listen for media update messages from background
+    // 之后新嗅探到的资源由 background 主动推送：播放器后加载、用户点了播放才发起
+    // 媒体请求的页面，首次拉取必然为空，只能靠这条推送完成关联。
     chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
-      if (msg && msg.type === 'GET_TAB_MEDIA') {
-        //
+      if (msg?.type === 'TAB_MEDIA_UPDATED') {
+        mediaBar.setResources(msg.resources);
       }
     });
   },

@@ -1,6 +1,67 @@
 import type { MediaResource } from './media';
 import type { HandoverResponse } from './types';
 
+export const MEDIA_BAR_MARGIN = 10;
+export const MEDIA_BAR_VIEWPORT_PADDING = 8;
+export const MEDIA_BAR_MIN_VIDEO_WIDTH = 100;
+export const MEDIA_BAR_MIN_VIDEO_HEIGHT = 60;
+
+export interface RectLike {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+export interface ViewportLike {
+  width: number;
+  height: number;
+}
+
+export interface BarPosition {
+  visible: boolean;
+  left: number;
+  top: number;
+}
+
+// 悬浮条贴近播放器右上角：右侧留 MARGIN，顶部留 MARGIN，并保证始终留在视口内。
+// 播放器完全离开视口或小到放不下悬浮条时不显示。
+export function computeBarPosition(
+  videoRect: RectLike,
+  viewport: ViewportLike,
+  barWidth: number,
+): BarPosition {
+  if (
+    videoRect.width < MEDIA_BAR_MIN_VIDEO_WIDTH ||
+    videoRect.height < MEDIA_BAR_MIN_VIDEO_HEIGHT
+  ) {
+    return { visible: false, left: 0, top: 0 };
+  }
+
+  const offscreen =
+    videoRect.bottom <= 0 ||
+    videoRect.right <= 0 ||
+    videoRect.top >= viewport.height ||
+    videoRect.left >= viewport.width;
+  if (offscreen) {
+    return { visible: false, left: 0, top: 0 };
+  }
+
+  const maxLeft = Math.max(
+    MEDIA_BAR_VIEWPORT_PADDING,
+    viewport.width - barWidth - MEDIA_BAR_VIEWPORT_PADDING,
+  );
+  const left = Math.min(
+    Math.max(videoRect.right - barWidth - MEDIA_BAR_MARGIN, MEDIA_BAR_VIEWPORT_PADDING),
+    maxLeft,
+  );
+  const top = Math.max(MEDIA_BAR_VIEWPORT_PADDING, videoRect.top + MEDIA_BAR_MARGIN);
+
+  return { visible: true, left, top };
+}
+
 interface TrackedPlayer {
   video: HTMLVideoElement;
   container: HTMLDivElement;
@@ -12,34 +73,31 @@ interface TrackedPlayer {
 export class MediaBarManager {
   private players = new Map<HTMLVideoElement, TrackedPlayer>();
   private intersectionObserver: IntersectionObserver;
+  private resizeObserver: ResizeObserver;
   private mutationObserver: MutationObserver | null = null;
   private availableResources: MediaResource[] = [];
+  private frame = 0;
 
   constructor() {
+    // 播放器进出视口、被显示/隐藏都会由交叉观察器抛出，作为重算位置的触发点。
     this.intersectionObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const video = entry.target as HTMLVideoElement;
-          const tracked = this.players.get(video);
-          if (!tracked) continue;
-
-          if (!entry.isIntersecting || entry.intersectionRatio < 0.1) {
-            tracked.container.style.display = 'none';
-          } else if (!tracked.dismissed) {
-            tracked.container.style.display = 'block';
-            this.positionBar(tracked);
-          }
-        }
+      () => {
+        this.scheduleUpdate();
       },
       { threshold: [0, 0.1, 0.5, 1.0] },
     );
+
+    // 播放器自身的尺寸会随站点布局变化（懒布局、剧场模式、响应式），
+    // 不跟随重算就会停在首次测量到的位置上。
+    this.resizeObserver = new ResizeObserver(() => {
+      this.scheduleUpdate();
+    });
   }
 
   start() {
-    // 1. Initial scan
     this.scanVideos();
 
-    // 2. Observe DOM mutations for dynamically inserted players
+    // Observe DOM mutations for dynamically inserted players
     this.mutationObserver = new MutationObserver(() => {
       this.scanVideos();
     });
@@ -48,20 +106,26 @@ export class MediaBarManager {
       subtree: true,
     });
 
-    // 3. Scroll and resize listeners to maintain top-right alignment
-    window.addEventListener('scroll', this.handleViewportChange, { passive: true });
+    // 滚动事件不冒泡但会经过捕获路径，因此页面内滚动容器也能触发重算
+    document.addEventListener('scroll', this.handleViewportChange, {
+      capture: true,
+      passive: true,
+    });
     window.addEventListener('resize', this.handleViewportChange, { passive: true });
-
-    // 4. Listen for fullscreen changes
     document.addEventListener('fullscreenchange', this.handleViewportChange);
   }
 
   stop() {
     this.mutationObserver?.disconnect();
     this.intersectionObserver.disconnect();
-    window.removeEventListener('scroll', this.handleViewportChange);
+    this.resizeObserver.disconnect();
+    document.removeEventListener('scroll', this.handleViewportChange, { capture: true });
     window.removeEventListener('resize', this.handleViewportChange);
     document.removeEventListener('fullscreenchange', this.handleViewportChange);
+    if (this.frame) {
+      cancelAnimationFrame(this.frame);
+      this.frame = 0;
+    }
 
     for (const tracked of this.players.values()) {
       tracked.container.remove();
@@ -79,12 +143,18 @@ export class MediaBarManager {
   }
 
   private handleViewportChange = () => {
-    for (const tracked of this.players.values()) {
-      if (!tracked.dismissed && tracked.container.style.display !== 'none') {
-        this.positionBar(tracked);
-      }
-    }
+    this.scheduleUpdate();
   };
+
+  private scheduleUpdate() {
+    if (this.frame) return;
+    this.frame = requestAnimationFrame(() => {
+      this.frame = 0;
+      for (const tracked of this.players.values()) {
+        this.update(tracked);
+      }
+    });
+  }
 
   private scanVideos() {
     const videos = document.querySelectorAll('video');
@@ -98,6 +168,7 @@ export class MediaBarManager {
     for (const [video, tracked] of this.players.entries()) {
       if (!video.isConnected) {
         this.intersectionObserver.unobserve(video);
+        this.resizeObserver.unobserve(video);
         tracked.container.remove();
         this.players.delete(video);
       }
@@ -130,9 +201,7 @@ export class MediaBarManager {
     this.renderBar(tracked);
 
     this.intersectionObserver.observe(video);
-
-    // Initial position
-    this.positionBar(tracked);
+    this.resizeObserver.observe(video);
   }
 
   private associateResource(tracked: TrackedPlayer) {
@@ -166,23 +235,40 @@ export class MediaBarManager {
     }
   }
 
-  private positionBar(tracked: TrackedPlayer) {
-    const rect = tracked.video.getBoundingClientRect();
-
-    // If video has no visible dimensions, hide
-    if (rect.width < 100 || rect.height < 60) {
+  private update(tracked: TrackedPlayer) {
+    if (tracked.dismissed) {
       tracked.container.style.display = 'none';
       return;
     }
 
-    // Position 10px from top and 10px from right of the video element
-    const top = Math.max(8, rect.top + 10);
-    const right = Math.max(8, window.innerWidth - rect.right + 10);
+    // 先让宿主可见，才量得到悬浮条的真实宽度
+    tracked.container.style.display = 'block';
+    const bar = tracked.shadowRoot.getElementById('bar');
+    const barWidth = bar ? bar.getBoundingClientRect().width : 0;
+    const position = computeBarPosition(
+      tracked.video.getBoundingClientRect(),
+      { width: window.innerWidth, height: window.innerHeight },
+      barWidth,
+    );
 
-    tracked.container.style.top = `${top}px`;
-    tracked.container.style.right = `${right}px`;
-    tracked.container.style.left = 'auto';
+    if (!position.visible) {
+      tracked.container.style.display = 'none';
+      return;
+    }
+
+    tracked.container.style.left = `${position.left}px`;
+    tracked.container.style.top = `${position.top}px`;
+    tracked.container.style.right = 'auto';
     tracked.container.style.bottom = 'auto';
+  }
+
+  private showStatus(tracked: TrackedPlayer, text: string, color: string, restoreMs = 2500) {
+    const dlBtn = tracked.shadowRoot.getElementById('dl-btn');
+    if (!dlBtn) return;
+    dlBtn.innerHTML = `<span class="status-msg" style="color:${color}">${text}</span>`;
+    setTimeout(() => {
+      this.renderBar(tracked);
+    }, restoreMs);
   }
 
   private renderBar(tracked: TrackedPlayer) {
@@ -261,7 +347,7 @@ export class MediaBarManager {
           padding: 0 4px;
         }
       </style>
-      <div class="bar">
+      <div class="bar" id="bar">
         <button class="btn-download" id="dl-btn">
           <span class="badge">${badgeText}</span>
           <span>下载视频</span>
@@ -281,41 +367,42 @@ export class MediaBarManager {
 
     dlBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
-      const currentRes = tracked.resource;
-      if (!currentRes) {
-        // If no resource is associated yet, request from background
-        chrome.runtime.sendMessage({ type: 'GET_TAB_MEDIA' }, (resList: MediaResource[]) => {
-          if (resList && resList.length > 0) {
-            tracked.resource = resList[0];
-            this.triggerDownload(tracked);
-          }
-        });
+      if (tracked.resource) {
+        this.triggerDownload(tracked);
         return;
       }
-      this.triggerDownload(tracked);
+
+      // 尚未关联到资源时即时向 background 补拉本标签页的嗅探结果
+      this.showStatus(tracked, '正在探测资源…', '#94a3b8');
+      chrome.runtime.sendMessage(
+        { type: 'GET_TAB_MEDIA' },
+        (resList: MediaResource[] | undefined) => {
+          if (resList && resList.length > 0) {
+            tracked.resource = resList[0];
+            this.renderBar(tracked);
+            this.triggerDownload(tracked);
+            return;
+          }
+          this.showStatus(tracked, '未探测到可下载资源', '#f87171');
+        },
+      );
     });
+
+    // 悬浮条自身宽度会随状态文案变化，渲染后立即重算锚点
+    this.update(tracked);
   }
 
   private triggerDownload(tracked: TrackedPlayer) {
-    if (!tracked.resource) return;
-    const shadow = tracked.shadowRoot;
-    const dlBtn = shadow.getElementById('dl-btn');
-    if (dlBtn) {
-      dlBtn.innerHTML = `<span class="status-msg">已投递至桌面端 ✓</span>`;
-      setTimeout(() => {
-        this.renderBar(tracked);
-      }, 3000);
-    }
+    const resource = tracked.resource;
+    if (!resource) return;
 
-    // Message background to handover
+    this.showStatus(tracked, '已投递至桌面端 ✓', '#34d399', 3000);
+
     chrome.runtime.sendMessage(
-      { type: 'HANDOVER_MEDIA', resource: tracked.resource },
+      { type: 'HANDOVER_MEDIA', resource },
       (resp: HandoverResponse | undefined) => {
-        if (!resp?.accepted && dlBtn) {
-          dlBtn.innerHTML = `<span style="color:#f87171;font-size:11px;">移交失败</span>`;
-          setTimeout(() => {
-            this.renderBar(tracked);
-          }, 2500);
+        if (!resp?.accepted) {
+          this.showStatus(tracked, '移交失败', '#f87171');
         }
       },
     );

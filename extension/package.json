@@ -22,5 +22,8 @@
     "typescript": "^5.8.2",
     "wxt": "^0.21.4"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.2",
+  "patchedDependencies": {
+    "wxt@0.21.4": "patches/wxt@0.21.4.patch"
+  }
 }
