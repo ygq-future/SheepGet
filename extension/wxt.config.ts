@@ -14,7 +14,7 @@ export default defineConfig({
     description: 'Browser integration and media download helper for SheepGet',
     version: '1.0.0',
     key: FIXED_PUBLIC_KEY,
-    permissions: ['downloads', 'webRequest', 'storage', 'tabs', 'scripting'],
+    permissions: ['downloads', 'webRequest', 'storage', 'tabs', 'scripting', 'nativeMessaging'],
     host_permissions: ['<all_urls>'],
     action: {
       default_title: 'SheepGet Resources',

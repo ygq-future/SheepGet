@@ -9,6 +9,7 @@ status: draft
 ## 决策 1：交接确认的语义与状态回退机制
 
 ### 候选选项
+
 - **选项 A（同步阻塞式暂缓 + ACK 取消）**：
   扩展捕获下载事件后，先通过 `chrome.downloads.pause(downloadId)` 将浏览器原生下载原位挂起，同时向桌面端发送交接请求。
   - 在超时时间（2.5 秒）内收到桌面端成功接收（已进入文件信息窗口单例队列）的交接确认（ACK）后，扩展调用 `chrome.downloads.cancel(downloadId)` 并擦除下载条痕迹；
@@ -17,10 +18,12 @@ status: draft
   扩展拦截下载时立即执行 `chrome.downloads.cancel`，再异步投递任务；若后续交接失败，再调用 `chrome.downloads.download({ url })` 重新发起。
 
 ### 权衡与取舍
+
 选项 B 存在严重的业务缺陷：重新发起的下载是一个全新的 HTTP GET 请求，原始请求上下文中的 POST Payload、一次性防刷校验 Token、单次有效 Cookie、防盗链特定 Header 均已丢失，极易引发 403 Forbidden、410 Gone 或产生表单重复提交的副作用。
 选项 A 原位挂起原连接，连接链路和上下文在内核层得以保留。
 
 ### 决策结论
+
 **采用选项 A（同步阻塞式暂缓 + 收到交接确认再 Cancel，超时/失败立即 Resume 恢复）**。
 
 ---
@@ -28,6 +31,7 @@ status: draft
 ## 决策 2：通信通道与桌面端唤起机制
 
 ### 候选选项
+
 - **选项 A（纯 Native Messaging + 独立 Host 二进制）**：
   通过 `browser.runtime.connectNative` 通信，依赖系统注册的 Native Messaging Host 唤起主程序。
 - **选项 B（纯本地 Loopback 安全端口 + `sheepget://` 协议唤起）**：
@@ -36,14 +40,18 @@ status: draft
   日常高频通信与状态同步走本地 Loopback；安装模式下注册轻量 `sheepget-host` 充当静默拉起跳板；便携模式或未注册环境通过协议/UI 提示用户。
 
 ### 权衡与取舍（修正伪论据）
+
 不再采用“Loopback 比 Native Messaging 性能更快”这一在小包通信中并不成立的伪论据。本决策完全基于以下两项核心物理约束：
+
 1. **便携模式（Portable Mode）兼容性硬约束（ADR-0003）**：
    便携版应用严禁擅自修改系统注册表（如 Windows `HKCU\Software\Google\Chrome\NativeMessagingHosts`）或在系统全局目录写入文件。若纯走 Native Messaging，便携版将因无 Host 注册而彻底瘫痪。免注册的本地 Loopback 是便携版维持通讯的唯一通道。
 2. **安装模式下的静默唤起体验（Spec 第 14 条）**：
    在正式安装模式下，用户触发下载时期望应用能像成熟下载工具一样静默启动并弹出文件信息窗口。若使用浏览器自定义协议（`sheepget://`），浏览器内核出于安全策略必然弹出“是否允许打开 SheepGet？”的模态确认框，阻断流畅操作。通过已注册的极薄 Native Host 启动主程序能够实现无感静默唤起。
 
 ### 决策结论
+
 **采用选项 C（双轨制混合通道）**：
+
 1. 桌面端启动时在 `127.0.0.1` 开启本地 HTTP/WebSocket 安全通道（附带随机启动 Token 鉴权），承担日常下载交接与状态广播；
 2. 安装版提供并注册轻量 `sheepget-host` 辅助可执行程序，作为 Native Messaging 静默唤起跳板；
 3. 免安装便携版（未注册 Host 时）若检测到 Loopback 离线，则通过系统协议唤起或扩展气泡提示引导启动。
@@ -53,15 +61,18 @@ status: draft
 ## 决策 3：扩展工程结构、质量门禁与扩展 ID 固定策略
 
 ### 候选选项
+
 - **选项 A（根目录独立工程 `extension/`）**：
   根目录下创建独立 `extension/` 目录，采用 WXT 框架（TypeScript + React）构建，产物输出至根级 `dist-extension/`。
 - **选项 B（合并进 `frontend/extension/`）**：
   作为 `frontend` 的子包共享 `node_modules` 与 `package.json`。
 
 ### 权衡与取舍
+
 Wails v3 桌面端前端（Wails Bindings, SPA DOM）与 Chrome/Edge MV3 扩展（`webextension-polyfill`, Chrome Extension APIs）的运行时全局声明存在冲突（如全局 `window` 与 Chrome 命名空间）。独立工程能够保证类型边界干净，且便于独立构建和解压分发。
 
 ### 门禁与构建策略
+
 1. **工程定位**：根目录 `/extension`，使用 WXT 框架，基于 Vite + TypeScript 构建。
 2. **质量门禁接入（`scripts/quality-gate.mjs`）**：
    门禁脚本中新增扩展专属验证步骤：
@@ -76,10 +87,13 @@ Wails v3 桌面端前端（Wails Bindings, SPA DOM）与 Chrome/Edge MV3 扩展�
 ## 决策 4：配置中心单一事实来源下的扩展规则同步（含 SW 休眠防坑）
 
 ### 物理约束
+
 Chrome/Edge Manifest V3 的 Background Service Worker 会在**无事件 30 秒后被浏览器内核强制终止挂起**。休眠期间，桌面端即便在 WebSocket 上广播配置更新事件，Service Worker 也无法接收，内存状态直接丢失。
 
 ### 决策结论
+
 **采用「唤醒主动校准 + 运行期事件推送 + 本地持久化缓存」的三级同步体系**：
+
 1. **本地持久化缓存**：扩展在 `chrome.storage.local` 中维护一份 `TakeoverConfig` 镜像副本。
 2. **休眠唤醒主动校准**：Service Worker 每次被浏览器内核唤醒（如收到下载事件、快捷键消息或定时心跳）：
    - 首先同步读取 `chrome.storage.local` 确保内存有底线规则可用，实现毫秒级本地过滤；
@@ -91,11 +105,13 @@ Chrome/Edge Manifest V3 的 Background Service Worker 会在**无事件 30 秒�
 ## 决策 5：请求上下文契约与类型级默认脱敏（Secure by Default）
 
 ### 风险核查与原则
+
 经核实，Go 后端尚无全局通用 logger，错误均通过 `fmt.Errorf` 向上透传；但任务模型（`internal/task/Task`）会直接序列化后通过 Wails 事件总线广播至前端 Webview。
 如果仅靠约定提供 `LogSanitized()` 方法，极易因人为遗漏、`fmt.Printf("%+v")` 或序列化事件广播而将 Cookie / Authorization 泄露至控制台或前端内存。
 **防御原则：靠结构与类型系统，不靠约定；默认脱敏，按需解密。**
 
 ### 决策结论
+
 1. **凭据封装为受保护类型**：
    在 Go 后端将包含敏感信息的请求头从裸 `map[string]string` 替换为专属类型：
    ```go
@@ -114,11 +130,14 @@ Chrome/Edge Manifest V3 的 Background Service Worker 会在**无事件 30 秒�
 ## 决策 6：按住快捷键捕获机制与特权页面物理边界
 
 ### 物理约束与参考实践
+
 参考成熟扩展（如 IDM 官方扩展 `IDMGCExt`）的工业级实践：
+
 - `chrome.commands` 仅支持瞬时触发，不支持检测按住与松开；
 - 浏览器内核（出于安全防御）严禁向特权页面（`chrome://*`、`edge://*`、Web Store 页面、内部下载/设置页）注入 Content Script。
 
 ### 决策结论
+
 1. **捕获机制**：
    - 在 `content.js` 中使用 `window.addEventListener('keydown' / 'keyup', ..., true)` 在**捕获阶段（Capture Phase）**监听按键状态；
    - 过滤长按重复事件（`!e.repeat`），将按键事件同步至 Background Service Worker 内存位掩码（Bitmask）；

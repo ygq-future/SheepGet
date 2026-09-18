@@ -162,6 +162,13 @@ const stages = {
       'build/bin/quality-app' + (process.platform === 'win32' ? '.exe' : ''),
       '.',
     ]);
+    run('go', [
+      'build',
+      '-mod=readonly',
+      '-o',
+      'build/bin/sheepget-host' + (process.platform === 'win32' ? '.exe' : ''),
+      './cmd/sheepget-host',
+    ]);
   },
   infrastructure() {
     node('--test', ['scripts/quality-gate.test.mjs']);

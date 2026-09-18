@@ -89,6 +89,7 @@
 首期范围为配置上限内的并发下载与区块调度。工程判断：依据吞吐自适应寻找最佳并发数还需要速度采样、试探增减、防震荡以及区分网络波动、服务器限流和多个任务争用；目前尚无项目实测数据证明收益，稳定性验证面明显更大。
 
 依据：
+
 - [aria2 官方手册](https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-s) 将拆分数量与服务器连接上限、最小拆分大小分别控制。
 - [RFC 9110 Range](https://www.rfc-editor.org/rfc/rfc9110.html#section-14.2) 允许服务器忽略 Range，需验证实际响应并支持单路回退。
 - [RFC 9110 部分响应合并](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.3.7.3) 要求处理资源版本一致性。

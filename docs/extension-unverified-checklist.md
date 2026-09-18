@@ -5,6 +5,7 @@
 ---
 
 ### 1. 扩展固定标识（Extension ID）与跨环境侧载一致性
+
 - **验证目标**：
   验证 `wxt.config.ts` 中配置的固定公钥派生 `key`，在用户将 `dist-extension/` 拷贝到任意不同目录、不同操作系统并在 Chrome 和 Edge 开发者模式加载时，生成的 Extension ID 是否在所有环境下**绝对恒定（100% 相同）**。
 - **潜在风险与退路**：
@@ -13,6 +14,7 @@
 ---
 
 ### 2. 真实下载暂缓（`pause`）与回退恢复（`resume`）的内核边界
+
 - **验证目标**：
   在真实网络环境下测试各类型资源下载触发时的原位 `pause` 与 `resume` 表现：
   1. 普通静态大文件（带 Content-Length）；
@@ -25,6 +27,7 @@
 ---
 
 ### 3. Native Messaging Host 静默唤起在三平台的系统兼容性
+
 - **验证目标**：
   验证桌面端在**未运行状态**下，扩展通过 Native Messaging 发送消息时，操作系统拉起 `sheepget-host` 并由其拉起 SheepGet 主程序的全流程：
   - **Windows**：注册表 `HKCU\Software\Google\Chrome\NativeMessagingHosts` 与 `HKCU\Software\Microsoft\Edge\NativeMessagingHosts`；
@@ -36,6 +39,7 @@
 ---
 
 ### 4. Background Service Worker 30 秒休眠唤醒与拦截时序
+
 - **验证目标**：
   在 Chrome 打开 `chrome://serviceworker-internals`，手动点击 `Stop` 强制将 SheepGet 扩展的 Background Service Worker 杀掉（模拟休眠 30 秒状态）。
 - **关注点**：
@@ -44,6 +48,7 @@
 ---
 
 ### 5. 按住快捷键（Del / Ins 等）在复杂 DOM 与特权页面的降级表现
+
 - **验证目标**：
   1. 普通网页中按住 Delete 触发下载，验证是否 100% 交由浏览器原生下载；按住 Insert 触发，验证是否忽略后缀强制接管；
   2. 验证页面失焦（Alt+Tab 切换窗口）、Tab 标签切换后，按键状态是否及时清零，无残留卡死；
@@ -52,6 +57,7 @@
 ---
 
 ### 6. 媒体悬浮条在主流视频站点的定位与视口变化
+
 - **验证目标**：
   在 Bilibili、YouTube 及普通 HTML5 `<video>` 页面上验证：
   1. 悬浮条是否精确贴近播放器右上角（避开全屏控制栏）；
