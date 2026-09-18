@@ -53,4 +53,23 @@ export interface ResetKeysMessage {
   type: 'RESET_KEYS';
 }
 
-export type ExtensionMessage = KeyStateMessage | ResetKeysMessage;
+export interface GetTabMediaMessage {
+  type: 'GET_TAB_MEDIA';
+  tabId: number;
+}
+
+export interface HandoverMediaMessage {
+  type: 'HANDOVER_MEDIA';
+  resource: {
+    url: string;
+    filename: string;
+    totalBytes?: number;
+    mimeType: string;
+    isHls: boolean;
+    pageUrl?: string;
+    pageTitle?: string;
+  };
+}
+
+export type ExtensionMessage =
+  KeyStateMessage | ResetKeysMessage | GetTabMediaMessage | HandoverMediaMessage;
