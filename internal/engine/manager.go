@@ -320,9 +320,7 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		if maxConn <= 0 {
 			maxConn = t.MaxConcurrency
 		}
-		destPath := filepath.Join(dir, filename)
-		_ = os.Remove(destPath)
-		_ = os.Remove(destPath + ".sheepget")
+		removeDestinationFiles(dir, filename)
 
 		// 被这次下载替换掉的历史记录：落在同一目标位置，或成品文件已经不在磁盘上（也不剩分片），
 		// 就都是残留记录，无论它当初落在哪个目录都要清掉——否则换过默认目录、手动存到别处或
@@ -451,11 +449,8 @@ func (m *Manager) ReuseExistingFile(ctx context.Context, taskID, targetDir, targ
 		if err := os.MkdirAll(targetDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create target directory: %w", err)
 		}
-		if err := os.Rename(srcPath, destPath); err != nil {
-			if xErr := safeTransferCrossDevice(srcPath, destPath); xErr != nil {
-				return nil, fmt.Errorf("failed to move file to %s: %w", destPath, xErr)
-			}
-			_ = os.Remove(srcPath)
+		if err := moveFile(srcPath, destPath); err != nil {
+			return nil, fmt.Errorf("failed to move file to %s: %w", destPath, err)
 		}
 	}
 
@@ -662,10 +657,8 @@ func (m *Manager) ConfirmPreDownload(ctx context.Context, taskID, finalDir, fina
 
 		if t.Status == task.StatusCompleted {
 			if _, err := os.Stat(oldDest); err == nil {
-				if err := os.Rename(oldDest, newDest); err != nil {
-					if xErr := safeTransferCrossDevice(oldDest, newDest); xErr != nil {
-						return nil, fmt.Errorf("failed to move completed file: %w", xErr)
-					}
+				if err := moveFile(oldDest, newDest); err != nil {
+					return nil, fmt.Errorf("failed to move completed file: %w", err)
 				}
 			}
 		} else {
@@ -693,12 +686,11 @@ func (m *Manager) ConfirmPreDownload(ctx context.Context, taskID, finalDir, fina
 			newPart := m.downloader.GetPartPath(&tempTask)
 			if oldPart != newPart {
 				if _, err := os.Stat(oldPart); err == nil {
-					if renameErr := os.Rename(oldPart, newPart); renameErr != nil {
-						if xErr := safeTransferCrossDevice(oldPart, newPart); xErr != nil {
-							_ = os.Remove(oldPart)
-							t.Chunks = nil
-							t.Downloaded = 0
-						}
+					// 分片搬不过去就放弃已有进度：留在旧位置的分片与新落点的下载记录已脱节。
+					if err := moveFile(oldPart, newPart); err != nil {
+						_ = os.Remove(oldPart)
+						t.Chunks = nil
+						t.Downloaded = 0
 					}
 				}
 			}
@@ -860,9 +852,7 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
 
-	destPath := filepath.Join(t.Directory, t.Filename)
-	_ = os.Remove(destPath)
-	_ = os.Remove(destPath + ".sheepget")
+	m.RemoveTaskFiles(t)
 
 	if headers != nil {
 		t.RequestHeaders = headers

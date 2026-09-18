@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
+
+	"sheep-get/internal/atomicfile"
 )
 
 var (
@@ -68,11 +69,6 @@ func (s *FileTaskStore) load() error {
 }
 
 func (s *FileTaskStore) persistLocked() error {
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create task store dir: %w", err)
-	}
-
 	list := make([]*Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
 		list = append(list, t)
@@ -83,15 +79,11 @@ func (s *FileTaskStore) persistLocked() error {
 		return fmt.Errorf("failed to marshal tasks: %w", err)
 	}
 
-	tmpFile := s.filePath + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to write tmp task store: %w", err)
+	// 任务进度会频繁持久化，这里不做同步落盘，避免每次写入都等待磁盘刷写；
+	// 原子改名仍保证读到的要么是旧内容、要么是新内容。
+	if err := atomicfile.Write(s.filePath, data, 0644, false); err != nil {
+		return fmt.Errorf("failed to persist task store: %w", err)
 	}
-
-	if err := os.Rename(tmpFile, s.filePath); err != nil {
-		return fmt.Errorf("failed to atomic rename task store: %w", err)
-	}
-
 	return nil
 }
 

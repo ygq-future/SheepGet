@@ -417,14 +417,8 @@ func (a *App) RetryProcessingTask(id string) error {
 func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 	if deleteDiskFile {
 		t, err := a.store.Get(a.ctx, id)
-		if err == nil && t != nil {
-			destPath := filepath.Join(t.Directory, t.Filename)
-			_ = os.Remove(destPath)
-			_ = os.Remove(destPath + ".sheepget")
-			if a.manager != nil {
-				partPath := a.manager.GetPartPath(t)
-				_ = os.Remove(partPath)
-			}
+		if err == nil && t != nil && a.manager != nil {
+			a.manager.RemoveTaskFiles(t)
 		}
 	}
 	return a.manager.Delete(a.ctx, id)

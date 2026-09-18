@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
+
+	"sheep-get/internal/atomicfile"
 )
 
 // OnSettingsChangedFunc is invoked whenever settings are updated. Returning an error
@@ -74,41 +75,10 @@ func (s *SettingsService) Update(req Settings) (Settings, error) {
 		return s.current, fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
-	// Atomic write: write to temp file, flush, then rename
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// 配置只在用户点保存时写入，频率低，因此同步落盘，避免关机或断电后读到空配置。
+	if err := atomicfile.Write(s.filePath, data, 0644, true); err != nil {
 		s.mu.Unlock()
-		return s.current, fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	tempFile := filepath.Join(dir, fmt.Sprintf(".config.json.tmp-%d", os.Getpid()))
-	if err := os.WriteFile(tempFile, data, 0644); err != nil {
-		s.mu.Unlock()
-		return s.current, fmt.Errorf("failed to write temp config file: %w", err)
-	}
-
-	backupFile := filepath.Join(dir, ".config.json.bak")
-	hasExisting := false
-	if _, err := os.Stat(s.filePath); err == nil {
-		hasExisting = true
-		_ = os.Remove(backupFile)
-		if err := os.Rename(s.filePath, backupFile); err != nil {
-			_ = os.Remove(tempFile)
-			s.mu.Unlock()
-			return s.current, fmt.Errorf("failed to backup existing config file: %w", err)
-		}
-	}
-
-	if err := os.Rename(tempFile, s.filePath); err != nil {
-		if hasExisting {
-			_ = os.Rename(backupFile, s.filePath)
-		}
-		_ = os.Remove(tempFile)
-		s.mu.Unlock()
-		return s.current, fmt.Errorf("failed to replace config file: %w", err)
-	}
-	if hasExisting {
-		_ = os.Remove(backupFile)
+		return s.current, fmt.Errorf("failed to persist settings: %w", err)
 	}
 
 	s.current = validated

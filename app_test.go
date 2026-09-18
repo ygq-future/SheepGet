@@ -962,3 +962,74 @@ func TestApp_CompletedHistoryWithFileElsewhere_IsKept(t *testing.T) {
 		t.Errorf("别的目录里的成品文件不应被动到: %v", err)
 	}
 }
+
+// 勾选「同时删除磁盘文件」时成品与分片一并清掉；不勾选时只移除记录，磁盘文件保留。
+func TestApp_DeleteTask_RemovesDiskFilesOnlyWhenRequested(t *testing.T) {
+	ctx := context.Background()
+
+	seedTaskWithFiles := func(t *testing.T, store task.TaskStore, tmpDir, id string) (*task.Task, []string) {
+		t.Helper()
+		dir := filepath.Join(tmpDir, "downloads-"+id)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("failed to create download dir: %v", err)
+		}
+		tt := &task.Task{
+			ID:         id,
+			URL:        "https://example.com/" + id + ".bin",
+			Filename:   id + ".bin",
+			Directory:  dir,
+			Status:     task.StatusCompleted,
+			TotalBytes: 4,
+			Downloaded: 4,
+			CreatedAt:  time.Now(),
+			UpdatedAt:  time.Now(),
+		}
+		if err := store.Save(ctx, tt); err != nil {
+			t.Fatalf("failed to seed task: %v", err)
+		}
+		paths := []string{
+			filepath.Join(dir, tt.Filename),
+			filepath.Join(dir, tt.Filename+".sheepget"),
+		}
+		for _, path := range paths {
+			if err := os.WriteFile(path, []byte("data"), 0644); err != nil {
+				t.Fatalf("failed to seed %s: %v", path, err)
+			}
+		}
+		return tt, paths
+	}
+
+	t.Run("with disk files", func(t *testing.T) {
+		app, store, tmpDir := newTestApp(t)
+		tt, paths := seedTaskWithFiles(t, store, tmpDir, "del_disk")
+
+		if err := app.DeleteTask(tt.ID, true); err != nil {
+			t.Fatalf("DeleteTask failed: %v", err)
+		}
+		for _, path := range paths {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Errorf("expected %s to be removed, stat err = %v", path, err)
+			}
+		}
+		if _, err := store.Get(ctx, tt.ID); err == nil {
+			t.Error("task record should be removed")
+		}
+	})
+
+	t.Run("records only", func(t *testing.T) {
+		app, store, tmpDir := newTestApp(t)
+		tt, paths := seedTaskWithFiles(t, store, tmpDir, "del_record")
+
+		if err := app.DeleteTask(tt.ID, false); err != nil {
+			t.Fatalf("DeleteTask failed: %v", err)
+		}
+		for _, path := range paths {
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("expected %s to be kept, stat err = %v", path, err)
+			}
+		}
+		if _, err := store.Get(ctx, tt.ID); err == nil {
+			t.Error("task record should be removed")
+		}
+	})
+}

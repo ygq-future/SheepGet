@@ -326,13 +326,10 @@ func parseContentDisposition(cd string) (string, map[string]string, error) {
 }
 
 func extractFilenameFromURL(urlStr string) string {
-	parts := strings.Split(urlStr, "?")
-	clean := parts[0]
-	base := filepath.Base(clean)
-	if base == "" || base == "/" || base == "." {
-		return "download.bin"
+	if name := URLFilename(urlStr); name != "" {
+		return name
 	}
-	return base
+	return DefaultFilename
 }
 
 // ProgressFunc reports updated downloaded bytes.
@@ -423,17 +420,12 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 }
 
 func (d *HTTPDownloader) commitCompletedFile(partPath, destPath string, t *task.Task) error {
-	// 1. Try atomic rename first (efficient when partPath and destPath reside on the same filesystem)
-	err := os.Rename(partPath, destPath)
-	if err != nil {
-		// Cross-device link or rename failure: safely stream-copy across filesystems
-		if transferErr := safeTransferCrossDevice(partPath, destPath); transferErr != nil {
-			// CRITICAL: Preserve partPath so user data is not lost on transfer failure
-			return fmt.Errorf("failed to transfer completed file to %s: %w (temporary file preserved at %s)", destPath, transferErr, partPath)
-		}
+	// 同盘 rename、跨盘复制由 moveFile 统一处理；失败时保留分片，避免用户数据丢失。
+	if err := moveFile(partPath, destPath); err != nil {
+		return fmt.Errorf("failed to transfer completed file to %s: %w (temporary file preserved at %s)", destPath, err, partPath)
 	}
 
-	// 2. Apply server Last-Modified time if enabled and present
+	// Apply server Last-Modified time if enabled and present
 	d.mu.RLock()
 	useServerTime := d.useServerFileTime
 	d.mu.RUnlock()
@@ -444,53 +436,6 @@ func (d *HTTPDownloader) commitCompletedFile(partPath, destPath string, t *task.
 		}
 	}
 
-	return nil
-}
-
-// safeTransferCrossDevice transfers a file across filesystems or disks by copying to a temporary
-// file in the destination directory, syncing, closing, and renaming before removing the source.
-// If any step fails, srcPath is strictly preserved to prevent data loss.
-func safeTransferCrossDevice(srcPath, dstPath string) error {
-	srcFile, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("failed to open source temp file: %w", err)
-	}
-	defer func() { _ = srcFile.Close() }()
-
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	transferPath := dstPath + ".transferring"
-	dstFile, err := os.OpenFile(transferPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file: %w", err)
-	}
-
-	buf := make([]byte, 256*1024)
-	_, copyErr := io.CopyBuffer(dstFile, srcFile, buf)
-	syncErr := dstFile.Sync()
-	closeErr := dstFile.Close()
-
-	if copyErr != nil {
-		_ = os.Remove(transferPath)
-		return fmt.Errorf("copy failed: %w", copyErr)
-	}
-	if syncErr != nil {
-		_ = os.Remove(transferPath)
-		return fmt.Errorf("sync failed: %w", syncErr)
-	}
-	if closeErr != nil {
-		_ = os.Remove(transferPath)
-		return fmt.Errorf("close failed: %w", closeErr)
-	}
-
-	if err := os.Rename(transferPath, dstPath); err != nil {
-		_ = os.Remove(transferPath)
-		return fmt.Errorf("rename to target destination failed: %w", err)
-	}
-
-	_ = os.Remove(srcPath)
 	return nil
 }
 

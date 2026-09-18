@@ -6,12 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
-	"strings"
 	"sync"
 	"time"
 )
@@ -221,17 +219,13 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	filename := req.Filename
 	if filename == "" && req.URL != "" {
-		urlPath := strings.Split(req.URL, "?")[0]
-		base := path.Base(urlPath)
-		if base != "" && base != "." && base != "/" {
-			filename = base
-		}
+		filename = engine.URLFilename(req.URL)
 	}
 	if filename == "" && dupTask != nil && dupTask.Filename != "" {
 		filename = dupTask.Filename
 	}
 	if filename == "" && req.URL != "" {
-		filename = "download.bin"
+		filename = engine.DefaultFilename
 	}
 
 	dir := req.Directory
@@ -356,7 +350,7 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 		if probe.DuplicateTask != nil {
 			targetItem.DuplicateTask = probe.DuplicateTask
 		}
-		if probe.Filename != "" && (targetItem.Filename == "download.bin" || targetItem.Filename == path.Base(strings.Split(reqURL, "?")[0])) {
+		if probe.Filename != "" && (targetItem.Filename == engine.DefaultFilename || targetItem.Filename == engine.URLFilename(reqURL)) {
 			targetItem.Filename = probe.Filename
 		}
 	}
