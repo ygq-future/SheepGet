@@ -151,10 +151,6 @@ export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }
     });
 }
 
-export function Greet(name: string): $CancellablePromise<string> {
-    return $Call.ByID(2659711170, name);
-}
-
 /**
  * HideProgressWindow hides the progress window.
  */

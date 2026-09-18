@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { sortActiveTasks } from './views/ProgressView';
 import {
-  mergeProgressSegments,
   calculateChunkProgress,
   calculateChunkDividers,
   isProcessingFailure,
@@ -146,72 +145,6 @@ describe('ProgressView active task sorting and rules (Ticket 03)', () => {
     expect(activeList.length).toBe(0);
     expect(completedList.length).toBe(0);
     expect(windowHidden).toBe(true);
-  });
-});
-
-describe('mergeProgressSegments algorithm', () => {
-  it('returns empty array when totalBytes is 0 or downloaded is 0 with no chunks', () => {
-    expect(mergeProgressSegments([], 0, 0)).toEqual([]);
-    expect(mergeProgressSegments([], 1000, 0)).toEqual([]);
-  });
-
-  it('handles single stream download without chunks', () => {
-    const segments = mergeProgressSegments(undefined, 1000, 500);
-    expect(segments).toHaveLength(1);
-    expect(segments[0].startPercent).toBe(0);
-    expect(segments[0].widthPercent).toBe(50);
-  });
-
-  it('keeps discrete non-adjacent chunks separate', () => {
-    const chunks: taskModels.Chunk[] = [
-      new taskModels.Chunk({ index: 0, start: 0, end: 99, downloaded: 50, completed: false }),
-      new taskModels.Chunk({ index: 1, start: 100, end: 199, downloaded: 0, completed: false }),
-      new taskModels.Chunk({ index: 2, start: 200, end: 299, downloaded: 100, completed: true }),
-    ];
-    const segments = mergeProgressSegments(chunks, 1000, 150);
-    expect(segments).toHaveLength(2);
-    // Segment 1: 0..49 (start: 0%, width: 5%)
-    expect(segments[0].start).toBe(0);
-    expect(segments[0].end).toBe(49);
-    expect(segments[0].startPercent).toBe(0);
-    expect(segments[0].widthPercent).toBe(5);
-
-    // Segment 2: 200..299 (start: 20%, width: 10%)
-    expect(segments[1].start).toBe(200);
-    expect(segments[1].end).toBe(299);
-    expect(segments[1].startPercent).toBe(20);
-    expect(segments[1].widthPercent).toBe(10);
-  });
-
-  it('merges adjacent chunks when one or both meet continuously', () => {
-    const chunks: taskModels.Chunk[] = [
-      new taskModels.Chunk({ index: 0, start: 0, end: 99, downloaded: 100, completed: true }),
-      new taskModels.Chunk({ index: 1, start: 100, end: 199, downloaded: 100, completed: true }),
-      new taskModels.Chunk({ index: 2, start: 200, end: 299, downloaded: 50, completed: false }),
-      new taskModels.Chunk({ index: 3, start: 300, end: 399, downloaded: 0, completed: false }),
-    ];
-    // chunk 0 (0..99) + chunk 1 (100..199) + chunk 2 (200..249) are all contiguous!
-    const segments = mergeProgressSegments(chunks, 1000, 250);
-    expect(segments).toHaveLength(1);
-    expect(segments[0].start).toBe(0);
-    expect(segments[0].end).toBe(249);
-    expect(segments[0].startPercent).toBe(0);
-    expect(segments[0].widthPercent).toBe(25);
-  });
-
-  it('merges all completed chunks into a single 100% continuous progress bar', () => {
-    const chunks: taskModels.Chunk[] = [
-      new taskModels.Chunk({ index: 0, start: 0, end: 249, downloaded: 250, completed: true }),
-      new taskModels.Chunk({ index: 1, start: 250, end: 499, downloaded: 250, completed: true }),
-      new taskModels.Chunk({ index: 2, start: 500, end: 749, downloaded: 250, completed: true }),
-      new taskModels.Chunk({ index: 3, start: 750, end: 999, downloaded: 250, completed: true }),
-    ];
-    const segments = mergeProgressSegments(chunks, 1000, 1000);
-    expect(segments).toHaveLength(1);
-    expect(segments[0].start).toBe(0);
-    expect(segments[0].end).toBe(999);
-    expect(segments[0].startPercent).toBe(0);
-    expect(segments[0].widthPercent).toBe(100);
   });
 });
 

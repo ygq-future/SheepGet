@@ -40,6 +40,12 @@ const (
 
 const (
 	DefaultAccentColor = "#10b981" // Emerald-500
+
+	// DefaultConnectionsPerTask is the single source of truth for the number of
+	// HTTP chunk connections a download task uses when the user has not set a
+	// per-task override. worker count == chunk count == connection count, so this
+	// one value feeds every layer; no other package should redefine it.
+	DefaultConnectionsPerTask = 8
 )
 
 var hexColorRegex = regexp.MustCompile(`^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$`)
@@ -332,7 +338,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			DuplicateURLPolicy:        DuplicatePolicyAsk,
 			PreDownload:               false,
 			MaxConcurrentDownloads:    3,
-			DefaultConnectionsPerTask: 8,
+			DefaultConnectionsPerTask: DefaultConnectionsPerTask,
 			DefaultDirectory:          defaultDownloadDir,
 			TempDirectory:             defaultTempDir,
 			UseServerFileTime:         false,

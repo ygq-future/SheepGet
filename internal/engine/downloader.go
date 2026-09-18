@@ -22,9 +22,8 @@ import (
 )
 
 const (
-	DefaultMaxConcurrency = 4
-	MinChunkSize          = 256 * 1024 // 256KB
-	UserAgentChrome       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+	MinChunkSize    = 256 * 1024 // 256KB
+	UserAgentChrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 )
 
 var (
@@ -44,13 +43,14 @@ type HTTPProbeInfo struct {
 
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
 type HTTPDownloader struct {
-	client            *http.Client
-	customClient      bool
-	mu                sync.RWMutex
-	tempDirectory     string
-	useServerFileTime bool
-	proxyMode         string
-	customProxyAddr   string
+	client             *http.Client
+	customClient       bool
+	mu                 sync.RWMutex
+	tempDirectory      string
+	useServerFileTime  bool
+	defaultConcurrency int
+	proxyMode          string
+	customProxyAddr    string
 }
 
 // SetTempDirectory updates the default temporary directory for in-progress part files.
@@ -79,6 +79,16 @@ func (d *HTTPDownloader) GetUseServerFileTime() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.useServerFileTime
+}
+
+// SetDefaultConcurrency sets the fallback chunk/worker count used only when a task read back
+// from disk has a zero MaxConcurrency (legacy/edited data). Normal task creation sets a positive
+// value upstream, so this fallback is self-healing for malformed persisted state, not a second
+// source of truth.
+func (d *HTTPDownloader) SetDefaultConcurrency(n int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.defaultConcurrency = n
 }
 
 // SetProxy configures the proxy mode ("direct", "system", "custom") and custom address.
@@ -859,10 +869,14 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 }
 
 func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc, client *http.Client) error {
+	if t.MaxConcurrency <= 0 {
+		d.mu.RLock()
+		t.MaxConcurrency = d.defaultConcurrency
+		d.mu.RUnlock()
+	}
 	if len(t.Chunks) == 0 {
 		t.Chunks = splitChunks(t.TotalBytes, t.MaxConcurrency)
 	}
-
 	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open part file: %w", err)
@@ -876,9 +890,6 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 	coord := newChunkCoordinator(t, file, d, client, onProgress)
 
 	numWorkers := t.MaxConcurrency
-	if numWorkers <= 0 {
-		numWorkers = DefaultMaxConcurrency
-	}
 	if int64(numWorkers) > t.TotalBytes/MinChunkSize && t.TotalBytes < MinChunkSize*2 {
 		numWorkers = 1
 	}
@@ -940,10 +951,7 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 }
 
 func splitChunks(totalBytes int64, concurrency int) []task.Chunk {
-	if concurrency <= 0 {
-		concurrency = DefaultMaxConcurrency
-	}
-
+	// Callers normalize concurrency to a positive value before calling.
 	// If file is small, keep it as 1 chunk
 	if totalBytes < MinChunkSize*2 || concurrency == 1 {
 		return []task.Chunk{

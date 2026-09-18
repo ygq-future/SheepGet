@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import { Events } from '@wailsio/runtime';
 import { AnimatePresence, motion, LayoutGroup } from 'motion/react';
 import { unwrapEventData } from '../lib/utils';
+import { Event } from '../lib/events';
 import {
   DownloadCloud,
   CheckCircle2,
@@ -170,7 +171,7 @@ export function ProgressView() {
       }
     })();
     // Listen for live task updates
-    const unlistenTask = Events.On('task:updated', (ev: unknown) => {
+    const unlistenTask = Events.On(Event.TaskUpdated, (ev: unknown) => {
       const updated = unwrapEventData<taskModels.Task>(ev);
       if (!updated || !updated.id) return;
       if (updated.status === taskModels.Status.StatusCompleted) {
@@ -241,14 +242,14 @@ export function ProgressView() {
       })();
     };
 
-    const unlistenFocus = Events.On('progress:focus_completed', (ev: unknown) => {
+    const unlistenFocus = Events.On(Event.ProgressFocusCompleted, (ev: unknown) => {
       const id = unwrapEventData<string>(ev);
       if (id) {
         handleAppendTask(id);
       }
     });
 
-    const unlistenFocusTask = Events.On('progress:focus_task', (ev: unknown) => {
+    const unlistenFocusTask = Events.On(Event.ProgressFocusTask, (ev: unknown) => {
       const id = unwrapEventData<string>(ev);
       if (id) {
         handleAppendTask(id);
@@ -256,12 +257,12 @@ export function ProgressView() {
     });
 
     // Clear manually viewed tasks on window close or new download initiation
-    const unlistenClear = Events.On('progress:clear_viewed', () => {
+    const unlistenClear = Events.On(Event.ProgressClearViewed, () => {
       setCompletedTasks([]);
     });
 
     // Listen for task deletion to keep progress window clean
-    const unlistenDeleted = Events.On('task:deleted', (ev: unknown) => {
+    const unlistenDeleted = Events.On(Event.TaskDeleted, (ev: unknown) => {
       const deletedId = unwrapEventData<string>(ev);
       if (!deletedId) return;
       setActiveTasks((prev) => prev.filter((t) => t.id !== deletedId));

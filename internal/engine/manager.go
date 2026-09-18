@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sheep-get/internal/config"
 	"sheep-get/internal/task"
 	"strconv"
 	"strings"
@@ -38,9 +39,10 @@ type TaskDeleteListener interface {
 
 // Config holds manager settings.
 type Config struct {
-	MaxActiveTasks    int    `json:"maxActiveTasks"`
-	TempDirectory     string `json:"tempDirectory"`
-	UseServerFileTime bool   `json:"useServerFileTime"`
+	MaxActiveTasks            int    `json:"maxActiveTasks"`
+	TempDirectory             string `json:"tempDirectory"`
+	UseServerFileTime         bool   `json:"useServerFileTime"`
+	DefaultConnectionsPerTask int    `json:"defaultConnectionsPerTask"`
 }
 
 // ProbeResult holds the probed metadata and duplicate-task state for a URL.
@@ -196,6 +198,9 @@ func NewManager(store task.TaskStore, downloader *HTTPDownloader, cfg Config) *M
 	if cfg.MaxActiveTasks <= 0 {
 		cfg.MaxActiveTasks = 3 // default 3 active tasks as per spec A10
 	}
+	if cfg.DefaultConnectionsPerTask <= 0 {
+		cfg.DefaultConnectionsPerTask = config.DefaultConnectionsPerTask
+	}
 	if downloader == nil {
 		downloader = NewHTTPDownloader(nil)
 	}
@@ -214,6 +219,7 @@ func NewManager(store task.TaskStore, downloader *HTTPDownloader, cfg Config) *M
 		downloader.SetTempDirectory(cfg.TempDirectory)
 	}
 	downloader.SetUseServerFileTime(cfg.UseServerFileTime)
+	downloader.SetDefaultConcurrency(cfg.DefaultConnectionsPerTask)
 
 	go m.speedTicker()
 	return m
@@ -603,7 +609,7 @@ func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, 
 		filename = info.Filename
 	}
 	if maxConn <= 0 {
-		maxConn = DefaultMaxConcurrency
+		maxConn = m.config.DefaultConnectionsPerTask
 	}
 
 	t := &task.Task{
@@ -924,7 +930,7 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 		filename = info.Filename
 	}
 	if maxConn <= 0 {
-		maxConn = DefaultMaxConcurrency
+		maxConn = m.config.DefaultConnectionsPerTask
 	}
 
 	t := &task.Task{

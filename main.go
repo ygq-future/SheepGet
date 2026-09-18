@@ -5,6 +5,8 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+
+	appevents "sheep-get/internal/events"
 )
 
 //go:embed all:frontend/dist
@@ -36,7 +38,7 @@ func main() {
 
 	// Create main window (Name: "main")
 	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:      "main",
+		Name:      winNameMain,
 		Title:     "sheep-get",
 		Width:     800,
 		Height:    520,
@@ -59,9 +61,9 @@ func main() {
 
 	// Pre-create independent FileInfo window (Name: "fileinfo")
 	fileInfoWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:           "fileinfo",
+		Name:           winNameFileInfo,
 		Title:          "新建下载 - SheepGet",
-		Width:          460,
+		Width:          fileInfoWindowWidth,
 		Height:         300,
 		Frameless:      true,
 		BackgroundType: application.BackgroundTypeTransparent,
@@ -81,19 +83,19 @@ func main() {
 		progInitPos = application.WindowCentered
 	)
 	if primary := wailsApp.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
-		progX = primary.WorkArea.X + primary.WorkArea.Width - 560 - 32
-		progY = primary.WorkArea.Y + primary.WorkArea.Height - 320 - 32
+		progX = primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
+		progY = primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
 		progInitPos = application.WindowXY
 	}
 	progressWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:            "progress",
+		Name:            winNameProgress,
 		Title:           "下载进度 - SheepGet",
-		Width:           560,
-		Height:          160,
-		MinWidth:        560,
-		MaxWidth:        560,
-		MinHeight:       160,
-		MaxHeight:       640,
+		Width:           progressWindowWidth,
+		Height:          progressWindowHeight,
+		MinWidth:        progressWindowMinWidth,
+		MaxWidth:        progressWindowMaxWidth,
+		MinHeight:       progressWindowMinH,
+		MaxHeight:       progressWindowMaxH,
 		InitialPosition: progInitPos,
 		X:               progX,
 		Y:               progY,
@@ -107,7 +109,7 @@ func main() {
 	progressWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		event.Cancel()
 		progressWindow.Hide()
-		wailsApp.Event.Emit("progress:clear_viewed")
+		wailsApp.Event.Emit(appevents.ProgressClearViewed)
 	})
 
 	// Configure cross-platform system tray
@@ -129,7 +131,7 @@ func main() {
 	trayMenu.Add("偏好设置").OnClick(func(_ *application.Context) {
 		mainWindow.Show()
 		mainWindow.Focus()
-		wailsApp.Event.Emit("app:open-settings")
+		wailsApp.Event.Emit(appevents.AppOpenSettings)
 	})
 	trayMenu.Add("新建下载").OnClick(func(_ *application.Context) {
 		_, _ = app.OpenNewDownload()

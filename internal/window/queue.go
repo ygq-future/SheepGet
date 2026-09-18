@@ -9,6 +9,7 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
+	"sheep-get/internal/events"
 	"sheep-get/internal/task"
 	"sync"
 	"time"
@@ -186,7 +187,7 @@ func (qc *QueueController) SwitchActive(index int) (*FileInfoItem, error) {
 	activeItem := qc.items[qc.activeIndex]
 
 	if qc.windowView != nil {
-		qc.windowView.Emit("fileinfo:next", activeItem)
+		qc.windowView.Emit(events.FileInfoNext, activeItem)
 	}
 
 	copyItem := *activeItem
@@ -303,10 +304,10 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		qc.windowView.Show()
 		qc.windowView.Focus()
 		if len(qc.items) == 1 {
-			qc.windowView.Emit("fileinfo:next", item)
+			qc.windowView.Emit(events.FileInfoNext, item)
 		} else {
 			// If already open with an item, update it immediately to the latest manual click so the user immediately sees response
-			qc.windowView.Emit("fileinfo:queue_updated", map[string]int{
+			qc.windowView.Emit(events.FileInfoQueueUpdated, map[string]int{
 				"index": qc.items[0].QueueIndex,
 				"total": qc.items[0].QueueTotal,
 			})
@@ -395,7 +396,7 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 	}
 
 	if qc.windowView != nil {
-		qc.windowView.Emit("fileinfo:updated", targetItem)
+		qc.windowView.Emit(events.FileInfoUpdated, targetItem)
 	}
 }
 
@@ -510,7 +511,7 @@ func (qc *QueueController) advanceQueueLocked() {
 		}
 		nextItem := qc.items[qc.activeIndex]
 		if qc.windowView != nil {
-			qc.windowView.Emit("fileinfo:next", nextItem)
+			qc.windowView.Emit(events.FileInfoNext, nextItem)
 		}
 	} else {
 		qc.activeIndex = 0

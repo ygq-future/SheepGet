@@ -41,18 +41,3 @@ func getDefaultDownloadDir() string {
 
 	return downloads
 }
-
-// isSystemDarkMode reports whether Windows apps are currently using the dark theme.
-//
-// 仅在配置中心把主题设为 system 时作为判定依据；读不到时按浅色解析。
-func isSystemDarkMode() bool {
-	key, err := registry.OpenKey(registry.CURRENT_USER, `SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
-	if err == nil {
-		defer func() { _ = key.Close() }()
-		val, _, err := key.GetIntegerValue("AppsUseLightTheme")
-		if err == nil {
-			return val == 0
-		}
-	}
-	return false
-}

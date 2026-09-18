@@ -4,5 +4,4 @@ export default {
   ...base,
   plugins: [tailwind],
   tailwindStylesheet: './src/style.css',
-  tailwindFunctions: ['cn'],
 };

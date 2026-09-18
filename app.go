@@ -14,6 +14,7 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
+	appevents "sheep-get/internal/events"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
@@ -49,34 +50,13 @@ type App struct {
 }
 
 type wailsWindowView struct {
-	getApp      func() *application.App
-	name        string
-	getSettings func() config.Settings
-}
-
-func getThemeRGBA(s config.Settings) application.RGBA {
-	isDark := false
-	switch s.Appearance.Theme {
-	case config.ThemeDark:
-		isDark = true
-	case config.ThemeLight:
-		isDark = false
-	default:
-		isDark = isSystemDarkMode()
-	}
-
-	if isDark {
-		return application.RGBA{Red: 12, Green: 14, Blue: 18, Alpha: 255}
-	}
-	return application.RGBA{Red: 241, Green: 245, Blue: 249, Alpha: 255}
+	getApp func() *application.App
+	name   string
 }
 
 func (w *wailsWindowView) Show() {
 	if app := w.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(w.name); ok {
-			if w.name != "fileinfo" && w.getSettings != nil {
-				win.SetBackgroundColour(getThemeRGBA(w.getSettings()))
-			}
 			win.Show()
 		}
 	}
@@ -145,16 +125,16 @@ func NewApp() *App {
 	}
 
 	mgr := engine.NewManager(store, downloader, engine.Config{
-		MaxActiveTasks:    activeSettings.Download.MaxConcurrentDownloads,
-		TempDirectory:     activeSettings.Download.TempDirectory,
-		UseServerFileTime: activeSettings.Download.UseServerFileTime,
+		MaxActiveTasks:            activeSettings.Download.MaxConcurrentDownloads,
+		TempDirectory:             activeSettings.Download.TempDirectory,
+		UseServerFileTime:         activeSettings.Download.UseServerFileTime,
+		DefaultConnectionsPerTask: activeSettings.Download.DefaultConnectionsPerTask,
 	})
 	app.manager = mgr
 
 	winView := &wailsWindowView{
-		getApp:      app.getApp,
-		name:        "fileinfo",
-		getSettings: settingsSvc.Get,
+		getApp: app.getApp,
+		name:   winNameFileInfo,
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
@@ -210,19 +190,15 @@ func (a *App) Shutdown() {
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
 func (a *App) OnTaskUpdated(t *task.Task) {
 	if app := a.getApp(); app != nil {
-		app.Event.Emit("task:updated", t)
+		app.Event.Emit(appevents.TaskUpdated, t)
 	}
 }
 
 // OnTaskDeleted emits wails event to the frontend whenever a task is deleted
 func (a *App) OnTaskDeleted(taskID string) {
 	if app := a.getApp(); app != nil {
-		app.Event.Emit("task:deleted", taskID)
+		app.Event.Emit(appevents.TaskDeleted, taskID)
 	}
-}
-
-func (a *App) Greet(name string) string {
-	return fmt.Sprintf("Hello %s, It's show time!", name)
 }
 
 // OnSettingsUpdated applies changed settings to the running engine and broadcasts them.
@@ -240,7 +216,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		a.clipboardWatcher.OnSettingsUpdated(s)
 	}
 	if app := a.getApp(); app != nil {
-		app.Event.Emit("settings:updated", s)
+		app.Event.Emit(appevents.SettingsUpdated, s)
 	}
 	return nil
 }
@@ -382,7 +358,7 @@ func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, er
 		maxConn = a.settings.Get().Download.DefaultConnectionsPerTask
 	}
 	if maxConn <= 0 {
-		maxConn = 8
+		maxConn = config.DefaultConnectionsPerTask
 	}
 	if dir == "" {
 		if filename != "" {
@@ -713,12 +689,12 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 		st := a.settings.Get()
 		if st.Download.ShowProgressWindow {
 			if app := a.getApp(); app != nil {
-				app.Event.Emit("progress:clear_viewed")
+				app.Event.Emit(appevents.ProgressClearViewed)
 			}
 			a.ShowProgressWindow(t.ID)
 			if a.GetFileInfoQueueLength() > 0 {
 				if app := a.getApp(); app != nil {
-					if fileWin, ok := app.Window.GetByName("fileinfo"); ok {
+					if fileWin, ok := app.Window.GetByName(winNameFileInfo); ok {
 						fileWin.Focus()
 					}
 				}
@@ -763,7 +739,7 @@ func (a *App) SwitchFileInfoActive(index int) (*window.FileInfoItem, error) {
 // ShowMainWindow makes the main window visible and brings it to focus.
 func (a *App) ShowMainWindow() {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("main"); ok {
+		if win, ok := app.Window.GetByName(winNameMain); ok {
 			win.Show()
 			win.Focus()
 		}
@@ -773,7 +749,7 @@ func (a *App) ShowMainWindow() {
 // MinimiseFileInfoWindow minimises the file info window.
 func (a *App) MinimiseFileInfoWindow() {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("fileinfo"); ok {
+		if win, ok := app.Window.GetByName(winNameFileInfo); ok {
 			win.Minimise()
 		}
 	}
@@ -782,14 +758,14 @@ func (a *App) MinimiseFileInfoWindow() {
 // SetFileInfoWindowHeight dynamically adjusts the fileinfo window's height to wrap its content.
 func (a *App) SetFileInfoWindowHeight(height int) {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("fileinfo"); ok {
-			if height < 240 {
-				height = 240
+		if win, ok := app.Window.GetByName(winNameFileInfo); ok {
+			if height < fileInfoWindowMinH {
+				height = fileInfoWindowMinH
 			}
-			if height > 700 {
-				height = 700
+			if height > fileInfoWindowMaxH {
+				height = fileInfoWindowMaxH
 			}
-			win.SetSize(460, height)
+			win.SetSize(fileInfoWindowWidth, height)
 		}
 	}
 }
@@ -797,14 +773,14 @@ func (a *App) SetFileInfoWindowHeight(height int) {
 // SetProgressWindowHeight dynamically adjusts the progress window's height between minHeight and maxHeight.
 func (a *App) SetProgressWindowHeight(height int) {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("progress"); ok {
-			if height < 160 {
-				height = 160
+		if win, ok := app.Window.GetByName(winNameProgress); ok {
+			if height < progressWindowMinH {
+				height = progressWindowMinH
 			}
-			if height > 640 {
-				height = 640
+			if height > progressWindowMaxH {
+				height = progressWindowMaxH
 			}
-			win.SetSize(560, height)
+			win.SetSize(progressWindowWidth, height)
 		}
 	}
 }
@@ -812,11 +788,11 @@ func (a *App) SetProgressWindowHeight(height int) {
 // ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
 func (a *App) ShowProgressWindow(taskID string) {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("progress"); ok {
+		if win, ok := app.Window.GetByName(winNameProgress); ok {
 			if !a.progressPositioned {
 				if primary := app.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
-					x := primary.WorkArea.X + primary.WorkArea.Width - 560 - 32
-					y := primary.WorkArea.Y + primary.WorkArea.Height - 320 - 32
+					x := primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
+					y := primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
 					win.SetPosition(x, y)
 				}
 				a.progressPositioned = true
@@ -824,20 +800,20 @@ func (a *App) ShowProgressWindow(taskID string) {
 			win.Show()
 			win.Focus()
 			if taskID != "" {
-				app.Event.Emit("progress:focus_completed", taskID)
-				app.Event.Emit("progress:focus_task", taskID)
+				app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
+				app.Event.Emit(appevents.ProgressFocusTask, taskID)
 			}
 			return
 		}
 		progWin := app.Window.NewWithOptions(application.WebviewWindowOptions{
-			Name:           "progress",
+			Name:           winNameProgress,
 			Title:          "下载进度 - SheepGet",
-			Width:          560,
-			Height:         160,
-			MinWidth:       560,
-			MaxWidth:       560,
-			MinHeight:      160,
-			MaxHeight:      640,
+			Width:          progressWindowWidth,
+			Height:         progressWindowHeight,
+			MinWidth:       progressWindowMinWidth,
+			MaxWidth:       progressWindowMaxWidth,
+			MinHeight:      progressWindowMinH,
+			MaxHeight:      progressWindowMaxH,
 			Frameless:      true,
 			BackgroundType: application.BackgroundTypeTransparent,
 			URL:            fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
@@ -848,8 +824,8 @@ func (a *App) ShowProgressWindow(taskID string) {
 		})
 		progWin.Focus()
 		if taskID != "" {
-			app.Event.Emit("progress:focus_completed", taskID)
-			app.Event.Emit("progress:focus_task", taskID)
+			app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
+			app.Event.Emit(appevents.ProgressFocusTask, taskID)
 		}
 	}
 }
@@ -857,7 +833,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 // MinimiseProgressWindow minimises the progress window.
 func (a *App) MinimiseProgressWindow() {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("progress"); ok {
+		if win, ok := app.Window.GetByName(winNameProgress); ok {
 			win.Minimise()
 		}
 	}
@@ -866,9 +842,9 @@ func (a *App) MinimiseProgressWindow() {
 // HideProgressWindow hides the progress window.
 func (a *App) HideProgressWindow() {
 	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName("progress"); ok {
+		if win, ok := app.Window.GetByName(winNameProgress); ok {
 			win.Hide()
-			app.Event.Emit("progress:clear_viewed")
+			app.Event.Emit(appevents.ProgressClearViewed)
 		}
 	}
 }

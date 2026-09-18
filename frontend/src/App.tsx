@@ -12,6 +12,7 @@ import {
 } from '../bindings/sheep-get/app';
 import { Clipboard, Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
+import { Event } from './lib/events';
 import { DownloadRequest } from '../bindings/sheep-get/internal/window/models';
 import { TaskItem } from './components/TaskItem';
 import { UpdateLinkModal } from './components/UpdateLinkModal';
@@ -128,10 +129,10 @@ export function App() {
       });
     };
 
-    const unsubscribeDeleted = Events.On('task:deleted', onDeleted);
+    const unsubscribeDeleted = Events.On(Event.TaskDeleted, onDeleted);
 
-    const unsubscribe = Events.On('task:updated', onUpdated);
-    const unsubscribeOpenSettings = Events.On('app:open-settings', () => {
+    const unsubscribe = Events.On(Event.TaskUpdated, onUpdated);
+    const unsubscribeOpenSettings = Events.On(Event.AppOpenSettings, () => {
       setFilter('settings');
     });
     return () => {
@@ -250,8 +251,8 @@ export function App() {
       const ids = Array.from(selectedTaskIds);
       void ShowProgressWindow(ids[0]);
       ids.forEach((id) => {
-        void Events.Emit('progress:focus_completed', id);
-        void Events.Emit('progress:focus_task', id);
+        void Events.Emit(Event.ProgressFocusCompleted, id);
+        void Events.Emit(Event.ProgressFocusTask, id);
       });
       return;
     }

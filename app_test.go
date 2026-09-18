@@ -94,9 +94,8 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 		settings: settingsSvc,
 	}
 	winView := &wailsWindowView{
-		getApp:      app.getApp,
-		name:        "fileinfo",
-		getSettings: settingsSvc.Get,
+		getApp: app.getApp,
+		name:   "fileinfo",
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)

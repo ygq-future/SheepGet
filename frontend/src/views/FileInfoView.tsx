@@ -40,6 +40,7 @@ import type * as windowModels from '../../bindings/sheep-get/internal/window/mod
 import * as duplicateModels from '../../bindings/sheep-get/internal/duplicate/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
+import { Event } from '../lib/events';
 import { useSettingsStore } from '../stores/settings';
 import { useFileInfoDraftStore } from '../stores/fileInfoDraft';
 import { Select } from '../components/ui/Select';
@@ -163,7 +164,7 @@ export function FileInfoView() {
     })();
 
     // Listen for next item in queue
-    const unlistenNext = Events.On('fileinfo:next', (ev: unknown) => {
+    const unlistenNext = Events.On(Event.FileInfoNext, (ev: unknown) => {
       const item = unwrapEventData<windowModels.FileInfoItem>(ev);
       if (item) {
         void initItem(item);
@@ -173,7 +174,7 @@ export function FileInfoView() {
     });
 
     // Listen for queue updates
-    const unlistenQueue = Events.On('fileinfo:queue_updated', (ev: unknown) => {
+    const unlistenQueue = Events.On(Event.FileInfoQueueUpdated, (ev: unknown) => {
       const status = unwrapEventData<{ index: number; total: number }>(ev);
       if (status) {
         setActiveItem((prev) =>
@@ -189,7 +190,7 @@ export function FileInfoView() {
     });
 
     // Listen for probed updates on the active item
-    const unlistenUpdated = Events.On('fileinfo:updated', (ev: unknown) => {
+    const unlistenUpdated = Events.On(Event.FileInfoUpdated, (ev: unknown) => {
       const item = unwrapEventData<windowModels.FileInfoItem>(ev);
       if (item && item.id === useFileInfoDraftStore.getState().activeItemId) {
         setProbing(false);

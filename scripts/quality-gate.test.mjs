@@ -66,7 +66,7 @@ test('TypeScript 7 rejects semantic errors and accepts valid code', () => {
   }
 });
 
-test('Prettier loads Tailwind stylesheet and sorts cn classes', async () => {
+test('Prettier loads Tailwind stylesheet and sorts Tailwind classes', async () => {
   const cli = join(root, 'frontend/node_modules/prettier/bin/prettier.cjs');
   for (const cwd of [root, join(root, 'frontend')]) {
     const result = exec(process.execPath, [cli, '--check', join(root, 'frontend/package.json')], {
@@ -79,7 +79,7 @@ test('Prettier loads Tailwind stylesheet and sorts cn classes', async () => {
   try {
     const config = await prettier.resolveConfig('src/App.tsx');
     assert.equal(config.tailwindStylesheet, './src/style.css');
-    const source = 'export const classes = cn("p-4 flex");\n';
+    const source = 'export const el = <div className="p-4 flex" />;\n';
     const options = { ...config, filepath: 'src/App.tsx' };
     assert.equal(await prettier.check(source, options), false);
     const formatted = await prettier.format(source, options);

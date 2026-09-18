@@ -33,6 +33,9 @@ export function TaskItem({
 }: TaskItemProps) {
   const percent =
     t.totalBytes > 0 ? Math.min(100, Math.round((t.downloaded / t.totalBytes) * 100)) : 0;
+  // 未知大小的任务不显示虚假的 0%，与进度窗口的「未知大小」文案保持一致。
+  const isUnknownSize = t.totalBytes <= 0;
+  const percentText = isUnknownSize ? '未知大小' : `${percent}%`;
 
   // Check if media file has duration information
   const hasDuration =
@@ -69,7 +72,7 @@ export function TaskItem({
       case task.Status.StatusDownloading:
         return (
           <div className="flex items-center gap-1.5 font-mono text-[11px]">
-            <span className="font-semibold text-[var(--accent)]">{percent}%</span>
+            <span className="font-semibold text-[var(--accent)]">{percentText}</span>
             {t.speed > 0 && (
               <span className="text-[10px] text-[var(--text-muted)]">{formatSpeed(t.speed)}</span>
             )}
@@ -79,7 +82,7 @@ export function TaskItem({
         return (
           <span className="flex items-center gap-1 font-mono text-[11px] text-amber-500/90">
             <Pause className="h-2.5 w-2.5" />
-            <span>{percent}% (暂停)</span>
+            <span>{percentText} (暂停)</span>
           </span>
         );
       case task.Status.StatusQueued:

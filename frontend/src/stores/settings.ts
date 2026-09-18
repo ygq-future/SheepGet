@@ -3,6 +3,7 @@ import { GetSettings, UpdateSettings, GetStorageInfo } from '../../bindings/shee
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
+import { Event } from '../lib/events';
 
 export interface StorageInfo {
   mode: string;
@@ -203,7 +204,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
 // Listen to settings:updated events
 export function initSettingsListener() {
-  return Events.On('settings:updated', (event: unknown) => {
+  return Events.On(Event.SettingsUpdated, (event: unknown) => {
     const updated = unwrapEventData<configModels.Settings>(event);
     if (!updated) return;
     useSettingsStore.setState({ settings: updated });
