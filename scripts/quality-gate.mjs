@@ -89,6 +89,7 @@ function tests() {
     node('node_modules/vitest/vitest.mjs', ['run'], { cwd: join(root, 'frontend') });
   else console.log('PARTIAL: frontend behavior tests pending (scaffold-only contract)');
   if (!goTests.length) console.log('PARTIAL: Go behavior tests pending (scaffold-only contract)');
+  run('bun', ['test'], { cwd: join(root, 'extension') });
 }
 
 const stages = {
