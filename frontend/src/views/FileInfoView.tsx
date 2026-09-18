@@ -32,11 +32,12 @@ import {
   ShowProgressWindow,
   SwitchFileInfoActive,
   ResolveDestination,
+  ResolveDuplicateDecision,
   AssignExtensionToCategory,
   SetCategoryDirectory,
 } from '../../bindings/sheep-get/app';
 import type * as windowModels from '../../bindings/sheep-get/internal/window/models';
-import * as configModels from '../../bindings/sheep-get/internal/config/models';
+import * as duplicateModels from '../../bindings/sheep-get/internal/duplicate/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
 import { useSettingsStore } from '../stores/settings';
@@ -48,8 +49,9 @@ interface ItemDraftState {
   directory: string;
   maxConn: number;
   preDownload: boolean;
-  duplicateStrategy?: string;
-  dupFileExists: boolean;
+  // 裁决结果与用户选中的动作都由后端给出/校验，草稿只做原样保存与恢复。
+  duplicateDecision: duplicateModels.Decision;
+  selectedAction?: duplicateModels.Action;
   fileConflict: boolean;
   suggestedFilename: string;
   overwriteConflict: boolean;
@@ -76,8 +78,13 @@ export function FileInfoView() {
   const [directory, setDirectory] = useState('');
   const [maxConn, setMaxConn] = useState(8);
   const [preDownload, setPreDownload] = useState(false);
-  const [duplicateStrategy, setDuplicateStrategy] = useState<string | undefined>(undefined);
-  const [dupFileExists, setDupFileExists] = useState(false);
+  // 重复链接的选项与默认动作只由后端裁决；界面不依据策略自行推导。
+  const [duplicateDecision, setDuplicateDecision] = useState<duplicateModels.Decision>(
+    () => new duplicateModels.Decision(),
+  );
+  const [selectedAction, setSelectedAction] = useState<duplicateModels.Action | undefined>(
+    undefined,
+  );
   const [slideDirection, setSlideDirection] = useState(0);
 
   // Conflict & probe states
@@ -111,6 +118,34 @@ export function FileInfoView() {
     },
     [],
   );
+
+  // 落点变化后向后端重新要一次裁决：给哪些选项、默认哪一项、目标位置是否已有成品文件，
+  // 全部由后端依据策略与磁盘事实算出，界面只负责渲染。
+  // keepSelection 用于落点变化的场景：用户已经选过的动作只要仍然可选就保留，
+  // 否则回落到裁决给出的默认项。新一次请求不传它，直接采用默认项。
+  const refreshDuplicateDecision = useCallback(
+    async (
+      nextUrl: string,
+      nextDir: string,
+      nextName: string,
+      options?: { keepSelection?: boolean },
+    ): Promise<duplicateModels.Decision> => {
+      let next = new duplicateModels.Decision();
+      if (nextUrl && nextDir && nextName) {
+        next = await ResolveDuplicateDecision(nextUrl, nextDir, nextName);
+      }
+      setDuplicateDecision(next);
+      setSelectedAction((prev) => {
+        if (options?.keepSelection && prev && next.options?.includes(prev)) {
+          return prev;
+        }
+        return next.default || undefined;
+      });
+      return next;
+    },
+    [],
+  );
+
   const nameEditedRef = useRef(false);
   const dirEditedRef = useRef(false);
   const originalFilenameRef = useRef('');
@@ -133,8 +168,8 @@ export function FileInfoView() {
       directory,
       maxConn,
       preDownload,
-      duplicateStrategy,
-      dupFileExists,
+      duplicateDecision,
+      selectedAction,
       fileConflict,
       suggestedFilename,
       overwriteConflict,
@@ -155,8 +190,8 @@ export function FileInfoView() {
     directory,
     maxConn,
     preDownload,
-    duplicateStrategy,
-    dupFileExists,
+    duplicateDecision,
+    selectedAction,
     fileConflict,
     suggestedFilename,
     overwriteConflict,
@@ -185,8 +220,8 @@ export function FileInfoView() {
         setDirectory(existingDraft.directory);
         setMaxConn(existingDraft.maxConn);
         setPreDownload(existingDraft.preDownload);
-        setDuplicateStrategy(existingDraft.duplicateStrategy);
-        setDupFileExists(existingDraft.dupFileExists);
+        setDuplicateDecision(existingDraft.duplicateDecision);
+        setSelectedAction(existingDraft.selectedAction);
         setFileConflict(existingDraft.fileConflict);
         setSuggestedFilename(existingDraft.suggestedFilename);
         setOverwriteConflict(existingDraft.overwriteConflict);
@@ -204,38 +239,18 @@ export function FileInfoView() {
       }
 
       const currentSettings = useSettingsStore.getState().settings;
-      const currentPolicy =
-        item.duplicatePolicy ||
-        currentSettings?.download?.duplicateUrlPolicy ||
-        configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
 
       const dir = item.directory || currentSettings?.download?.defaultDirectory || '';
       const initialName = !item.url && item.filename === 'download.bin' ? '' : item.filename || '';
       originalFilenameRef.current = initialName;
 
-      let initialStrategy: string | undefined = undefined;
-      let dupExistsOnDisk = false;
-      let chosenName = initialName;
-      // Check duplicate URL and disk existence
+      // 裁决结果由后端随请求一起给出：选项、默认动作、是否已有成品文件都在里面。
+      const decision = item.duplicateDecision || new duplicateModels.Decision();
+      const destOccupied = decision.case === duplicateModels.Case.CaseDestinationOccupied;
+      const chosenName = initialName;
+      // 可复用文件属于另一条独立规则（其他目录已有同一份成品），仍由后端查询后给出。
       if (item.duplicateTask && dir && initialName) {
-        const conf = await CheckURLFilesExist(item.url || '', dir, initialName);
-        dupExistsOnDisk = conf.exists;
-        applyReuseState(conf);
-        // Handle duplicate policies
-        const policyStr = String(currentPolicy);
-        if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
-          // Automatically show completed progress window, keep current file info open
-          if (item.duplicateTask.id) {
-            void ShowProgressWindow(item.duplicateTask.id);
-          }
-        } else if (dupExistsOnDisk) {
-          if (policyStr === 'continue_overwrite' || policyStr === 'overwrite') {
-            initialStrategy = 'continue_overwrite';
-          } else if (policyStr === 'numbered_copy') {
-            initialStrategy = 'copy';
-            chosenName = conf.suggestedFilename;
-          }
-        }
+        applyReuseState(await CheckURLFilesExist(item.url || '', dir, initialName));
       }
       setActiveItem((prev) => ({
         ...item,
@@ -247,10 +262,10 @@ export function FileInfoView() {
       setDirectory(dir);
       setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8);
       setPreDownload(item.preDownload ?? !!currentSettings?.download?.preDownload);
-      setDupFileExists(dupExistsOnDisk);
-      setFileConflict(dupExistsOnDisk ? false : !!item.fileConflict);
+      setFileConflict(destOccupied ? false : !!item.fileConflict);
       setSuggestedFilename(item.suggestedFilename || '');
-      setDuplicateStrategy(initialStrategy);
+      setDuplicateDecision(decision);
+      setSelectedAction(decision.default || undefined);
       setOverwriteConflict(false);
       setError(null);
       setLoading(false);
@@ -268,9 +283,9 @@ export function FileInfoView() {
         directory: dir,
         maxConn: item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8,
         preDownload: item.preDownload ?? !!currentSettings?.download?.preDownload,
-        duplicateStrategy: initialStrategy,
-        dupFileExists: dupExistsOnDisk,
-        fileConflict: dupExistsOnDisk ? false : !!item.fileConflict,
+        duplicateDecision: decision,
+        selectedAction: decision.default || undefined,
+        fileConflict: destOccupied ? false : !!item.fileConflict,
         suggestedFilename: item.suggestedFilename || '',
         overwriteConflict: false,
         nameEdited: false,
@@ -348,17 +363,23 @@ export function FileInfoView() {
         if (item.suggestedFilename) {
           setSuggestedFilename(item.suggestedFilename);
         }
+        // 后端探测完毕后会带着重新裁决的结果回来，界面照它更新选项与选中项。
+        if (item.duplicateDecision) {
+          const refreshed = item.duplicateDecision;
+          setDuplicateDecision(refreshed);
+          setSelectedAction((prev) => {
+            if (prev && refreshed.options?.includes(prev)) {
+              return prev;
+            }
+            return refreshed.default || undefined;
+          });
+        }
         if (item.url && (item.filename || filenameRef.current)) {
           void (async () => {
             const checkName = item.filename || filenameRef.current;
             const checkDir = item.directory || directoryRef.current;
             if (checkDir && checkName) {
-              const conf = await CheckURLFilesExist(item.url, checkDir, checkName);
-              setDupFileExists(conf.exists);
-              if (conf.suggestedFilename) {
-                setSuggestedFilename(conf.suggestedFilename);
-              }
-              applyReuseState(conf);
+              applyReuseState(await CheckURLFilesExist(item.url, checkDir, checkName));
             }
           })();
         }
@@ -384,11 +405,6 @@ export function FileInfoView() {
     try {
       const result = await ProbeURL(trimmed);
       if (seq !== probeSeqRef.current || !result) return;
-      const currentSettings = useSettingsStore.getState().settings;
-      const currentPolicy =
-        activeItem?.duplicatePolicy ||
-        currentSettings?.download?.duplicateUrlPolicy ||
-        configModels.DuplicateURLPolicy.DuplicatePolicyPrompt;
       const rawName =
         (!nameEditedRef.current && result.filename
           ? result.filename
@@ -413,38 +429,30 @@ export function FileInfoView() {
         }
       }
 
-      let chosenName = rawName;
-      let initStrategy: string | undefined = undefined;
-      let dupExistsOnDisk = false;
+      let suggestedName = '';
       if (effectiveDir && rawName) {
         if (result.duplicateTask) {
           const conf = await CheckURLFilesExist(trimmed, effectiveDir, rawName);
-          dupExistsOnDisk = conf.exists;
           applyReuseState(conf);
-          const policyStr = String(currentPolicy);
-          if (policyStr === 'skip_show_completed' || policyStr === 'skip_show_done') {
-            // Auto open completed progress window, do NOT close file info dialog
-            if (result.duplicateTask.id) {
-              void ShowProgressWindow(result.duplicateTask.id);
-            }
-          } else if (dupExistsOnDisk) {
-            if (policyStr === 'continue_overwrite' || policyStr === 'overwrite') {
-              initStrategy = 'continue_overwrite';
-            } else if (policyStr === 'numbered_copy') {
-              initStrategy = 'copy';
-              chosenName = conf.suggestedFilename;
-            }
-          }
-          setSuggestedFilename(conf.suggestedFilename);
+          suggestedName = conf.suggestedFilename;
         } else {
           const conf = await CheckFileConflict(effectiveDir, rawName);
           setFileConflict(conf.exists);
-          setSuggestedFilename(conf.suggestedFilename);
+          suggestedName = conf.suggestedFilename;
         }
+        setSuggestedFilename(suggestedName);
+      }
+
+      // 链接换了就要重新裁决：选项与默认动作取决于这个链接和最终落点。
+      const decision = await refreshDuplicateDecision(trimmed, effectiveDir, rawName);
+      if (seq !== probeSeqRef.current) return;
+
+      // 默认动作是「序号副本」时预置后端算出的建议名称，这正是该动作的含义。
+      let chosenName = rawName;
+      if (decision.default === duplicateModels.Action.ActionCopy && suggestedName) {
+        chosenName = suggestedName;
       }
       setFilename(chosenName);
-      setDupFileExists(dupExistsOnDisk);
-      setDuplicateStrategy(initStrategy);
       setActiveItem((prev) => {
         if (!prev) return null;
         return {
@@ -471,6 +479,16 @@ export function FileInfoView() {
   const currentSettings = useSettingsStore((s) => s.settings);
   const effectiveCategoryId =
     categoryEdited && selectedCategoryId ? selectedCategoryId : autoCategoryId;
+
+  // 「继续覆盖」是唯一需要后端解析的一项：历史任务还活着就续传，已完成且成品在磁盘上就覆盖重下。
+  // 其余两项语义唯一，直接用动作标识即可。
+  const overwriteOption = duplicateDecision.options?.find(
+    (a) =>
+      a === duplicateModels.Action.ActionContinue || a === duplicateModels.Action.ActionRedownload,
+  );
+  const isOverwriteSelected = overwriteOption !== undefined && selectedAction === overwriteOption;
+  const destinationOccupied =
+    duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied;
   const categoryOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
     for (const c of currentSettings?.download?.customCategories || []) {
@@ -500,6 +518,7 @@ export function FileInfoView() {
         const conf = await CheckFileConflict(catDir, filename);
         setFileConflict(conf.exists);
         setSuggestedFilename(conf.suggestedFilename);
+        await refreshDuplicateDecision(url, catDir, filename, { keepSelection: true });
       })();
     }
   };
@@ -528,7 +547,6 @@ export function FileInfoView() {
         if (filename) {
           if (activeItem?.duplicateTask) {
             const conf = await CheckURLFilesExist(url, selected, filename);
-            setDupFileExists(conf.exists);
             setSuggestedFilename(conf.suggestedFilename);
             applyReuseState(conf);
           } else {
@@ -536,6 +554,7 @@ export function FileInfoView() {
             setFileConflict(conf.exists);
             setSuggestedFilename(conf.suggestedFilename);
           }
+          await refreshDuplicateDecision(url, selected, filename, { keepSelection: true });
         }
       }
     } catch (err) {
@@ -544,7 +563,7 @@ export function FileInfoView() {
   };
 
   const handleConfirm = useCallback(
-    async (strategyOverride?: string, e?: SyntheticEvent) => {
+    async (actionOverride?: duplicateModels.Action, e?: SyntheticEvent) => {
       if (e) e.preventDefault();
       if (!url.trim()) {
         setError('请输入下载链接');
@@ -559,17 +578,16 @@ export function FileInfoView() {
         return;
       }
 
-      let effectiveStrategy = strategyOverride ?? duplicateStrategy;
-      if (!dupFileExists && activeItem?.duplicateTask && !effectiveStrategy) {
-        effectiveStrategy = 'redownload';
-      }
-      if (activeItem?.duplicateTask && dupFileExists && !effectiveStrategy) {
+      // 动作只来自后端给出的选项或裁决的默认项；界面不替用户决定，也不自行兜底。
+      const action = actionOverride ?? selectedAction;
+      if (duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied && !action) {
         setError('已有相同的下载链接和文件，请确认处理方式');
         return;
       }
 
       const isOverwrite =
-        effectiveStrategy === 'continue_overwrite' || effectiveStrategy === 'redownload';
+        action === duplicateModels.Action.ActionContinue ||
+        action === duplicateModels.Action.ActionRedownload;
 
       // Disk conflict check: only block if not an explicit overwrite!
       if (fileConflict && !overwriteConflict && !isOverwrite) {
@@ -607,10 +625,9 @@ export function FileInfoView() {
           filename: filename.trim(),
           directory: directory.trim(),
           maxConn: parsedConn,
-          duplicateStrategy: effectiveStrategy,
+          action,
           preDownload,
-          overwriteConflict: overwriteConflict || isOverwrite,
-          reuseTaskId: effectiveStrategy === 'reuse' ? existingTaskID : undefined,
+          reuseTaskId: action === duplicateModels.Action.ActionReuse ? existingTaskID : undefined,
         });
         if (activeItem?.id) {
           delete itemDraftsRef.current[activeItem.id];
@@ -625,8 +642,8 @@ export function FileInfoView() {
     [
       activeItem,
       directory,
-      dupFileExists,
-      duplicateStrategy,
+      duplicateDecision,
+      selectedAction,
       effectiveCategoryId,
       fileConflict,
       filename,
@@ -837,7 +854,7 @@ export function FileInfoView() {
             {/* Duplicate Task Alert - Linear/Raycast refined segmented banner */}
             {activeItem?.duplicateTask && (
               <div className="space-y-2.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 shadow-xs">
-                {dupFileExists ? (
+                {destinationOccupied ? (
                   <>
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
@@ -856,14 +873,14 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          setDuplicateStrategy('show_completed');
+                          setSelectedAction(duplicateModels.Action.ActionShowCompleted);
                           if (activeItem.duplicateTask?.id) {
                             void ShowProgressWindow(activeItem.duplicateTask.id);
                           }
                           // Keep window open as requested by user
                         }}
                         className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
-                          duplicateStrategy === 'show_completed'
+                          selectedAction === duplicateModels.Action.ActionShowCompleted
                             ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                         }`}
@@ -875,14 +892,14 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          setDuplicateStrategy('continue_overwrite');
+                          setSelectedAction(overwriteOption);
                           if (error) setError(null);
                           if (originalFilenameRef.current) {
                             setFilename(originalFilenameRef.current);
                           }
                         }}
                         className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
-                          duplicateStrategy === 'continue_overwrite'
+                          isOverwriteSelected
                             ? 'bg-[var(--bg-surface)] text-[var(--accent)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                         }`}
@@ -894,7 +911,7 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          setDuplicateStrategy('copy');
+                          setSelectedAction(duplicateModels.Action.ActionCopy);
                           if (error) setError(null);
                           void (async () => {
                             const baseName =
@@ -908,7 +925,7 @@ export function FileInfoView() {
                           })();
                         }}
                         className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
-                          duplicateStrategy === 'copy'
+                          selectedAction === duplicateModels.Action.ActionCopy
                             ? 'bg-[var(--bg-surface)] text-[var(--accent)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                         }`}
@@ -924,7 +941,9 @@ export function FileInfoView() {
                       <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
                         <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                         <span className="text-[11px] font-medium text-[var(--text-secondary)]">
-                          此前已下载过此链接，当前目录下无同名文件
+                          {duplicateDecision.case === duplicateModels.Case.CaseHistoryUnfinished
+                            ? '此链接上次未下载完成，将继续下载已有进度'
+                            : '此前已下载过此链接，当前目录下无同名文件'}
                         </span>
                       </div>
                       <button
@@ -957,7 +976,9 @@ export function FileInfoView() {
                                 size="sm"
                                 variant="primary"
                                 className="h-6 gap-1 px-2 text-[11px]"
-                                onClick={() => void handleConfirm('reuse')}
+                                onClick={() =>
+                                  void handleConfirm(duplicateModels.Action.ActionReuse)
+                                }
                               >
                                 <FolderInput className="h-3 w-3" />
                                 <span>复用并移动到当前目录 (免下载)</span>
@@ -976,47 +997,44 @@ export function FileInfoView() {
             )}
 
             {/* File Conflict Alert */}
-            {fileConflict &&
-              !activeItem?.duplicateTask &&
-              duplicateStrategy !== 'continue_overwrite' &&
-              duplicateStrategy !== 'redownload' && (
-                <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] font-medium text-amber-950 dark:text-amber-100">
-                  <div className="flex items-center gap-1.5 text-amber-900 dark:text-amber-200">
-                    <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                    <span className="font-semibold text-amber-950 dark:text-amber-100">
-                      目标目录存在同名文件: {filename}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+            {fileConflict && !activeItem?.duplicateTask && !isOverwriteSelected && (
+              <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] font-medium text-amber-950 dark:text-amber-100">
+                <div className="flex items-center gap-1.5 text-amber-900 dark:text-amber-200">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span className="font-semibold text-amber-950 dark:text-amber-100">
+                    目标目录存在同名文件: {filename}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setOverwriteConflict(true)}
+                    className={`h-6 px-2 text-[10px] ${
+                      overwriteConflict
+                        ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
+                        : ''
+                    }`}
+                  >
+                    覆盖现有
+                  </Button>
+                  {suggestedFilename && (
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => setOverwriteConflict(true)}
-                      className={`h-6 px-2 text-[10px] ${
-                        overwriteConflict
-                          ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
-                          : ''
-                      }`}
+                      onClick={() => {
+                        setFilename(suggestedFilename);
+                        setFileConflict(false);
+                        setOverwriteConflict(false);
+                      }}
+                      className="h-6 px-2 text-[10px]"
                     >
-                      覆盖现有
+                      使用序号: {suggestedFilename}
                     </Button>
-                    {suggestedFilename && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => {
-                          setFilename(suggestedFilename);
-                          setFileConflict(false);
-                          setOverwriteConflict(false);
-                        }}
-                        className="h-6 px-2 text-[10px]"
-                      >
-                        使用序号: {suggestedFilename}
-                      </Button>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
+            )}
             {/* Filename & Concurrency (Same row, equal height h-8) */}
             <div className="flex items-end gap-2">
               <div className="flex-1 space-y-0.5">
@@ -1054,6 +1072,9 @@ export function FileInfoView() {
                         const conf = await CheckFileConflict(directory, newName);
                         setFileConflict(conf.exists);
                         setSuggestedFilename(conf.suggestedFilename);
+                        await refreshDuplicateDecision(url, directory, newName, {
+                          keepSelection: true,
+                        });
                       })();
                     }
                   }}
@@ -1112,6 +1133,9 @@ export function FileInfoView() {
                         const conf = await CheckFileConflict(newDir, filename);
                         setFileConflict(conf.exists);
                         setSuggestedFilename(conf.suggestedFilename);
+                        await refreshDuplicateDecision(url, newDir, filename, {
+                          keepSelection: true,
+                        });
                       })();
                     }
                   }}

@@ -15,6 +15,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as config$0 from "./internal/config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as duplicate$0 from "./internal/duplicate/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as engine$0 from "./internal/engine/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -279,6 +282,17 @@ export function ResolveDuplicate(taskID: string, strategy: string, dir: string, 
 }
 
 /**
+ * ResolveDuplicateDecision 按给定链接与最终保存位置裁决这次重复该给哪些动作、默认执行哪个。
+ * 界面在链接、文件名或目录变化后调用它刷新选项；裁决规则只在 duplicate 包实现一次，
+ * 界面不据策略自行推导（ADR-0002：后端为唯一事实来源）。
+ */
+export function ResolveDuplicateDecision(urlStr: string, dir: string, filename: string): $CancellablePromise<duplicate$0.Decision> {
+    return $Call.ByID(687526930, urlStr, dir, filename).then(($result: any) => {
+        return $$createType16($result);
+    });
+}
+
+/**
  * ResumeTask resumes a paused or errored task
  */
 export function ResumeTask(id: string): $CancellablePromise<void> {
@@ -440,3 +454,4 @@ const $$createType12 = $Create.Nullable($$createType11);
 const $$createType13 = engine$0.ProbeResult.createFrom;
 const $$createType14 = $Create.Nullable($$createType13);
 const $$createType15 = $models.DestinationInfo.createFrom;
+const $$createType16 = duplicate$0.Decision.createFrom;

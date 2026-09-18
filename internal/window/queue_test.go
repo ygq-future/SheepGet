@@ -2,12 +2,14 @@ package window
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"sheep-get/internal/config"
+	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
 )
@@ -278,6 +280,10 @@ func TestQueueController_DuplicatePolicy_NumberedCopy(t *testing.T) {
 		TotalBytes: 2048,
 	}
 	_ = store.Save(ctx, existingTask)
+	// 「序号副本」要避让的是目标位置上真实存在的成品文件。
+	if err := os.WriteFile(filepath.Join(tmpDir, "doc.pdf"), []byte("original"), 0o644); err != nil {
+		t.Fatalf("failed to seed finished file: %v", err)
+	}
 
 	resp, err := qc.Enqueue(ctx, DownloadRequest{
 		URL:       targetURL,
@@ -294,6 +300,9 @@ func TestQueueController_DuplicatePolicy_NumberedCopy(t *testing.T) {
 	if active.DuplicateTask == nil {
 		t.Fatalf("expected DuplicateTask to be populated")
 	}
+	if active.DuplicateDecision.Default != duplicate.ActionCopy {
+		t.Fatalf("default = %q, want %q", active.DuplicateDecision.Default, duplicate.ActionCopy)
+	}
 	// Under NumberedCopy, suggested filename should have (1)
 	if active.Filename != "doc (1).pdf" {
 		t.Errorf("expected suggested filename 'doc (1).pdf', got '%s'", active.Filename)
@@ -301,18 +310,50 @@ func TestQueueController_DuplicatePolicy_NumberedCopy(t *testing.T) {
 
 	// Confirm as copy
 	newTask, err := qc.Submit(ctx, FileInfoSubmission{
-		RequestID:         active.ID,
-		URL:               active.URL,
-		Filename:          active.Filename,
-		Directory:         active.Directory,
-		MaxConn:           4,
-		DuplicateStrategy: "copy",
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   4,
+		Action:    duplicate.ActionCopy,
 	})
 	if err != nil {
 		t.Fatalf("submit copy failed: %v", err)
 	}
 	if newTask.Filename != "doc (1).pdf" {
 		t.Errorf("expected new task filename 'doc (1).pdf', got %s", newTask.Filename)
+	}
+}
+
+// 目标位置没有成品文件时，「序号副本」无从避让：既不该预置编号名称，
+// 也不该把副本当成这次的动作，否则界面显示的名字与实际落点会不一致。
+func TestQueueController_NumberedCopyWithoutFinishedFileIsNotACopy(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyNumberedCopy)
+
+	targetURL := "https://example.com/gone.pdf"
+	// 历史任务已完成，但成品文件已被删除或移走。
+	_ = store.Save(ctx, &task.Task{
+		ID:        "task_gone",
+		URL:       targetURL,
+		Filename:  "gone.pdf",
+		Directory: tmpDir,
+		Status:    task.StatusCompleted,
+	})
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{URL: targetURL, Directory: tmpDir}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	active, _ := qc.GetActive()
+
+	if active.Filename != "gone.pdf" {
+		t.Errorf("没有成品文件可避让时不应预置编号名称，got %q", active.Filename)
+	}
+	if active.DuplicateDecision.Default != duplicate.ActionRedownload {
+		t.Errorf("default = %q, want %q", active.DuplicateDecision.Default, duplicate.ActionRedownload)
+	}
+	if len(active.DuplicateDecision.Options) != 0 {
+		t.Errorf("options = %v, want 空：没有成品文件时不提供序号副本", active.DuplicateDecision.Options)
 	}
 }
 
@@ -357,6 +398,9 @@ func TestQueueController_DuplicatePolicy_Prompt(t *testing.T) {
 		TotalBytes: 5000,
 	}
 	_ = store.Save(ctx, existingTask)
+	if err := os.WriteFile(filepath.Join(tmpDir, "prompt_dup.zip"), []byte("original"), 0o644); err != nil {
+		t.Fatalf("failed to seed finished file: %v", err)
+	}
 
 	resp, err := qc.Enqueue(ctx, DownloadRequest{
 		URL:       targetURL,
@@ -376,8 +420,15 @@ func TestQueueController_DuplicatePolicy_Prompt(t *testing.T) {
 	if active.DuplicateTask == nil || active.DuplicateTask.ID != existingTask.ID {
 		t.Fatalf("expected duplicate task %s, got %v", existingTask.ID, active.DuplicateTask)
 	}
-	if active.DuplicatePolicy != config.DuplicatePolicyPrompt {
-		t.Fatalf("expected duplicate policy prompt, got %s", active.DuplicatePolicy)
+	// 「询问」的意义就在于必须由用户选：给出三个选项，但不预置任何一项。
+	if active.DuplicateDecision.Case != duplicate.CaseDestinationOccupied {
+		t.Fatalf("case = %q, want %q", active.DuplicateDecision.Case, duplicate.CaseDestinationOccupied)
+	}
+	if len(active.DuplicateDecision.Options) != 3 {
+		t.Fatalf("options = %v, want 三个动作", active.DuplicateDecision.Options)
+	}
+	if active.DuplicateDecision.Default != "" {
+		t.Fatalf("default = %q, want 空（询问策略必须先由用户选择）", active.DuplicateDecision.Default)
 	}
 }
 
@@ -672,5 +723,250 @@ func TestQueueController_ItemCarriesResolvedCategory(t *testing.T) {
 	last := items[len(items)-1]
 	if last.Directory == "" {
 		t.Fatalf("expected the category rule to resolve a directory when none was given")
+	}
+}
+
+// 目标位置没有成品文件、历史任务尚未完成时，界面不提供「重新下载」与「序号副本」，
+// 确认后必须接着已有分片续传：历史记录与已下载进度都得留着。
+// 这条回归锁住的是「界面自行兜底成 redownload，把分片删掉从 0 重下」的缺陷。
+func TestQueueController_UnfinishedHistoryResumesInsteadOfDiscardingProgress(t *testing.T) {
+	ctx := context.Background()
+
+	for _, policy := range []config.DuplicateURLPolicy{
+		config.DuplicatePolicyPrompt,
+		config.DuplicatePolicySkipShowCompleted,
+		config.DuplicatePolicyContinueOverwrite,
+		config.DuplicatePolicyNumberedCopy,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			qc, _, _, store, tmpDir := setupTestQueue(t, policy)
+
+			targetURL := "https://example.com/half_done.bin"
+			pausedTask := &task.Task{
+				ID:         "task_half_done",
+				URL:        targetURL,
+				Filename:   "half_done.bin",
+				Directory:  tmpDir,
+				Status:     task.StatusPaused,
+				TotalBytes: 8192,
+				Downloaded: 4096,
+			}
+			if err := store.Save(ctx, pausedTask); err != nil {
+				t.Fatalf("failed to seed paused task: %v", err)
+			}
+
+			var showCompletedFor string
+			qc.SetOnShowCompleted(func(taskID string) { showCompletedFor = taskID })
+
+			if _, err := qc.Enqueue(ctx, DownloadRequest{URL: targetURL, Directory: tmpDir}); err != nil {
+				t.Fatalf("enqueue failed: %v", err)
+			}
+
+			active, err := qc.GetActive()
+			if err != nil || active == nil {
+				t.Fatalf("expected active item, got %v, err: %v", active, err)
+			}
+			if active.DuplicateDecision.Case != duplicate.CaseHistoryUnfinished {
+				t.Fatalf("case = %q, want %q", active.DuplicateDecision.Case, duplicate.CaseHistoryUnfinished)
+			}
+			if len(active.DuplicateDecision.Options) != 0 {
+				t.Errorf("options = %v, want 空：没有成品文件时重下与副本都无意义", active.DuplicateDecision.Options)
+			}
+			if active.DuplicateDecision.Default != duplicate.ActionContinue {
+				t.Errorf("default = %q, want %q", active.DuplicateDecision.Default, duplicate.ActionContinue)
+			}
+			// 「跳过并显示完成」只在历史任务真正完成时才会唤起完成区域。
+			if showCompletedFor != "" {
+				t.Errorf("未完成的历史任务不该唤起完成区域，收到 %q", showCompletedFor)
+			}
+
+			// 用户不另行选择动作，直接确认。
+			resTask, err := qc.Submit(ctx, FileInfoSubmission{
+				RequestID: active.ID,
+				URL:       active.URL,
+				Filename:  active.Filename,
+				Directory: active.Directory,
+				MaxConn:   4,
+			})
+			if err != nil {
+				t.Fatalf("submit failed: %v", err)
+			}
+			if resTask.ID != pausedTask.ID {
+				t.Errorf("expected to resume %s, got new task %s（历史进度被丢弃重下）", pausedTask.ID, resTask.ID)
+			}
+
+			kept, err := store.Get(ctx, pausedTask.ID)
+			if err != nil || kept == nil {
+				t.Fatalf("history task must survive for resume, got %v (err %v)", kept, err)
+			}
+			if kept.Downloaded != 4096 {
+				t.Errorf("已下载进度被重置：downloaded = %d, want 4096", kept.Downloaded)
+			}
+		})
+	}
+}
+
+// 续传同样要收掉同链接的失效残留记录，否则「确认一次就把该链接清干净」的手感会丢。
+func TestQueueController_ResumeAlsoCleansStaleDuplicateRecords(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyContinueOverwrite)
+
+	targetURL := "https://example.com/resume_clean.bin"
+	pausedTask := &task.Task{
+		ID:        "task_resume_clean",
+		URL:       targetURL,
+		Filename:  "resume_clean.bin",
+		Directory: tmpDir,
+		Status:    task.StatusPaused,
+	}
+	ghostCompleted := &task.Task{
+		ID:        "task_ghost_completed",
+		URL:       targetURL,
+		Filename:  "resume_clean.bin",
+		Directory: tmpDir,
+		Status:    task.StatusCompleted,
+	}
+	ghostErrored := &task.Task{
+		ID:        "task_ghost_errored",
+		URL:       targetURL,
+		Filename:  "resume_clean.bin",
+		Directory: tmpDir,
+		Status:    task.StatusError,
+	}
+	for _, seed := range []*task.Task{pausedTask, ghostCompleted, ghostErrored} {
+		if err := store.Save(ctx, seed); err != nil {
+			t.Fatalf("failed to seed %s: %v", seed.ID, err)
+		}
+	}
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{URL: targetURL, Directory: tmpDir}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	active, _ := qc.GetActive()
+
+	if _, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   4,
+	}); err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+
+	if _, err := store.Get(ctx, ghostCompleted.ID); err == nil {
+		t.Errorf("同名但文件已不在磁盘上的残留记录应当被清理")
+	}
+	if _, err := store.Get(ctx, ghostErrored.ID); err == nil {
+		t.Errorf("同名但文件已不在磁盘上的残留记录应当被清理")
+	}
+	if _, err := store.Get(ctx, pausedTask.ID); err != nil {
+		t.Errorf("正在续传的历史任务不得被清理：%v", err)
+	}
+}
+
+// 目标位置已有成品文件时才能谈「覆盖」；此时历史任务即使还没完成，默认动作也是续传——
+// 续传完成后会把目标位置那个文件替换掉，所以「继续覆盖」这一项对两种子情况都成立。
+func TestQueueController_OverwriteOptionOnlyExistsWithAFinishedFile(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyContinueOverwrite)
+
+	targetURL := "https://example.com/mixed.bin"
+	// 历史任务未完成，但目标位置确实躺着同名成品文件（例如由其它工具或副本留下的）。
+	_ = store.Save(ctx, &task.Task{
+		ID:        "task_mixed",
+		URL:       targetURL,
+		Filename:  "mixed.bin",
+		Directory: tmpDir,
+		Status:    task.StatusPaused,
+	})
+	if err := os.WriteFile(filepath.Join(tmpDir, "mixed.bin"), []byte("present"), 0o644); err != nil {
+		t.Fatalf("failed to seed finished file: %v", err)
+	}
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{URL: targetURL, Directory: tmpDir}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	active, _ := qc.GetActive()
+
+	if active.DuplicateDecision.Case != duplicate.CaseDestinationOccupied {
+		t.Fatalf("case = %q, want %q", active.DuplicateDecision.Case, duplicate.CaseDestinationOccupied)
+	}
+	if len(active.DuplicateDecision.Options) != 3 {
+		t.Fatalf("options = %v, want 三个动作", active.DuplicateDecision.Options)
+	}
+	// 历史任务还没完成，目标位置的文件要留着，因此这一项执行续传而不是丢弃重下。
+	if active.DuplicateDecision.Default != duplicate.ActionContinue {
+		t.Errorf("default = %q, want %q", active.DuplicateDecision.Default, duplicate.ActionContinue)
+	}
+}
+
+// 目标位置已有成品文件且策略是询问时没有默认动作：界面必须先问清楚，
+// 后端拒绝没有动作的提交，而不是静默新建任务覆盖过去。
+func TestQueueController_DestinationOccupiedRequiresUserChoice(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	targetURL := "https://example.com/occupied.bin"
+	completedTask := &task.Task{
+		ID:         "task_occupied",
+		URL:        targetURL,
+		Filename:   "occupied.bin",
+		Directory:  tmpDir,
+		Status:     task.StatusCompleted,
+		TotalBytes: 4,
+		Downloaded: 4,
+	}
+	if err := store.Save(ctx, completedTask); err != nil {
+		t.Fatalf("failed to seed completed task: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "occupied.bin"), []byte("done"), 0o644); err != nil {
+		t.Fatalf("failed to seed file: %v", err)
+	}
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{URL: targetURL, Directory: tmpDir}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	active, _ := qc.GetActive()
+
+	if active.DuplicateDecision.Case != duplicate.CaseDestinationOccupied {
+		t.Fatalf("case = %q, want %q", active.DuplicateDecision.Case, duplicate.CaseDestinationOccupied)
+	}
+	if len(active.DuplicateDecision.Options) != 3 {
+		t.Fatalf("options = %v, want 三个动作", active.DuplicateDecision.Options)
+	}
+	if active.DuplicateDecision.Default != "" {
+		t.Errorf("default = %q, want 空：询问策略必须由用户先选", active.DuplicateDecision.Default)
+	}
+
+	_, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   4,
+	})
+	if !errors.Is(err, ErrDuplicateChoiceRequired) {
+		t.Fatalf("err = %v, want %v", err, ErrDuplicateChoiceRequired)
+	}
+
+	// 用户随后选「继续覆盖」：历史任务已完成且成品就在磁盘上，因此是覆盖重下。
+	overwrite := active.DuplicateDecision.Options[1]
+	if overwrite != duplicate.ActionRedownload {
+		t.Fatalf("overwrite option = %q, want %q", overwrite, duplicate.ActionRedownload)
+	}
+	resTask, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   4,
+		Action:    overwrite,
+	})
+	if err != nil {
+		t.Fatalf("submit with explicit action failed: %v", err)
+	}
+	if resTask.ID == completedTask.ID {
+		t.Errorf("已完成的历史任务应被覆盖重下，而不是沿用原任务")
 	}
 }

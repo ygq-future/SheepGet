@@ -111,6 +111,20 @@ func CheckFileConflict(dir, filename string) (bool, string) {
 	})
 }
 
+// DestinationOccupied reports whether this download's finished file already sits in dir.
+// 既看用户当前选定的文件名，也看该链接历史任务的文件名：策略为「序号副本」时后端会先把
+// 文件名改成 name (n).ext，此时真正占着位置、也真正需要用户决定怎么处理的是原名文件。
+func DestinationOccupied(dir, filename string, dupTask *task.Task) bool {
+	if dir == "" || filename == "" {
+		return false
+	}
+	if FileExists(filepath.Join(dir, filename)) {
+		return true
+	}
+	return dupTask != nil && dupTask.Filename != "" && dupTask.Filename != filename &&
+		FileExists(filepath.Join(dir, dupTask.Filename))
+}
+
 var numberedSuffixRegex = regexp.MustCompile(`^(.*) \(\d+\)$`)
 
 // NextNumberedCopy returns the first "name (n).ext" variant free according to taken.
@@ -286,6 +300,9 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 
 	switch strategy {
 	case "continue":
+		// 续传沿用同一位置的既有分片，因此清理也按该位置进行：同链接的失效残留记录
+		// （同落点、或同名但文件已不在磁盘上）一样要收掉，否则它们会一直挂在任务列表里。
+		m.cleanStaleDuplicateRecords(ctx, taskID, t.URL, t.Directory, t.Filename)
 		if t.Status == task.StatusPaused || t.Status == task.StatusError {
 			if err := m.Resume(ctx, taskID); err != nil {
 				return nil, err
@@ -307,26 +324,14 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		_ = os.Remove(destPath)
 		_ = os.Remove(destPath + ".sheepget")
 
-		// Delete the old duplicate task being overwritten if it is in the same directory
-		if SamePath(t.Directory, dir) {
+		// 被这次下载替换掉的历史记录：落在同一目标位置，或成品文件已经不在磁盘上（也不剩分片），
+		// 就都是残留记录，无论它当初落在哪个目录都要清掉——否则换过默认目录、手动存到别处或
+		// 搬走过文件之后，这条记录会一直挂在列表里。文件仍完好的（可能在别的目录）保留，
+		// 那是用户自己的一份成品，不是残留。
+		if SamePath(t.Directory, dir) || !FileExists(filepath.Join(t.Directory, t.Filename)) {
 			_ = m.Delete(ctx, taskID)
 		}
-		if existingList, err := m.store.List(ctx); err == nil {
-			for _, et := range existingList {
-				if et.ID == taskID || et.URL != t.URL {
-					continue
-				}
-				if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
-					continue
-				}
-				targetFilePath := filepath.Join(et.Directory, et.Filename)
-				isSameDest := SamePath(et.Directory, dir) && SameFilename(et.Filename, filename)
-				isStaleGhost := SameFilename(et.Filename, filename) && !FileExists(targetFilePath)
-				if isSameDest || isStaleGhost {
-					_ = m.Delete(ctx, et.ID)
-				}
-			}
-		}
+		m.cleanStaleDuplicateRecords(ctx, taskID, t.URL, dir, filename)
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
@@ -392,6 +397,29 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 
 	default:
 		return nil, fmt.Errorf("unknown duplicate strategy: %s", strategy)
+	}
+}
+
+// cleanStaleDuplicateRecords 清理同一 URL 的失效残留记录：既包括会落在同一目标位置的记录，
+// 也包括同名但成品文件已不在磁盘上的幽灵记录。正在传输、排队或处理中的任务以及 excludeID
+// 本身不受影响。续传与重新下载共用它，使「确认一次就把该链接的残留收干净」的行为保持一致。
+func (m *Manager) cleanStaleDuplicateRecords(ctx context.Context, excludeID, url, dir, filename string) {
+	existingList, err := m.store.List(ctx)
+	if err != nil {
+		return
+	}
+	for _, et := range existingList {
+		if et.ID == excludeID || et.URL != url {
+			continue
+		}
+		if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
+			continue
+		}
+		isSameDest := SamePath(et.Directory, dir) && SameFilename(et.Filename, filename)
+		isStaleGhost := SameFilename(et.Filename, filename) && !FileExists(filepath.Join(et.Directory, et.Filename))
+		if isSameDest || isStaleGhost {
+			_ = m.Delete(ctx, et.ID)
+		}
 	}
 }
 

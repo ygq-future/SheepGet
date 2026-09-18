@@ -4,16 +4,21 @@ package window
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
-	"path/filepath"
 	"sheep-get/internal/config"
+	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
 	"strings"
 	"sync"
 	"time"
 )
+
+// ErrDuplicateChoiceRequired 表示这次提交没有携带动作，而当前局面必须由用户先选定一项
+// （目标位置已有成品文件，且策略没有给出默认动作）。
+var ErrDuplicateChoiceRequired = errors.New("duplicate action required before submitting")
 
 // WindowView abstracts a native OS/Wails window.
 type WindowView interface {
@@ -63,37 +68,40 @@ type DownloadResponse struct {
 
 // FileInfoItem represents a single item waiting in the file info window queue.
 type FileInfoItem struct {
-	ID                string                    `json:"id"`
-	URL               string                    `json:"url"`
-	Filename          string                    `json:"filename"`
-	SuggestedFilename string                    `json:"suggestedFilename"`
-	Directory         string                    `json:"directory"`
-	CategoryID        string                    `json:"categoryId,omitempty"`
-	TotalBytes        int64                     `json:"totalBytes"`
-	MimeType          string                    `json:"mimeType"`
-	Resumable         bool                      `json:"resumable"`
-	MaxConn           int                       `json:"maxConn"`
-	PreDownload       bool                      `json:"preDownload"`
-	PreDownloadTaskID string                    `json:"preDownloadTaskId,omitempty"`
-	FileConflict      bool                      `json:"fileConflict"`
-	DuplicateTask     *task.Task                `json:"duplicateTask,omitempty"`
-	DuplicatePolicy   config.DuplicateURLPolicy `json:"duplicatePolicy"`
-	QueueIndex        int                       `json:"queueIndex"`
-	QueueTotal        int                       `json:"queueTotal"`
-	Headers           map[string]string         `json:"headers,omitempty"`
+	ID                string     `json:"id"`
+	URL               string     `json:"url"`
+	Filename          string     `json:"filename"`
+	SuggestedFilename string     `json:"suggestedFilename"`
+	Directory         string     `json:"directory"`
+	CategoryID        string     `json:"categoryId,omitempty"`
+	TotalBytes        int64      `json:"totalBytes"`
+	MimeType          string     `json:"mimeType"`
+	Resumable         bool       `json:"resumable"`
+	MaxConn           int        `json:"maxConn"`
+	PreDownload       bool       `json:"preDownload"`
+	PreDownloadTaskID string     `json:"preDownloadTaskId,omitempty"`
+	FileConflict      bool       `json:"fileConflict"`
+	DuplicateTask     *task.Task `json:"duplicateTask,omitempty"`
+	// DuplicateDecision 是这次重复的裁决结果：界面只渲染它给出的选项与默认项。
+	// 策略本身不下发给窗口，避免窗口把它当成第二份规则来源。
+	DuplicateDecision duplicate.Decision `json:"duplicateDecision"`
+	QueueIndex        int                `json:"queueIndex"`
+	QueueTotal        int                `json:"queueTotal"`
+	Headers           map[string]string  `json:"headers,omitempty"`
 }
 
 // FileInfoSubmission represents user confirmation from the FileInfo window.
 type FileInfoSubmission struct {
-	RequestID         string `json:"requestId"`
-	URL               string `json:"url"`
-	Filename          string `json:"filename"`
-	Directory         string `json:"directory"`
-	MaxConn           int    `json:"maxConn"`
-	DuplicateStrategy string `json:"duplicateStrategy,omitempty"` // "prompt", "continue", "redownload", "copy", "continue_overwrite", "show_completed", "reuse"
-	PreDownload       bool   `json:"preDownload"`
-	OverwriteConflict bool   `json:"overwriteConflict"`
-	ReuseTaskID       string `json:"reuseTaskId,omitempty"`
+	RequestID   string `json:"requestId"`
+	URL         string `json:"url"`
+	Filename    string `json:"filename"`
+	Directory   string `json:"directory"`
+	MaxConn     int    `json:"maxConn"`
+	PreDownload bool   `json:"preDownload"`
+	// Action 是用户为这次重复选定的动作，取自文件信息窗口收到的裁决选项；
+	// 为空时由后端按裁决的默认动作执行。
+	Action      duplicate.Action `json:"action,omitempty"`
+	ReuseTaskID string           `json:"reuseTaskId,omitempty"`
 }
 
 // QueueController coordinates the single-instance FileInfo window and its FIFO queue.
@@ -211,15 +219,6 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		dupTask, _ = qc.engine.FindDuplicateTask(ctx, req.URL)
 	}
 
-	// Check Duplicate policy: skip_show_completed
-	// Opens the download completed dialog for reference without closing/suppressing the FileInfo dialog
-	if dupTask != nil && dupTask.Status == task.StatusCompleted {
-		if policy == config.DuplicatePolicySkipShowCompleted || policy == config.DuplicatePolicySkipShowLegacy {
-			if qc.onShowCompleted != nil {
-				qc.onShowCompleted(dupTask.ID)
-			}
-		}
-	}
 	filename := req.Filename
 	if filename == "" && req.URL != "" {
 		urlPath := strings.Split(req.URL, "?")[0]
@@ -256,11 +255,26 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 			suggested = copyName
 		}
 	}
-	// If duplicate policy is numbered_copy and duplicate exists, auto-fill numbered copy name
-	if dupTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
+	// 重复链接该给哪些动作、默认哪个，只由后端裁决一次；界面不再推导策略含义。
+	decision := duplicate.Decide(duplicate.Facts{
+		Policy:              policy,
+		HasHistory:          dupTask != nil,
+		HistoryCompleted:    dupTask != nil && dupTask.Status == task.StatusCompleted,
+		DestinationOccupied: engine.DestinationOccupied(dir, filename, dupTask),
+	})
+
+	// 只有裁决确实要做「序号副本」时才预置编号名称。目标位置没有成品文件时既没有要避让的
+	// 文件、动作也不是副本，编号名称只会让界面显示的名字与实际落点不符。
+	if decision.Default == duplicate.ActionCopy {
 		filename = suggested
 		conflict = false
 	}
+
+	// 「跳过并显示完成」策略下立即唤起完成区域，且早于文件信息窗口夺焦，保持既有焦点顺序。
+	if decision.ShowCompleted && qc.onShowCompleted != nil {
+		qc.onShowCompleted(dupTask.ID)
+	}
+
 	item := &FileInfoItem{
 		ID:                fmt.Sprintf("req_%d", time.Now().UnixNano()),
 		URL:               req.URL,
@@ -275,7 +289,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		PreDownload:       preDownload,
 		FileConflict:      conflict,
 		DuplicateTask:     dupTask,
-		DuplicatePolicy:   policy,
+		DuplicateDecision: decision,
 		Headers:           req.Headers,
 	}
 
@@ -347,14 +361,6 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 		}
 	}
 
-	if targetItem.DuplicateTask != nil && targetItem.DuplicateTask.Status == task.StatusCompleted {
-		if policy == config.DuplicatePolicySkipShowCompleted || policy == config.DuplicatePolicySkipShowLegacy {
-			if qc.onShowCompleted != nil {
-				qc.onShowCompleted(targetItem.DuplicateTask.ID)
-			}
-		}
-	}
-
 	conflict, suggested := engine.CheckFileConflict(dir, targetItem.Filename)
 	if copyName, err := qc.engine.NumberedCopyName(context.Background(), dir, targetItem.Filename); err == nil && copyName != "" {
 		suggested = copyName
@@ -362,9 +368,22 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 	targetItem.SuggestedFilename = suggested
 	targetItem.FileConflict = conflict
 
-	if targetItem.DuplicateTask != nil && (policy == config.DuplicatePolicyNumberedCopy) {
+	// 探测补齐了历史任务与目标位置的现状，重新裁决一次，使界面刷新后的选项与事实一致。
+	decision := duplicate.Decide(duplicate.Facts{
+		Policy:              policy,
+		HasHistory:          targetItem.DuplicateTask != nil,
+		HistoryCompleted:    targetItem.DuplicateTask != nil && targetItem.DuplicateTask.Status == task.StatusCompleted,
+		DestinationOccupied: engine.DestinationOccupied(dir, targetItem.Filename, targetItem.DuplicateTask),
+	})
+	targetItem.DuplicateDecision = decision
+
+	if decision.Default == duplicate.ActionCopy {
 		targetItem.Filename = suggested
 		targetItem.FileConflict = false
+	}
+
+	if decision.ShowCompleted && qc.onShowCompleted != nil {
+		qc.onShowCompleted(targetItem.DuplicateTask.ID)
 	}
 
 	if preDownload && !targetItem.FileConflict && targetItem.DuplicateTask == nil && targetItem.PreDownloadTaskID == "" {
@@ -375,19 +394,6 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 
 	if qc.windowView != nil {
 		qc.windowView.Emit("fileinfo:updated", targetItem)
-	}
-}
-
-func mapPolicyToStrategy(policy config.DuplicateURLPolicy) string {
-	switch policy {
-	case config.DuplicatePolicyContinueOverwrite, config.DuplicatePolicyOverwriteLegacy:
-		return "continue_overwrite"
-	case config.DuplicatePolicyNumberedCopy:
-		return "copy"
-	case config.DuplicatePolicySkipShowCompleted, config.DuplicatePolicySkipShowLegacy:
-		return "show_completed"
-	default:
-		return ""
 	}
 }
 
@@ -412,60 +418,42 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 			active.DuplicateTask = probe.DuplicateTask
 		}
 	}
+	// 用户可能改过目录或文件名，因此按最终落点重新裁决，而不是沿用登记时的结果。
+	// 策略取当前设置：它只影响默认动作，而用户已选定动作时默认动作不会被使用。
+	decision := duplicate.Decide(duplicate.Facts{
+		Policy:              qc.settings.Get().Download.DuplicateURLPolicy,
+		HasHistory:          active.DuplicateTask != nil,
+		HistoryCompleted:    active.DuplicateTask != nil && active.DuplicateTask.Status == task.StatusCompleted,
+		DestinationOccupied: engine.DestinationOccupied(sub.Directory, sub.Filename, active.DuplicateTask),
+	})
+	active.DuplicateDecision = decision
+
+	action := sub.Action
+	if action == "" {
+		action = decision.Default
+	}
+
 	var (
 		resTask *task.Task
 		err     error
 	)
 
-	// Duplicate resolution
-	strategy := sub.DuplicateStrategy
-	destFileExists := engine.FileExists(filepath.Join(sub.Directory, sub.Filename))
-
-	if strategy == "reuse" && sub.ReuseTaskID != "" {
+	switch {
+	case action == duplicate.ActionReuse && sub.ReuseTaskID != "":
 		resTask, err = qc.engine.ReuseExistingFile(ctx, sub.ReuseTaskID, sub.Directory, sub.Filename)
-		if err != nil {
-			return nil, err
+	case active.DuplicateTask != nil:
+		if action == "" {
+			// 局面需要用户先决定怎么处理，界面不能在没有选择的情况下提交。
+			return nil, ErrDuplicateChoiceRequired
 		}
-	} else {
-		if strategy == "" && active.DuplicateTask != nil {
-			if !destFileExists {
-				if active.DuplicateTask.Status == task.StatusCompleted ||
-					active.DuplicatePolicy == config.DuplicatePolicyAsk ||
-					active.DuplicatePolicy == config.DuplicatePolicyPrompt {
-					strategy = "redownload"
-				} else if mapped := mapPolicyToStrategy(active.DuplicatePolicy); mapped != "" {
-					strategy = mapped
-				} else {
-					strategy = "redownload"
-				}
-			} else {
-				strategy = mapPolicyToStrategy(active.DuplicatePolicy)
-			}
-		}
-
-		if strategy != "" && active.DuplicateTask != nil {
-			if strategy == "continue_overwrite" {
-				if active.DuplicateTask.Status == task.StatusCompleted {
-					strategy = "redownload"
-				} else {
-					strategy = "continue"
-				}
-			}
-			resTask, err = qc.engine.ResolveDuplicate(ctx, active.DuplicateTask.ID, strategy, sub.Directory, sub.Filename, sub.MaxConn)
-			if err != nil {
-				return nil, err
-			}
-		} else if active.PreDownloadTaskID != "" {
-			resTask, err = qc.engine.ConfirmPreDownload(ctx, active.PreDownloadTaskID, sub.Directory, sub.Filename, sub.MaxConn)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			resTask, err = qc.engine.AddTaskWithHeaders(ctx, sub.URL, sub.Directory, sub.Filename, sub.MaxConn, active.Headers)
-			if err != nil {
-				return nil, err
-			}
-		}
+		resTask, err = qc.engine.ResolveDuplicate(ctx, active.DuplicateTask.ID, string(action), sub.Directory, sub.Filename, sub.MaxConn)
+	case active.PreDownloadTaskID != "":
+		resTask, err = qc.engine.ConfirmPreDownload(ctx, active.PreDownloadTaskID, sub.Directory, sub.Filename, sub.MaxConn)
+	default:
+		resTask, err = qc.engine.AddTaskWithHeaders(ctx, sub.URL, sub.Directory, sub.Filename, sub.MaxConn, active.Headers)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	// Remove confirmed item from queue

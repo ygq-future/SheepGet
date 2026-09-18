@@ -7,7 +7,7 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as config$0 from "../config/models.js";
+import * as duplicate$0 from "../duplicate/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
@@ -97,7 +97,12 @@ export class FileInfoItem {
     "preDownloadTaskId"?: string;
     "fileConflict": boolean;
     "duplicateTask"?: task$0.Task | null;
-    "duplicatePolicy": config$0.DuplicateURLPolicy;
+
+    /**
+     * DuplicateDecision 是这次重复的裁决结果：界面只渲染它给出的选项与默认项。
+     * 策略本身不下发给窗口，避免窗口把它当成第二份规则来源。
+     */
+    "duplicateDecision": duplicate$0.Decision;
     "queueIndex": number;
     "queueTotal": number;
     "headers"?: { [_ in string]?: string };
@@ -137,8 +142,8 @@ export class FileInfoItem {
         if (!("fileConflict" in $$source)) {
             this["fileConflict"] = false;
         }
-        if (!("duplicatePolicy" in $$source)) {
-            this["duplicatePolicy"] = config$0.DuplicateURLPolicy.$zero;
+        if (!("duplicateDecision" in $$source)) {
+            this["duplicateDecision"] = (new duplicate$0.Decision());
         }
         if (!("queueIndex" in $$source)) {
             this["queueIndex"] = 0;
@@ -155,10 +160,14 @@ export class FileInfoItem {
      */
     static createFrom($$source: any = {}): FileInfoItem {
         const $$createField13_0 = $$createType2;
+        const $$createField14_0 = $$createType3;
         const $$createField17_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
             $$parsedSource["duplicateTask"] = $$createField13_0($$parsedSource["duplicateTask"]);
+        }
+        if ("duplicateDecision" in $$parsedSource) {
+            $$parsedSource["duplicateDecision"] = $$createField14_0($$parsedSource["duplicateDecision"]);
         }
         if ("headers" in $$parsedSource) {
             $$parsedSource["headers"] = $$createField17_0($$parsedSource["headers"]);
@@ -176,13 +185,13 @@ export class FileInfoSubmission {
     "filename": string;
     "directory": string;
     "maxConn": number;
+    "preDownload": boolean;
 
     /**
-     * "prompt", "continue", "redownload", "copy", "continue_overwrite", "show_completed", "reuse"
+     * Action 是用户为这次重复选定的动作，取自文件信息窗口收到的裁决选项；
+     * 为空时由后端按裁决的默认动作执行。
      */
-    "duplicateStrategy"?: string;
-    "preDownload": boolean;
-    "overwriteConflict": boolean;
+    "action"?: duplicate$0.Action;
     "reuseTaskId"?: string;
 
     /** Creates a new FileInfoSubmission instance. */
@@ -205,9 +214,6 @@ export class FileInfoSubmission {
         if (!("preDownload" in $$source)) {
             this["preDownload"] = false;
         }
-        if (!("overwriteConflict" in $$source)) {
-            this["overwriteConflict"] = false;
-        }
 
         Object.assign(this, $$source);
     }
@@ -225,3 +231,4 @@ export class FileInfoSubmission {
 const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = task$0.Task.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = duplicate$0.Decision.createFrom;

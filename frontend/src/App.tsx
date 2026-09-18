@@ -38,10 +38,13 @@ function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[
   return (list || []).filter((t): t is task.Task => t !== null);
 }
 
+// 按「最后连接时间」倒序：续传或重试历史任务后它同样要浮到最前，
+// 只按创建时间排序会让刚恢复的任务留在列表深处。列表右侧展示的也是这个时间。
+// 老记录可能没有 updatedAt，退回创建时间；两者相同再按 id 稳定排序。
 function sortTasks(taskList: task.Task[]): task.Task[] {
   return [...taskList].sort((a, b) => {
-    const timeA = new Date(a.createdAt || 0).getTime();
-    const timeB = new Date(b.createdAt || 0).getTime();
+    const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+    const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
     if (timeA !== timeB) {
       return timeB - timeA;
     }

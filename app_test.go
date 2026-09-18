@@ -657,7 +657,8 @@ func TestApp_CheckURLFilesExist_DiskFileNotExists_ReportsNotExistsAndDirectDownl
 		t.Errorf("expected suggested filename no_disk_file.zip, got %s", res.SuggestedFilename)
 	}
 
-	// When user enqueues and confirms download for this request without duplicate strategy (direct download)
+	// When user enqueues and confirms download for this request without choosing an action:
+	// 目标位置没有成品文件，历史任务也只是残留记录，后端默认重新下载。
 	enqResp, err := app.TriggerDownload(window.DownloadRequest{
 		URL:       targetURL,
 		Directory: tmpDir,
@@ -668,12 +669,11 @@ func TestApp_CheckURLFilesExist_DiskFileNotExists_ReportsNotExistsAndDirectDownl
 	}
 
 	subTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
-		RequestID:         enqResp.RequestID,
-		URL:               targetURL,
-		Filename:          "no_disk_file.zip",
-		Directory:         tmpDir,
-		DuplicateStrategy: "", // User did not choose duplicate option because no disk file was present
-		MaxConn:           2,
+		RequestID: enqResp.RequestID,
+		URL:       targetURL,
+		Filename:  "no_disk_file.zip",
+		Directory: tmpDir,
+		MaxConn:   2,
 	})
 	if err != nil {
 		t.Fatalf("SubmitFileInfo failed: %v", err)
@@ -811,13 +811,13 @@ func TestApp_CheckURLFilesExist_MultiStaleDuplicates_AllCleaned(t *testing.T) {
 		t.Fatalf("TriggerDownload failed: %v", err)
 	}
 
+	// 界面提示「此前已下载过此链接，当前目录下无同名文件」，用户未另行选择动作。
 	subTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
-		RequestID:         enqResp.RequestID,
-		URL:               targetURL,
-		Filename:          "multi_stale.bin",
-		Directory:         tmpDir,
-		DuplicateStrategy: "", // Prompted "此前已下载过此链接，当前目录下无同名文件", clicked confirm
-		MaxConn:           2,
+		RequestID: enqResp.RequestID,
+		URL:       targetURL,
+		Filename:  "multi_stale.bin",
+		Directory: tmpDir,
+		MaxConn:   2,
 	})
 	if err != nil {
 		t.Fatalf("SubmitFileInfo failed: %v", err)
@@ -870,5 +870,95 @@ func TestApp_ResolveDestination(t *testing.T) {
 		if want := app.settings.Get().Download.ResolveCategoryDirectory(name); want != got.Directory {
 			t.Fatalf("ResolveDestination(%q) directory %q disagrees with ResolveCategoryDirectory %q", name, got.Directory, want)
 		}
+	}
+}
+
+// seedHistoryElsewhere 在另一个目录放一条已完成的历史记录，模拟「手动选过目录、默认目录
+// 后来改过、或文件被搬走过」之后，历史记录所在目录与这次解析出的保存目录不一致的情形。
+// writeFile 为真时同时落下成品文件，用于验证不该被误删的情况。
+func seedHistoryElsewhere(t *testing.T, store task.TaskStore, tmpDir, id, url, filename string, writeFile bool) *task.Task {
+	t.Helper()
+	historyDir := filepath.Join(tmpDir, "elsewhere")
+	if err := os.MkdirAll(historyDir, 0o755); err != nil {
+		t.Fatalf("failed to create history dir: %v", err)
+	}
+	history := &task.Task{
+		ID:        id,
+		URL:       url,
+		Filename:  filename,
+		Directory: historyDir,
+		Status:    task.StatusCompleted,
+	}
+	if err := store.Save(context.Background(), history); err != nil {
+		t.Fatalf("failed to seed history: %v", err)
+	}
+	if writeFile {
+		if err := os.WriteFile(filepath.Join(historyDir, filename), []byte("kept"), 0o644); err != nil {
+			t.Fatalf("failed to seed history file: %v", err)
+		}
+	}
+	return history
+}
+
+// confirmDirectTrigger 模拟浏览器/剪贴板触发（请求不带目录与文件名）并按界面收到的默认动作确认。
+func confirmDirectTrigger(t *testing.T, app *App, url string) *task.Task {
+	t.Helper()
+	enqResp, err := app.TriggerDownload(window.DownloadRequest{URL: url})
+	if err != nil || enqResp == nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+	active, err := app.GetActiveFileInfo()
+	if err != nil || active == nil {
+		t.Fatalf("expected active item: %v", err)
+	}
+	resTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: enqResp.RequestID,
+		URL:       url,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   2,
+		Action:    active.DuplicateDecision.Default,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	return resTask
+}
+
+// 实测复现：历史任务已完成、成品文件已被删除时，确认下载必须清掉那条历史记录；
+// 清理不能取决于它当初恰好保存在哪个目录。
+func TestApp_CompletedHistoryWithoutFile_CleansOldRecordRegardlessOfDirectory(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/vanished.bin"
+
+	history := seedHistoryElsewhere(t, store, tmpDir, "t_vanished", targetURL, "vanished.bin", false)
+
+	if confirmDirectTrigger(t, app, targetURL) == nil {
+		t.Fatal("expected a fresh download task")
+	}
+
+	if old, _ := store.Get(ctx, history.ID); old != nil {
+		t.Errorf("成品文件已不在磁盘上的历史记录应当被清理，got %+v", old)
+	}
+}
+
+// 反向保证：历史任务的文件仍在（哪怕是别的目录），那是用户自己的一份成品，不得清掉。
+func TestApp_CompletedHistoryWithFileElsewhere_IsKept(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	targetURL := "https://example.com/still_here.bin"
+
+	history := seedHistoryElsewhere(t, store, tmpDir, "t_still_here", targetURL, "still_here.bin", true)
+
+	if confirmDirectTrigger(t, app, targetURL) == nil {
+		t.Fatal("expected a fresh download task")
+	}
+
+	if kept, _ := store.Get(ctx, history.ID); kept == nil {
+		t.Errorf("文件仍存在的历史记录不应被清理")
+	}
+	if _, err := os.Stat(filepath.Join(history.Directory, history.Filename)); err != nil {
+		t.Errorf("别的目录里的成品文件不应被动到: %v", err)
 	}
 }

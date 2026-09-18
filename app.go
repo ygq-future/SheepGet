@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
+	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
@@ -572,6 +573,29 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 		}
 	}
 	return res
+}
+
+// ResolveDuplicateDecision 按给定链接与最终保存位置裁决这次重复该给哪些动作、默认执行哪个。
+// 界面在链接、文件名或目录变化后调用它刷新选项；裁决规则只在 duplicate 包实现一次，
+// 界面不据策略自行推导（ADR-0002：后端为唯一事实来源）。
+func (a *App) ResolveDuplicateDecision(urlStr, dir, filename string) duplicate.Decision {
+	var dupTask *task.Task
+	if a.manager != nil && urlStr != "" {
+		dupTask, _ = a.manager.FindDuplicateTask(a.ctx, urlStr)
+	}
+	if dir == "" {
+		dir = a.categoryDirectory(filename)
+	}
+	policy := config.DuplicatePolicyPrompt
+	if a.settings != nil {
+		policy = a.settings.Get().Download.DuplicateURLPolicy
+	}
+	return duplicate.Decide(duplicate.Facts{
+		Policy:              policy,
+		HasHistory:          dupTask != nil,
+		HistoryCompleted:    dupTask != nil && dupTask.Status == task.StatusCompleted,
+		DestinationOccupied: engine.DestinationOccupied(dir, filename, dupTask),
+	})
 }
 
 // ResolveDuplicate resolves a duplicate task using strategies "continue", "redownload", "copy", or "show_completed".

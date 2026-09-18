@@ -113,11 +113,16 @@ export function TaskItem({
 
   return (
     <motion.div
-      layout
+      layout="position"
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.98 }}
-      transition={{ duration: 0.15, ease: 'easeOut' }}
+      transition={{
+        // 排序变化（续传、完成或暂停使位置重排）时位置平滑过渡，避免突兀跳变。
+        layout: { duration: 0.26, ease: [0.32, 0.72, 0, 1] },
+        duration: 0.15,
+        ease: 'easeOut',
+      }}
       onClick={handleRowClick}
       onDoubleClick={handleRowDoubleClick}
       className={`group relative flex cursor-pointer items-center justify-between gap-2.5 rounded-lg border px-3 py-1.5 shadow-2xs backdrop-blur-xs transition-all duration-150 select-none ${
