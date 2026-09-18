@@ -18,6 +18,10 @@ import (
 // （目标位置已有成品文件，且策略没有给出默认动作）。
 var ErrDuplicateChoiceRequired = errors.New("duplicate action required before submitting")
 
+// ErrStaleFileInfoSubmission 表示这次提交针对的已经不是窗口当前显示的任务。
+// 提交只作用于当前项，界面重复提交时不能让上一项的落点作用到下一项上。
+var ErrStaleFileInfoSubmission = errors.New("submission targets a task that is no longer active")
+
 // WindowView abstracts a native OS/Wails window.
 type WindowView interface {
 	Show()
@@ -104,12 +108,15 @@ type FileInfoSubmission struct {
 
 // QueueController coordinates the single-instance FileInfo window and its FIFO queue.
 type QueueController struct {
-	mu              sync.Mutex
-	engine          DownloadEngine
-	settings        SettingsProvider
-	windowView      WindowView
-	items           []*FileInfoItem
-	activeIndex     int
+	mu          sync.Mutex
+	engine      DownloadEngine
+	settings    SettingsProvider
+	windowView  WindowView
+	items       []*FileInfoItem
+	activeIndex int
+	// requestSeq 单调递增，保证每一项的 ID 互不相同：界面按 ID 分项保存草稿、按 ID 路由探测结果，
+	// 时间戳在同一刻会重复，不能当唯一标识用。
+	requestSeq      uint64
 	onShowCompleted func(taskID string)
 }
 
@@ -269,8 +276,9 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		qc.onShowCompleted(dupTask.ID)
 	}
 
+	qc.requestSeq++
 	item := &FileInfoItem{
-		ID:                fmt.Sprintf("req_%d", time.Now().UnixNano()),
+		ID:                fmt.Sprintf("req_%d", qc.requestSeq),
 		URL:               req.URL,
 		Filename:          filename,
 		SuggestedFilename: suggested,
@@ -404,6 +412,9 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 		qc.activeIndex = 0
 	}
 	active := qc.items[qc.activeIndex]
+	if sub.RequestID != active.ID {
+		return nil, ErrStaleFileInfoSubmission
+	}
 
 	// If active.DuplicateTask is nil, check if sub.URL matches an existing task
 	if active.DuplicateTask == nil && sub.URL != "" {

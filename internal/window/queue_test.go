@@ -970,3 +970,62 @@ func TestQueueController_DestinationOccupiedRequiresUserChoice(t *testing.T) {
 		t.Errorf("已完成的历史任务应被覆盖重下，而不是沿用原任务")
 	}
 }
+
+func TestQueueController_SubmitRejectsSubmissionForAnotherItem(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/first.zip",
+		Directory: tmpDir,
+		Filename:  "first.zip",
+	}); err != nil {
+		t.Fatalf("enqueue first failed: %v", err)
+	}
+	second, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/second.zip",
+		Directory: tmpDir,
+		Filename:  "second.zip",
+	})
+	if err != nil {
+		t.Fatalf("enqueue second failed: %v", err)
+	}
+
+	first, err := qc.GetActive()
+	if err != nil || first == nil {
+		t.Fatalf("expected an active item, got %+v (err=%v)", first, err)
+	}
+	if first.ID == second.RequestID {
+		t.Fatalf("test setup broken: both items share id %q", first.ID)
+	}
+
+	// 界面停在第一项，却带着第一项的落点去提交第二项：必须被拒绝，且不能改动队列。
+	_, err = qc.Submit(ctx, FileInfoSubmission{
+		RequestID: second.RequestID,
+		URL:       first.URL,
+		Filename:  first.Filename,
+		Directory: first.Directory,
+		MaxConn:   4,
+	})
+	if !errors.Is(err, ErrStaleFileInfoSubmission) {
+		t.Fatalf("err = %v, want %v", err, ErrStaleFileInfoSubmission)
+	}
+
+	if qc.QueueLength() != 2 {
+		t.Errorf("queue length = %d, want 2：被拒绝的提交不得推进队列", qc.QueueLength())
+	}
+	stillActive, err := qc.GetActive()
+	if err != nil || stillActive == nil {
+		t.Fatalf("expected active item to remain, got %+v (err=%v)", stillActive, err)
+	}
+	if stillActive.ID != first.ID {
+		t.Errorf("active id = %q, want %q", stillActive.ID, first.ID)
+	}
+	tasks, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list tasks failed: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("tasks = %d, want 0：被拒绝的提交不得创建任务", len(tasks))
+	}
+}

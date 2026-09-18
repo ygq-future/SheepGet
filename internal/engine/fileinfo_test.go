@@ -113,6 +113,24 @@ func waitForStatus(t *testing.T, store task.TaskStore, id string, timeout time.D
 	return nil
 }
 
+// waitForDownloaded polls the persisted task until it reports at least one downloaded byte.
+// 进度写入磁盘按 500ms 或 1MB 节流，因此「状态变为下载中」与「已下载字节可见」之间有一段窗口，
+// 测试要等的是后者，不能假定状态一到就有字节。
+func waitForDownloaded(t *testing.T, store task.TaskStore, id string, timeout time.Duration) *task.Task {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		saved, err := store.Get(context.Background(), id)
+		if err == nil && saved != nil && saved.Downloaded > 0 {
+			return saved
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	saved, _ := store.Get(context.Background(), id)
+	t.Fatalf("task %s did not report any downloaded byte in %s (last: %+v)", id, timeout, saved)
+	return nil
+}
+
 func TestProbe_MetadataAndContentType(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
@@ -607,9 +625,10 @@ func TestManager_PreDownload_ConfirmWhileDownloading(t *testing.T) {
 		t.Fatalf("StartPreDownload failed: %v", err)
 	}
 
-	inFlight := waitForStatus(t, store, preTask.ID, 3*time.Second, task.StatusDownloading)
-	if inFlight.Downloaded == 0 {
-		t.Fatalf("expected transfer to have started before confirming")
+	// 要测的是「传输在途时确认」，所以等真实字节落库，而不是等状态翻成下载中。
+	inFlight := waitForDownloaded(t, store, preTask.ID, 3*time.Second)
+	if inFlight.Status != task.StatusDownloading {
+		t.Fatalf("expected in-flight downloading, got %v", inFlight.Status)
 	}
 
 	confirmedTask, err := mgr.ConfirmPreDownload(ctx, preTask.ID, subDir, "confirmed.bin", 2)

@@ -41,267 +41,110 @@ import * as duplicateModels from '../../bindings/sheep-get/internal/duplicate/mo
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
 import { useSettingsStore } from '../stores/settings';
+import { useFileInfoDraftStore } from '../stores/fileInfoDraft';
 import { Select } from '../components/ui/Select';
 import { Checkbox } from '../components/ui/Checkbox';
 import { extractExtension } from '../lib/category';
-interface ItemDraftState {
-  filename: string;
-  directory: string;
-  maxConn: number;
-  preDownload: boolean;
-  // 裁决结果与用户选中的动作都由后端给出/校验，草稿只做原样保存与恢复。
-  duplicateDecision: duplicateModels.Decision;
-  selectedAction?: duplicateModels.Action;
-  fileConflict: boolean;
-  suggestedFilename: string;
-  overwriteConflict: boolean;
-  nameEdited: boolean;
-  dirEdited: boolean;
-  originalFilename: string;
-  selectedCategoryId: string;
-  autoCategoryId: string;
-  rememberCategory: boolean;
-  categoryEdited: boolean;
-  keepCategoryPath?: boolean;
-  canReuseExistingFile?: boolean;
-  existingPath?: string;
-  existingTaskID?: string;
-}
+import {
+  canKeepCategoryPathOf,
+  effectiveCategoryIdOf,
+  isOverwriteAction,
+  overwriteOptionOf,
+  resolveAction,
+  reuseFields,
+  type FileInfoDraft,
+} from '../lib/fileInfoDraft';
 
 export function FileInfoView() {
   const { loadSettings } = useSettingsStore();
   const [activeItem, setActiveItem] = useState<windowModels.FileInfoItem | null>(null);
-
-  // Form states
-  const [url, setUrl] = useState('');
-  const [filename, setFilename] = useState('');
-  const [directory, setDirectory] = useState('');
-  const [maxConn, setMaxConn] = useState(8);
-  const [preDownload, setPreDownload] = useState(false);
-  // 重复链接的选项与默认动作只由后端裁决；界面不依据策略自行推导。
-  const [duplicateDecision, setDuplicateDecision] = useState<duplicateModels.Decision>(
-    () => new duplicateModels.Decision(),
-  );
-  const [selectedAction, setSelectedAction] = useState<duplicateModels.Action | undefined>(
-    undefined,
-  );
   const [slideDirection, setSlideDirection] = useState(0);
 
-  // Conflict & probe states
-  const [probing, setProbing] = useState(false);
-  const [fileConflict, setFileConflict] = useState(false);
-  const [suggestedFilename, setSuggestedFilename] = useState('');
-  const [overwriteConflict, setOverwriteConflict] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedCategoryId, setSelectedCategoryId] = useState('');
-  // 后端给出的命中分类，随文件名变化更新；分类规则只在后端实现。
-  const [autoCategoryId, setAutoCategoryId] = useState('builtin-file');
-  const [rememberCategory, setRememberCategory] = useState(false);
-  const [categoryEdited, setCategoryEdited] = useState(false);
-  const [keepCategoryPath, setKeepCategoryPath] = useState(false);
-  const [canReuseExistingFile, setCanReuseExistingFile] = useState(false);
-  const [existingPath, setExistingPath] = useState('');
-  const [existingTaskID, setExistingTaskID] = useState('');
+  // 表单内容全部来自当前项的草稿：切换项时整体替换，任何一项的输入与提示都不会串到别的项。
+  const draft = useFileInfoDraftStore((s) => s.draft);
+  const openDraft = useFileInfoDraftStore((s) => s.open);
+  const patch = useFileInfoDraftStore((s) => s.patch);
+  const discardDraft = useFileInfoDraftStore((s) => s.discard);
+  const probing = useFileInfoDraftStore((s) => s.probing);
+  const loading = useFileInfoDraftStore((s) => s.loading);
+  const setProbing = useFileInfoDraftStore((s) => s.setProbing);
+  const setLoading = useFileInfoDraftStore((s) => s.setLoading);
 
-  const applyReuseState = useCallback(
-    (conf: { canReuseExistingFile?: boolean; existingPath?: string; existingTaskID?: string }) => {
-      if (conf.canReuseExistingFile && conf.existingPath && conf.existingTaskID) {
-        setCanReuseExistingFile(true);
-        setExistingPath(conf.existingPath);
-        setExistingTaskID(conf.existingTaskID);
-      } else {
-        setCanReuseExistingFile(false);
-        setExistingPath('');
-        setExistingTaskID('');
-      }
-    },
-    [],
-  );
-
-  // 落点变化后向后端重新要一次裁决：给哪些选项、默认哪一项、目标位置是否已有成品文件，
-  // 全部由后端依据策略与磁盘事实算出，界面只负责渲染。
-  // keepSelection 用于落点变化的场景：用户已经选过的动作只要仍然可选就保留，
-  // 否则回落到裁决给出的默认项。新一次请求不传它，直接采用默认项。
-  const refreshDuplicateDecision = useCallback(
-    async (
-      nextUrl: string,
-      nextDir: string,
-      nextName: string,
-      options?: { keepSelection?: boolean },
-    ): Promise<duplicateModels.Decision> => {
-      let next = new duplicateModels.Decision();
-      if (nextUrl && nextDir && nextName) {
-        next = await ResolveDuplicateDecision(nextUrl, nextDir, nextName);
-      }
-      setDuplicateDecision(next);
-      setSelectedAction((prev) => {
-        if (options?.keepSelection && prev && next.options?.includes(prev)) {
-          return prev;
-        }
-        return next.default || undefined;
-      });
-      return next;
-    },
-    [],
-  );
-
-  const nameEditedRef = useRef(false);
-  const dirEditedRef = useRef(false);
-  const originalFilenameRef = useRef('');
-  const probeSeqRef = useRef(0);
-  const filenameSeqRef = useRef(0);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const itemDraftsRef = useRef<Record<string, ItemDraftState>>({});
-  const activeItemIdRef = useRef<string | null>(null);
-  const filenameRef = useRef(filename);
-  const directoryRef = useRef(directory);
-
-  // Keep active item draft in sync with current form inputs
-  useEffect(() => {
-    const id = activeItemIdRef.current;
-    if (!id) return;
-    filenameRef.current = filename;
-    directoryRef.current = directory;
-    itemDraftsRef.current[id] = {
-      filename,
-      directory,
-      maxConn,
-      preDownload,
-      duplicateDecision,
-      selectedAction,
-      fileConflict,
-      suggestedFilename,
-      overwriteConflict,
-      nameEdited: nameEditedRef.current,
-      dirEdited: dirEditedRef.current,
-      originalFilename: originalFilenameRef.current,
-      selectedCategoryId,
-      autoCategoryId,
-      rememberCategory,
-      categoryEdited,
-      keepCategoryPath,
-      canReuseExistingFile,
-      existingPath,
-      existingTaskID,
-    };
-  }, [
+  const {
+    url,
     filename,
     directory,
     maxConn,
-    preDownload,
     duplicateDecision,
     selectedAction,
     fileConflict,
     suggestedFilename,
     overwriteConflict,
-    selectedCategoryId,
-    autoCategoryId,
+    error,
+    originalFilename,
     rememberCategory,
-    categoryEdited,
     keepCategoryPath,
     canReuseExistingFile,
     existingPath,
-    existingTaskID,
-  ]);
+  } = draft;
+
+  const probeSeqRef = useRef(0);
+  const filenameSeqRef = useRef(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 切换项时作废在途请求：上一项的探测与文件名解析结果不得落到下一项上。
+  const invalidateInFlight = useCallback(() => {
+    probeSeqRef.current += 1;
+    filenameSeqRef.current += 1;
+  }, []);
+
+  // 裁决结果与选中项一起写回：用户已经选过的动作只要仍然可选就保留，否则回落到裁决给出的默认项。
+  const applyDecision = useCallback(
+    (decision: duplicateModels.Decision, options?: { keepSelection?: boolean }) => {
+      patch({
+        duplicateDecision: decision,
+        selectedAction: resolveAction(
+          decision,
+          useFileInfoDraftStore.getState().draft.selectedAction,
+          options,
+        ),
+      });
+    },
+    [patch],
+  );
+
+  // 落点变化后向后端重新要一次裁决：给哪些选项、默认哪一项、目标位置是否已有成品文件，
+  // 全部由后端依据策略与磁盘事实算出，界面只负责渲染。
+  // owner 是发起这次请求时的队列项；等待期间切走了就把结果丢掉，不写进新项。
+  const refreshDuplicateDecision = async (
+    owner: string | null,
+    nextUrl: string,
+    nextDir: string,
+    nextName: string,
+    options?: { keepSelection?: boolean },
+  ): Promise<duplicateModels.Decision> => {
+    let next = new duplicateModels.Decision();
+    if (nextUrl && nextDir && nextName) {
+      next = await ResolveDuplicateDecision(nextUrl, nextDir, nextName);
+    }
+    if (owner !== useFileInfoDraftStore.getState().activeItemId) {
+      return next;
+    }
+    applyDecision(next, options);
+    return next;
+  };
 
   const initItem = useCallback(
     async (item: windowModels.FileInfoItem) => {
-      activeItemIdRef.current = item.id;
-      const existingDraft = itemDraftsRef.current[item.id];
-      if (existingDraft) {
-        setActiveItem((prev) => ({
-          ...item,
-          queueIndex: item.queueIndex || prev?.queueIndex || 1,
-          queueTotal: item.queueTotal || prev?.queueTotal || 1,
-        }));
-        setUrl(item.url || '');
-        setFilename(existingDraft.filename);
-        setDirectory(existingDraft.directory);
-        setMaxConn(existingDraft.maxConn);
-        setPreDownload(existingDraft.preDownload);
-        setDuplicateDecision(existingDraft.duplicateDecision);
-        setSelectedAction(existingDraft.selectedAction);
-        setFileConflict(existingDraft.fileConflict);
-        setSuggestedFilename(existingDraft.suggestedFilename);
-        setOverwriteConflict(existingDraft.overwriteConflict);
-        nameEditedRef.current = existingDraft.nameEdited;
-        dirEditedRef.current = existingDraft.dirEdited;
-        setCategoryEdited(existingDraft.categoryEdited || false);
-        setSelectedCategoryId(existingDraft.selectedCategoryId || '');
-        setAutoCategoryId(existingDraft.autoCategoryId || 'builtin-file');
-        setKeepCategoryPath(existingDraft.keepCategoryPath || false);
-        setCanReuseExistingFile(existingDraft.canReuseExistingFile || false);
-        setExistingPath(existingDraft.existingPath || '');
-        setExistingTaskID(existingDraft.existingTaskID || '');
-        setLoading(false);
-        return;
-      }
-
-      const currentSettings = useSettingsStore.getState().settings;
-
-      const dir = item.directory || currentSettings?.download?.defaultDirectory || '';
-      const initialName = !item.url && item.filename === 'download.bin' ? '' : item.filename || '';
-      originalFilenameRef.current = initialName;
-
-      // 裁决结果由后端随请求一起给出：选项、默认动作、是否已有成品文件都在里面。
-      const decision = item.duplicateDecision || new duplicateModels.Decision();
-      const destOccupied = decision.case === duplicateModels.Case.CaseDestinationOccupied;
-      const chosenName = initialName;
-      // 可复用文件属于另一条独立规则（其他目录已有同一份成品），仍由后端查询后给出。
-      if (item.duplicateTask && dir && initialName) {
-        applyReuseState(await CheckURLFilesExist(item.url || '', dir, initialName));
-      }
+      invalidateInFlight();
       setActiveItem((prev) => ({
         ...item,
         queueIndex: item.queueIndex || prev?.queueIndex || 1,
         queueTotal: item.queueTotal || prev?.queueTotal || 1,
       }));
-      setUrl(item.url || '');
-      setFilename(chosenName);
-      setDirectory(dir);
-      setMaxConn(item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8);
-      setPreDownload(item.preDownload ?? !!currentSettings?.download?.preDownload);
-      setFileConflict(destOccupied ? false : !!item.fileConflict);
-      setSuggestedFilename(item.suggestedFilename || '');
-      setDuplicateDecision(decision);
-      setSelectedAction(decision.default || undefined);
-      setOverwriteConflict(false);
-      setError(null);
-      setLoading(false);
-      nameEditedRef.current = false;
-      dirEditedRef.current = false;
-      setCategoryEdited(false);
-      // 命中分类由后端在登记请求时判定，界面不重复实现分类规则。
-      const initialCatId = item.categoryId || 'builtin-file';
-      setSelectedCategoryId(initialCatId);
-      setAutoCategoryId(initialCatId);
-      setRememberCategory(false);
-      setKeepCategoryPath(false);
-      itemDraftsRef.current[item.id] = {
-        filename: chosenName,
-        directory: dir,
-        maxConn: item.maxConn || currentSettings?.download?.defaultConnectionsPerTask || 8,
-        preDownload: item.preDownload ?? !!currentSettings?.download?.preDownload,
-        duplicateDecision: decision,
-        selectedAction: decision.default || undefined,
-        fileConflict: destOccupied ? false : !!item.fileConflict,
-        suggestedFilename: item.suggestedFilename || '',
-        overwriteConflict: false,
-        nameEdited: false,
-        dirEdited: false,
-        categoryEdited: false,
-        selectedCategoryId: initialCatId,
-        autoCategoryId: initialCatId,
-        rememberCategory: false,
-        keepCategoryPath: false,
-        canReuseExistingFile: false,
-        existingPath: '',
-        existingTaskID: '',
-        originalFilename: initialName,
-      };
+      await openDraft(item, useSettingsStore.getState().settings);
     },
-    [applyReuseState],
+    [openDraft, invalidateInFlight],
   );
 
   useEffect(() => {
@@ -348,38 +191,32 @@ export function FileInfoView() {
     // Listen for probed updates on the active item
     const unlistenUpdated = Events.On('fileinfo:updated', (ev: unknown) => {
       const item = unwrapEventData<windowModels.FileInfoItem>(ev);
-      if (item && item.id === activeItemIdRef.current) {
+      if (item && item.id === useFileInfoDraftStore.getState().activeItemId) {
         setProbing(false);
         setActiveItem((prev) => (prev ? { ...prev, ...item } : item));
+        const current = useFileInfoDraftStore.getState().draft;
         if (item.totalBytes !== undefined && item.totalBytes > 0) {
-          if (!nameEditedRef.current && item.filename) {
-            setFilename(item.filename);
-            originalFilenameRef.current = item.filename;
+          if (!current.nameEdited && item.filename) {
+            patch({ filename: item.filename, originalFilename: item.filename });
           }
         }
         if (item.fileConflict !== undefined) {
-          setFileConflict(item.fileConflict);
+          patch({ fileConflict: item.fileConflict });
         }
         if (item.suggestedFilename) {
-          setSuggestedFilename(item.suggestedFilename);
+          patch({ suggestedFilename: item.suggestedFilename });
         }
         // 后端探测完毕后会带着重新裁决的结果回来，界面照它更新选项与选中项。
         if (item.duplicateDecision) {
-          const refreshed = item.duplicateDecision;
-          setDuplicateDecision(refreshed);
-          setSelectedAction((prev) => {
-            if (prev && refreshed.options?.includes(prev)) {
-              return prev;
-            }
-            return refreshed.default || undefined;
-          });
+          applyDecision(item.duplicateDecision, { keepSelection: true });
         }
-        if (item.url && (item.filename || filenameRef.current)) {
+        if (item.url && (item.filename || current.filename)) {
           void (async () => {
-            const checkName = item.filename || filenameRef.current;
-            const checkDir = item.directory || directoryRef.current;
+            const checkName = item.filename || current.filename;
+            const checkDir = item.directory || current.directory;
             if (checkDir && checkName) {
-              applyReuseState(await CheckURLFilesExist(item.url, checkDir, checkName));
+              const conf = await CheckURLFilesExist(item.url, checkDir, checkName);
+              patch(reuseFields(conf), item.id);
             }
           })();
         }
@@ -391,9 +228,10 @@ export function FileInfoView() {
       unlistenQueue();
       unlistenUpdated();
     };
-  }, [loadSettings, initItem, applyReuseState]);
+  }, [loadSettings, initItem, applyDecision, patch, setProbing]);
 
   // Handle URL probe when URL is changed manually
+  // 手动改链接后的探测。每一步 await 之后都要重新确认请求还有效，否则上一项的结果会写进下一项。
   const probeManualURL = async (rawUrl: string) => {
     const trimmed = rawUrl.trim();
     if (!trimmed) {
@@ -405,23 +243,26 @@ export function FileInfoView() {
     try {
       const result = await ProbeURL(trimmed);
       if (seq !== probeSeqRef.current || !result) return;
+      const current = useFileInfoDraftStore.getState().draft;
       const rawName =
-        (!nameEditedRef.current && result.filename
+        (!current.nameEdited && result.filename
           ? result.filename
-          : filenameRef.current || result.filename) || '';
-      originalFilenameRef.current = result.filename || filenameRef.current;
+          : current.filename || result.filename) || '';
+      const originalName = result.filename || current.filename;
 
-      const currentDir = directoryRef.current;
-      let effectiveDir = currentDir;
+      // 命中分类只取决于文件名，即使目录被用户手动改过也要更新；目录只在用户没改过时跟随。
+      let effectiveDir = current.directory;
+      let autoCategoryId = current.autoCategoryId;
+      let destinationPatch: Partial<FileInfoDraft> = {};
       if (rawName) {
         try {
           const dest = await ResolveDestination(rawName);
-          // 命中分类只取决于文件名，即使目录被用户手动改过也要更新。
-          setAutoCategoryId(dest.categoryId || 'builtin-file');
-          if (!dirEditedRef.current && dest.directory) {
+          if (seq !== probeSeqRef.current) return;
+          autoCategoryId = dest.categoryId || 'builtin-file';
+          if (!current.dirEdited && dest.directory) {
             effectiveDir = dest.directory;
-            if (dest.directory !== currentDir) {
-              setDirectory(dest.directory);
+            if (dest.directory !== current.directory) {
+              destinationPatch = { directory: dest.directory };
             }
           }
         } catch {
@@ -430,29 +271,44 @@ export function FileInfoView() {
       }
 
       let suggestedName = '';
+      let conflictPatch: Partial<FileInfoDraft> = {};
       if (effectiveDir && rawName) {
         if (result.duplicateTask) {
           const conf = await CheckURLFilesExist(trimmed, effectiveDir, rawName);
-          applyReuseState(conf);
+          if (seq !== probeSeqRef.current) return;
+          conflictPatch = reuseFields(conf);
           suggestedName = conf.suggestedFilename;
         } else {
           const conf = await CheckFileConflict(effectiveDir, rawName);
-          setFileConflict(conf.exists);
+          if (seq !== probeSeqRef.current) return;
+          conflictPatch = { fileConflict: conf.exists };
           suggestedName = conf.suggestedFilename;
         }
-        setSuggestedFilename(suggestedName);
       }
 
       // 链接换了就要重新裁决：选项与默认动作取决于这个链接和最终落点。
-      const decision = await refreshDuplicateDecision(trimmed, effectiveDir, rawName);
+      const decision =
+        effectiveDir && rawName
+          ? await ResolveDuplicateDecision(trimmed, effectiveDir, rawName)
+          : new duplicateModels.Decision();
       if (seq !== probeSeqRef.current) return;
 
       // 默认动作是「序号副本」时预置后端算出的建议名称，这正是该动作的含义。
-      let chosenName = rawName;
-      if (decision.default === duplicateModels.Action.ActionCopy && suggestedName) {
-        chosenName = suggestedName;
-      }
-      setFilename(chosenName);
+      const chosenName =
+        decision.default === duplicateModels.Action.ActionCopy && suggestedName
+          ? suggestedName
+          : rawName;
+      patch({
+        ...destinationPatch,
+        autoCategoryId,
+        ...conflictPatch,
+        ...(effectiveDir && rawName ? { suggestedFilename: suggestedName } : {}),
+        filename: chosenName,
+        originalFilename: originalName,
+        duplicateDecision: decision,
+        selectedAction: resolveAction(decision, current.selectedAction),
+        error: null,
+      });
       setActiveItem((prev) => {
         if (!prev) return null;
         return {
@@ -464,11 +320,10 @@ export function FileInfoView() {
           duplicateTask: result.duplicateTask || null,
         };
       });
-      setError(null);
     } catch (err: unknown) {
       if (seq !== probeSeqRef.current) return;
       const msg = err instanceof Error ? err.message : String(err);
-      setError(`资源探测失败: ${msg}`);
+      patch({ error: `资源探测失败: ${msg}` });
     } finally {
       if (seq === probeSeqRef.current) {
         setProbing(false);
@@ -477,15 +332,9 @@ export function FileInfoView() {
   };
 
   const currentSettings = useSettingsStore((s) => s.settings);
-  const effectiveCategoryId =
-    categoryEdited && selectedCategoryId ? selectedCategoryId : autoCategoryId;
+  const effectiveCategoryId = effectiveCategoryIdOf(draft);
 
-  // 「继续覆盖」是唯一需要后端解析的一项：历史任务还活着就续传，已完成且成品在磁盘上就覆盖重下。
-  // 其余两项语义唯一，直接用动作标识即可。
-  const overwriteOption = duplicateDecision.options?.find(
-    (a) =>
-      a === duplicateModels.Action.ActionContinue || a === duplicateModels.Action.ActionRedownload,
-  );
+  const overwriteOption = overwriteOptionOf(duplicateDecision);
   const isOverwriteSelected = overwriteOption !== undefined && selectedAction === overwriteOption;
   const destinationOccupied =
     duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied;
@@ -501,9 +350,7 @@ export function FileInfoView() {
   }, [currentSettings?.download?.customCategories, currentSettings?.download?.builtinCategories]);
 
   const handleCategoryDropdownChange = (catId: string) => {
-    setSelectedCategoryId(catId);
-    setCategoryEdited(true);
-    dirEditedRef.current = true;
+    patch({ selectedCategoryId: catId, categoryEdited: true, dirEdited: true });
 
     const allCats = [
       ...(currentSettings?.download?.customCategories || []),
@@ -512,49 +359,34 @@ export function FileInfoView() {
     const targetCat = allCats.find((c) => c.id === catId);
     const catDir = targetCat?.directory || currentSettings?.download?.defaultDirectory || '';
 
-    setDirectory(catDir);
+    patch({ directory: catDir });
     if (filename) {
+      const owner = useFileInfoDraftStore.getState().activeItemId;
       void (async () => {
         const conf = await CheckFileConflict(catDir, filename);
-        setFileConflict(conf.exists);
-        setSuggestedFilename(conf.suggestedFilename);
-        await refreshDuplicateDecision(url, catDir, filename, { keepSelection: true });
+        patch({ fileConflict: conf.exists, suggestedFilename: conf.suggestedFilename }, owner);
+        await refreshDuplicateDecision(owner, url, catDir, filename, { keepSelection: true });
       })();
     }
   };
 
-  const selectedCategory = useMemo(() => {
-    const allCats = [
-      ...(currentSettings?.download?.customCategories || []),
-      ...(currentSettings?.download?.builtinCategories || []),
-    ];
-    return allCats.find((c) => c.id === effectiveCategoryId);
-  }, [currentSettings, effectiveCategoryId]);
-
-  const originalCategoryDir =
-    selectedCategory?.directory || currentSettings?.download?.defaultDirectory || '';
-  const canKeepCategoryPath =
-    Boolean(effectiveCategoryId) &&
-    directory.trim().length > 0 &&
-    directory.trim() !== originalCategoryDir.trim();
+  const canKeepCategoryPath = canKeepCategoryPathOf(draft, currentSettings);
 
   const handleSelectDir = async () => {
     try {
+      const owner = useFileInfoDraftStore.getState().activeItemId;
       const selected = await SelectDirectory();
       if (selected) {
-        dirEditedRef.current = true;
-        setDirectory(selected);
+        patch({ directory: selected, dirEdited: true }, owner);
         if (filename) {
           if (activeItem?.duplicateTask) {
             const conf = await CheckURLFilesExist(url, selected, filename);
-            setSuggestedFilename(conf.suggestedFilename);
-            applyReuseState(conf);
+            patch({ ...reuseFields(conf), suggestedFilename: conf.suggestedFilename }, owner);
           } else {
             const conf = await CheckFileConflict(selected, filename);
-            setFileConflict(conf.exists);
-            setSuggestedFilename(conf.suggestedFilename);
+            patch({ fileConflict: conf.exists, suggestedFilename: conf.suggestedFilename }, owner);
           }
-          await refreshDuplicateDecision(url, selected, filename, { keepSelection: true });
+          await refreshDuplicateDecision(owner, url, selected, filename, { keepSelection: true });
         }
       }
     } catch (err) {
@@ -565,41 +397,55 @@ export function FileInfoView() {
   const handleConfirm = useCallback(
     async (actionOverride?: duplicateModels.Action, e?: SyntheticEvent) => {
       if (e) e.preventDefault();
+      // 提交以草稿的最新值为准，不依赖渲染时捕获的那一份。
+      const current = useFileInfoDraftStore.getState().draft;
+      const {
+        url,
+        filename,
+        directory,
+        maxConn,
+        preDownload,
+        duplicateDecision,
+        selectedAction,
+        fileConflict,
+        overwriteConflict,
+        rememberCategory,
+        keepCategoryPath,
+        existingTaskID,
+      } = current;
+      const categoryId = effectiveCategoryIdOf(current);
+
       if (!url.trim()) {
-        setError('请输入下载链接');
+        patch({ error: '请输入下载链接' });
         return;
       }
       if (!filename.trim()) {
-        setError('请输入文件名');
+        patch({ error: '请输入文件名' });
         return;
       }
       if (!directory.trim()) {
-        setError('请选择保存目录');
+        patch({ error: '请选择保存目录' });
         return;
       }
 
       // 动作只来自后端给出的选项或裁决的默认项；界面不替用户决定，也不自行兜底。
       const action = actionOverride ?? selectedAction;
       if (duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied && !action) {
-        setError('已有相同的下载链接和文件，请确认处理方式');
+        patch({ error: '已有相同的下载链接和文件，请确认处理方式' });
         return;
       }
-
-      const isOverwrite =
-        action === duplicateModels.Action.ActionContinue ||
-        action === duplicateModels.Action.ActionRedownload;
 
       // Disk conflict check: only block if not an explicit overwrite!
-      if (fileConflict && !overwriteConflict && !isOverwrite) {
-        setError('目标目录存在同名文件，请确认是否覆盖或使用建议名称');
+      if (fileConflict && !overwriteConflict && !isOverwriteAction(action)) {
+        patch({ error: '目标目录存在同名文件，请确认是否覆盖或使用建议名称' });
         return;
       }
 
-      if (rememberCategory && effectiveCategoryId) {
+      if (rememberCategory && categoryId) {
         const ext = extractExtension(filename);
         if (ext) {
           try {
-            await AssignExtensionToCategory(ext, effectiveCategoryId);
+            await AssignExtensionToCategory(ext, categoryId);
             await loadSettings();
           } catch (assignErr) {
             console.error('Failed to assign extension to category:', assignErr);
@@ -607,15 +453,22 @@ export function FileInfoView() {
         }
       }
 
-      if (keepCategoryPath && canKeepCategoryPath && effectiveCategoryId) {
+      if (
+        keepCategoryPath &&
+        categoryId &&
+        canKeepCategoryPathOf(current, useSettingsStore.getState().settings)
+      ) {
         try {
-          await SetCategoryDirectory(effectiveCategoryId, directory.trim());
+          await SetCategoryDirectory(categoryId, directory.trim());
           await loadSettings();
         } catch (catDirErr) {
           console.error('Failed to set category directory:', catDirErr);
         }
       }
-      setError(null);
+      patch({ error: null });
+      // 提交期间禁用按钮：提交会让后端把这一项移出队列并推进到下一项，
+      // 连点两次会让第二次带着这一项的落点作用到下一项上。
+      setLoading(true);
       const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 8));
 
       try {
@@ -630,44 +483,28 @@ export function FileInfoView() {
           reuseTaskId: action === duplicateModels.Action.ActionReuse ? existingTaskID : undefined,
         });
         if (activeItem?.id) {
-          delete itemDraftsRef.current[activeItem.id];
+          discardDraft(activeItem.id);
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        setError(`提交失败: ${msg}`);
+        patch({ error: `提交失败: ${msg}` });
       } finally {
         setLoading(false);
       }
     },
-    [
-      activeItem,
-      directory,
-      duplicateDecision,
-      selectedAction,
-      effectiveCategoryId,
-      fileConflict,
-      filename,
-      loadSettings,
-      maxConn,
-      overwriteConflict,
-      preDownload,
-      rememberCategory,
-      url,
-      canKeepCategoryPath,
-      existingTaskID,
-      keepCategoryPath,
-    ],
+    [activeItem, discardDraft, loadSettings, patch, setLoading],
   );
   const handleCancel = useCallback(async () => {
     try {
-      if (activeItem?.id) {
-        delete itemDraftsRef.current[activeItem.id];
+      const itemId = useFileInfoDraftStore.getState().activeItemId;
+      if (itemId) {
+        discardDraft(itemId);
       }
       await CancelCurrentFileInfo();
     } catch (err) {
       console.error('Failed to cancel file info:', err);
     }
-  }, [activeItem]);
+  }, [discardDraft]);
   const handleMinimise = () => {
     void MinimiseFileInfoWindow();
   };
@@ -807,8 +644,7 @@ export function FileInfoView() {
                   value={url}
                   error={Boolean(error && error === '请输入下载链接')}
                   onChange={(e) => {
-                    setUrl(e.target.value);
-                    if (error) setError(null);
+                    patch({ url: e.target.value, error: null });
                     void probeManualURL(e.target.value);
                   }}
                   placeholder="https://..."
@@ -873,7 +709,7 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedAction(duplicateModels.Action.ActionShowCompleted);
+                          patch({ selectedAction: duplicateModels.Action.ActionShowCompleted });
                           if (activeItem.duplicateTask?.id) {
                             void ShowProgressWindow(activeItem.duplicateTask.id);
                           }
@@ -892,11 +728,11 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedAction(overwriteOption);
-                          if (error) setError(null);
-                          if (originalFilenameRef.current) {
-                            setFilename(originalFilenameRef.current);
-                          }
+                          patch({
+                            selectedAction: overwriteOption,
+                            error: null,
+                            ...(originalFilename ? { filename: originalFilename } : {}),
+                          });
                         }}
                         className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
                           isOverwriteSelected
@@ -911,15 +747,14 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedAction(duplicateModels.Action.ActionCopy);
-                          if (error) setError(null);
+                          patch({ selectedAction: duplicateModels.Action.ActionCopy, error: null });
+                          const owner = useFileInfoDraftStore.getState().activeItemId;
                           void (async () => {
-                            const baseName =
-                              originalFilenameRef.current || activeItem?.filename || filename;
+                            const baseName = originalFilename || activeItem?.filename || filename;
                             if (directory && baseName) {
                               const conf = await CheckURLFilesExist(url, directory, baseName);
                               if (conf.suggestedFilename) {
-                                setFilename(conf.suggestedFilename);
+                                patch({ filename: conf.suggestedFilename }, owner);
                               }
                             }
                           })();
@@ -1009,7 +844,7 @@ export function FileInfoView() {
                   <Button
                     size="sm"
                     variant="secondary"
-                    onClick={() => setOverwriteConflict(true)}
+                    onClick={() => patch({ overwriteConflict: true })}
                     className={`h-6 px-2 text-[10px] ${
                       overwriteConflict
                         ? 'border-[var(--accent)] bg-[var(--accent-muted)] font-semibold text-[var(--accent)] shadow-xs'
@@ -1023,9 +858,11 @@ export function FileInfoView() {
                       size="sm"
                       variant="secondary"
                       onClick={() => {
-                        setFilename(suggestedFilename);
-                        setFileConflict(false);
-                        setOverwriteConflict(false);
+                        patch({
+                          filename: suggestedFilename,
+                          fileConflict: false,
+                          overwriteConflict: false,
+                        });
                       }}
                       className="h-6 px-2 text-[10px]"
                     >
@@ -1046,8 +883,7 @@ export function FileInfoView() {
                   placeholder="请输入文件名"
                   onChange={(e) => {
                     const newName = e.target.value;
-                    nameEditedRef.current = true;
-                    setFilename(newName);
+                    patch({ filename: newName, nameEdited: true });
 
                     const seq = ++filenameSeqRef.current;
                     if (newName) {
@@ -1056,9 +892,12 @@ export function FileInfoView() {
                           const dest = await ResolveDestination(newName);
                           if (seq === filenameSeqRef.current) {
                             // 命中分类跟随文件名变化；目录仅在用户未手动改过时跟随。
-                            setAutoCategoryId(dest.categoryId || 'builtin-file');
-                            if (!dirEditedRef.current && dest.directory) {
-                              setDirectory(dest.directory);
+                            patch({ autoCategoryId: dest.categoryId || 'builtin-file' });
+                            if (
+                              !useFileInfoDraftStore.getState().draft.dirEdited &&
+                              dest.directory
+                            ) {
+                              patch({ directory: dest.directory });
                             }
                           }
                         } catch {
@@ -1068,11 +907,14 @@ export function FileInfoView() {
                     }
 
                     if (directory) {
+                      const owner = useFileInfoDraftStore.getState().activeItemId;
                       void (async () => {
                         const conf = await CheckFileConflict(directory, newName);
-                        setFileConflict(conf.exists);
-                        setSuggestedFilename(conf.suggestedFilename);
-                        await refreshDuplicateDecision(url, directory, newName, {
+                        patch(
+                          { fileConflict: conf.exists, suggestedFilename: conf.suggestedFilename },
+                          owner,
+                        );
+                        await refreshDuplicateDecision(owner, url, directory, newName, {
                           keepSelection: true,
                         });
                       })();
@@ -1092,15 +934,15 @@ export function FileInfoView() {
                   onChange={(e) => {
                     const cleaned = e.target.value.replace(/[^\d]/g, '');
                     if (cleaned === '') {
-                      setMaxConn(0);
+                      patch({ maxConn: 0 });
                     } else {
                       const val = parseInt(cleaned, 10);
-                      setMaxConn(Math.min(32, Math.max(1, val)));
+                      patch({ maxConn: Math.min(32, Math.max(1, val)) });
                     }
                   }}
                   onBlur={() => {
                     if (!maxConn || Number(maxConn) < 1) {
-                      setMaxConn(1);
+                      patch({ maxConn: 1 });
                     }
                   }}
                   className="text-center font-mono"
@@ -1125,15 +967,17 @@ export function FileInfoView() {
                 <Input
                   value={directory}
                   onChange={(e) => {
-                    dirEditedRef.current = true;
                     const newDir = e.target.value;
-                    setDirectory(newDir);
+                    patch({ directory: newDir, dirEdited: true });
                     if (filename) {
+                      const owner = useFileInfoDraftStore.getState().activeItemId;
                       void (async () => {
                         const conf = await CheckFileConflict(newDir, filename);
-                        setFileConflict(conf.exists);
-                        setSuggestedFilename(conf.suggestedFilename);
-                        await refreshDuplicateDecision(url, newDir, filename, {
+                        patch(
+                          { fileConflict: conf.exists, suggestedFilename: conf.suggestedFilename },
+                          owner,
+                        );
+                        await refreshDuplicateDecision(owner, url, newDir, filename, {
                           keepSelection: true,
                         });
                       })();
@@ -1160,7 +1004,7 @@ export function FileInfoView() {
                       <Checkbox
                         id="remember-category-checkbox"
                         checked={rememberCategory}
-                        onCheckedChange={(checked) => setRememberCategory(Boolean(checked))}
+                        onCheckedChange={(checked) => patch({ rememberCategory: Boolean(checked) })}
                         disabled={!currentExt}
                       />
                       <label
@@ -1179,7 +1023,7 @@ export function FileInfoView() {
                       <Checkbox
                         id="keep-category-path-checkbox"
                         checked={keepCategoryPath}
-                        onCheckedChange={(checked) => setKeepCategoryPath(Boolean(checked))}
+                        onCheckedChange={(checked) => patch({ keepCategoryPath: Boolean(checked) })}
                         disabled={!canKeepCategoryPath}
                       />
                       <label
