@@ -4,6 +4,8 @@ package task
 import (
 	"context"
 	"time"
+
+	"sheep-get/internal/credentials"
 )
 
 // Status represents the download task status.
@@ -64,7 +66,8 @@ type Task struct {
 
 	// RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
 	// links whose authorization has expired; applied to every probe and transfer request.
-	RequestHeaders map[string]string `json:"requestHeaders,omitempty"`
+	// Encapsulated in RequestCredentials to ensure sensitive fields are masked by default on serialization.
+	RequestHeaders credentials.RequestCredentials `json:"requestHeaders,omitempty"`
 }
 
 // TaskStore defines the storage interface for persisting and querying tasks.

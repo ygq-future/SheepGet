@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"sheep-get/internal/credentials"
 	"sheep-get/internal/task"
 )
 
@@ -213,12 +214,11 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 	}
 }
 
-// Probe inspects URL metadata without downloading the body. headers carries the request
+// Probe inspects URL metadata without downloading the body. creds carries the request
 // context of the task (Referer/Cookie/Authorization) so expired links can be re-checked.
-func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, headers map[string]string) (*HTTPProbeInfo, error) {
+func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credentials.RequestCredentials) (*HTTPProbeInfo, error) {
 	var resp *http.Response
 	var err error
-
 	for attempt := 0; attempt < 3; attempt++ {
 		req, rErr := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if rErr != nil {
@@ -227,7 +227,7 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, headers map[s
 		req.Header.Set("Range", "bytes=0-0")
 		req.Header.Set("User-Agent", UserAgentChrome)
 		req.Header.Set("Accept", "*/*")
-		applyRequestHeaders(req, headers)
+		applyRequestHeaders(req, creds)
 		req.Close = true
 
 		resp, err = d.client.Do(req)
@@ -247,7 +247,7 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, headers map[s
 		if hErr == nil {
 			headReq.Header.Set("User-Agent", UserAgentChrome)
 			headReq.Header.Set("Accept", "*/*")
-			applyRequestHeaders(headReq, headers)
+			applyRequestHeaders(headReq, creds)
 			headReq.Close = true
 			resp, err = d.client.Do(headReq)
 		}
@@ -311,15 +311,12 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, headers map[s
 	return info, nil
 }
 
-// applyRequestHeaders copies task request context onto an outgoing request. Range, User-Agent
-// and Accept are set by the caller; any header the task carries wins on collision so an updated
-// link can override them.
-func applyRequestHeaders(req *http.Request, headers map[string]string) {
-	for name, value := range headers {
-		req.Header.Set(name, value)
+// applyRequestHeaders copies task request context onto an outgoing request.
+func applyRequestHeaders(req *http.Request, creds credentials.RequestCredentials) {
+	if creds != nil {
+		creds.ApplyToHTTPRequest(req)
 	}
 }
-
 func parseContentDisposition(cd string) (string, map[string]string, error) {
 	parts := strings.Split(cd, ";")
 	disposition := strings.TrimSpace(parts[0])

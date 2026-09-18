@@ -14,6 +14,7 @@ import (
 
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
+	"sheep-get/internal/server"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 )
@@ -329,7 +330,7 @@ func TestApp_ExpiredLinkRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateTaskURL failed: %v", err)
 	}
-	if updated.RequestHeaders["Referer"] != referer {
+	if updated.RequestHeaders == nil || updated.RequestHeaders.RawHeaders()["Referer"] != referer {
 		t.Errorf("expected the request info to be stored on the task, got %v", updated.RequestHeaders)
 	}
 
@@ -1031,4 +1032,56 @@ func TestApp_DeleteTask_RemovesDiskFilesOnlyWhenRequested(t *testing.T) {
 			t.Error("task record should be removed")
 		}
 	})
+}
+
+func TestApp_HandleHandover(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	ctx := context.Background()
+
+	st := app.GetSettings()
+	st.Takeover.ExcludedSites = []string{"excluded.com"}
+	_, err := app.UpdateSettings(st)
+	if err != nil {
+		t.Fatalf("failed to update settings: %v", err)
+	}
+
+	// 1. Excluded site handover -> rejected
+	reqExcluded := &server.HandoverRequest{
+		SourceType: "browser_takeover",
+		URL:        "https://cdn.example.com/archive.zip",
+		PageContext: server.PageContext{
+			PageURL: "https://sub.excluded.com/download",
+		},
+	}
+	resp, err := app.handleHandover(ctx, reqExcluded)
+	if err != nil {
+		t.Fatalf("handleHandover failed: %v", err)
+	}
+	if resp.Accepted || resp.Reason != "site_excluded" {
+		t.Errorf("expected site_excluded rejection, got %+v", resp)
+	}
+
+	// 2. Normal site handover -> accepted and enqueued
+	reqNormal := &server.HandoverRequest{
+		SourceType:         "browser_takeover",
+		URL:                "https://normal.com/archive.zip",
+		FilenameSuggestion: "myarchive.zip",
+		PageContext: server.PageContext{
+			PageURL:  "https://normal.com/download.html",
+			Referrer: "https://normal.com/index.html",
+		},
+		Credentials: &server.CredentialsPayload{
+			Cookies: "session=xyz123",
+			Headers: map[string]string{
+				"User-Agent": "TestAgent",
+			},
+		},
+	}
+	resp, err = app.handleHandover(ctx, reqNormal)
+	if err != nil {
+		t.Fatalf("handleHandover failed: %v", err)
+	}
+	if !resp.Accepted || resp.QueueItemID == "" {
+		t.Errorf("expected accepted handover, got %+v", resp)
+	}
 }

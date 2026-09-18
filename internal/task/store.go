@@ -10,7 +10,13 @@ import (
 	"sync"
 
 	"sheep-get/internal/atomicfile"
+	"sheep-get/internal/credentials"
 )
+
+type persistentTask struct {
+	Task
+	RawHeaders map[string]string `json:"rawHeaders,omitempty"`
+}
 
 var (
 	ErrTaskNotFound = errors.New("task not found")
@@ -51,29 +57,35 @@ func (s *FileTaskStore) load() error {
 	if len(data) == 0 {
 		return nil
 	}
-
-	var list []*Task
+	var list []*persistentTask
 	if err := json.Unmarshal(data, &list); err != nil {
 		return fmt.Errorf("failed to unmarshal task store: %w", err)
 	}
 
-	for _, t := range list {
+	for _, pt := range list {
+		t := pt.Task
+		if len(pt.RawHeaders) > 0 {
+			t.RequestHeaders = credentials.New(pt.RawHeaders)
+		}
 		// As per spec A03 and A19: restart retains records, all wait for manual continuation
 		if t.Status == StatusDownloading || t.Status == StatusQueued {
 			t.Status = StatusPaused
 		}
 		t.Speed = 0
-		s.tasks[t.ID] = t
+		s.tasks[t.ID] = &t
 	}
 	return nil
 }
 
 func (s *FileTaskStore) persistLocked() error {
-	list := make([]*Task, 0, len(s.tasks))
+	list := make([]*persistentTask, 0, len(s.tasks))
 	for _, t := range s.tasks {
-		list = append(list, t)
+		pt := &persistentTask{Task: *t}
+		if t.RequestHeaders != nil {
+			pt.RawHeaders = t.RequestHeaders.RawHeaders()
+		}
+		list = append(list, pt)
 	}
-
 	data, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal tasks: %w", err)
@@ -97,6 +109,9 @@ func (s *FileTaskStore) Save(_ context.Context, t *Task) error {
 		cloned.Chunks = make([]Chunk, len(t.Chunks))
 		copy(cloned.Chunks, t.Chunks)
 	}
+	if t.RequestHeaders != nil {
+		cloned.RequestHeaders = t.RequestHeaders.Clone()
+	}
 	s.tasks[t.ID] = &cloned
 	return s.persistLocked()
 }
@@ -110,6 +125,9 @@ func (s *FileTaskStore) Get(_ context.Context, id string) (*Task, error) {
 		return nil, ErrTaskNotFound
 	}
 	cloned := *t
+	if t.RequestHeaders != nil {
+		cloned.RequestHeaders = t.RequestHeaders.Clone()
+	}
 	return &cloned, nil
 }
 
@@ -120,6 +138,9 @@ func (s *FileTaskStore) List(_ context.Context) ([]*Task, error) {
 	list := make([]*Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
 		cloned := *t
+		if t.RequestHeaders != nil {
+			cloned.RequestHeaders = t.RequestHeaders.Clone()
+		}
 		list = append(list, &cloned)
 	}
 

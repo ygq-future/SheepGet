@@ -104,6 +104,7 @@ const stages = {
       'README.md',
       'AGENTS.md',
       'docs/agents/quality.md',
+      'extension/**/*.{ts,tsx,json,html}',
     ]);
     node('node_modules/prettier/bin/prettier.cjs', ['--check', '.'], {
       cwd: join(root, 'frontend'),
@@ -115,6 +116,10 @@ const stages = {
     run('bun', ['install', '--frozen-lockfile', '--dry-run', '--ignore-scripts'], { quiet: true });
     run('bun', ['install', '--frozen-lockfile', '--dry-run', '--ignore-scripts'], {
       cwd: join(root, 'frontend'),
+      quiet: true,
+    });
+    run('bun', ['install', '--frozen-lockfile', '--dry-run', '--ignore-scripts'], {
+      cwd: join(root, 'extension'),
       quiet: true,
     });
   },
@@ -132,9 +137,15 @@ const stages = {
     node('node_modules/eslint/bin/eslint.js', ['.', '--max-warnings', '0'], {
       cwd: join(root, 'frontend'),
     });
+    run('bun', ['run', 'compile'], {
+      cwd: join(root, 'extension'),
+    });
   },
   frontendBuild() {
     node('node_modules/vite/bin/vite.js', ['build'], { cwd: join(root, 'frontend') });
+  },
+  extensionBuild() {
+    run('bun', ['run', 'build'], { cwd: join(root, 'extension') });
   },
   goAnalysis() {
     run(exe('golangci-lint'), ['config', 'verify']);

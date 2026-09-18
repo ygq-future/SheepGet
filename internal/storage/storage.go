@@ -42,6 +42,11 @@ func (s *Storage) LogsDir() string {
 	return filepath.Join(s.DataDir, "logs")
 }
 
+// SessionFile returns the path to session.json (loopback server metadata for extension and host)
+func (s *Storage) SessionFile() string {
+	return filepath.Join(s.DataDir, "session.json")
+}
+
 // ResolveDataDir checks whether portable mode applies according to ADR-0003,
 // and returns the initialized Storage struct.
 // execDir: the directory containing the executable (or passed explicitly for testing).

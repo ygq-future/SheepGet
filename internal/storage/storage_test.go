@@ -78,4 +78,7 @@ func TestResolveDataDir_InstalledMode(t *testing.T) {
 	if res.LogsDir() != filepath.Join(res.DataDir, "logs") {
 		t.Errorf("unexpected LogsDir path: %s", res.LogsDir())
 	}
+	if res.SessionFile() != filepath.Join(res.DataDir, "session.json") {
+		t.Errorf("unexpected SessionFile path: %s", res.SessionFile())
+	}
 }

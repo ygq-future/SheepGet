@@ -817,7 +817,7 @@ func TestManager_UpdateTaskURLResumesWithRequestHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateTaskURL failed: %v", err)
 	}
-	if updated.RequestHeaders["Referer"] != referer {
+	if updated.RequestHeaders == nil || updated.RequestHeaders.RawHeaders()["Referer"] != referer {
 		t.Errorf("expected request headers to be stored on the task, got %v", updated.RequestHeaders)
 	}
 	if updated.ErrorMsg != "" {

@@ -15,6 +15,7 @@ import (
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	appevents "sheep-get/internal/events"
+	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
@@ -47,6 +48,7 @@ type App struct {
 	windowQueue        *window.QueueController
 	progressPositioned bool
 	clipboardWatcher   *clipboard.Watcher
+	loopbackServer     *server.Server
 }
 
 type wailsWindowView struct {
@@ -137,7 +139,9 @@ func NewApp() *App {
 		name:   winNameFileInfo,
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
-	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
+	adapter := &loopbackServerAdapter{app: app}
+	loopbackSrv := server.NewServer(storeDir.SessionFile(), adapter, adapter)
+	app.loopbackServer = loopbackSrv
 	return app
 }
 
@@ -175,6 +179,11 @@ func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.manager.AddListener(a)
+	if a.loopbackServer != nil {
+		if err := a.loopbackServer.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to start loopback server: %v\n", err)
+		}
+	}
 }
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
@@ -184,6 +193,9 @@ func (a *App) Shutdown() {
 	}
 	if a.manager != nil {
 		a.manager.Close()
+	}
+	if a.loopbackServer != nil {
+		_ = a.loopbackServer.Stop()
 	}
 }
 
@@ -211,6 +223,9 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		if err := a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr); err != nil {
 			return err
 		}
+	}
+	if a.loopbackServer != nil && s != nil {
+		a.loopbackServer.BroadcastTakeoverConfig(s.Takeover)
 	}
 	if a.clipboardWatcher != nil {
 		a.clipboardWatcher.OnSettingsUpdated(s)
@@ -661,6 +676,66 @@ func (a *App) TriggerDownload(req window.DownloadRequest) (*window.DownloadRespo
 		return nil, fmt.Errorf("window queue not initialized")
 	}
 	return a.windowQueue.Enqueue(a.ctx, req)
+}
+
+type loopbackServerAdapter struct {
+	app *App
+}
+
+func (a *loopbackServerAdapter) HandleHandover(ctx context.Context, req *server.HandoverRequest) (*server.HandoverResponse, error) {
+	return a.app.handleHandover(ctx, req)
+}
+
+func (a *loopbackServerAdapter) GetTakeoverConfig() config.TakeoverConfig {
+	return a.app.getTakeoverConfig()
+}
+
+func (a *App) getTakeoverConfig() config.TakeoverConfig {
+	if a.settings != nil {
+		return a.settings.Get().Takeover
+	}
+	return config.TakeoverConfig{}
+}
+
+func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*server.HandoverResponse, error) {
+	if a.windowQueue == nil {
+		return &server.HandoverResponse{Accepted: false, Reason: "window queue not initialized"}, nil
+	}
+
+	st := a.GetSettings()
+	if req.SourceType == "browser_takeover" && req.PageContext.PageURL != "" {
+		if config.SiteMatchesExcluded(req.PageContext.PageURL, st.Takeover.ExcludedSites) {
+			return &server.HandoverResponse{Accepted: false, Reason: "site_excluded"}, nil
+		}
+	}
+
+	headers := make(map[string]string)
+	if req.Credentials != nil {
+		for k, v := range req.Credentials.Headers {
+			headers[k] = v
+		}
+		if req.Credentials.Cookies != "" && headers["Cookie"] == "" {
+			headers["Cookie"] = req.Credentials.Cookies
+		}
+	}
+	if req.PageContext.Referrer != "" && headers["Referer"] == "" {
+		headers["Referer"] = req.PageContext.Referrer
+	}
+
+	dlReq := window.DownloadRequest{
+		URL:      req.URL,
+		Filename: req.FilenameSuggestion,
+		Headers:  headers,
+	}
+
+	resp, err := a.TriggerDownload(dlReq)
+	if err != nil {
+		return &server.HandoverResponse{Accepted: false, Reason: err.Error()}, nil
+	}
+	return &server.HandoverResponse{
+		Accepted:    resp.Handled,
+		QueueItemID: resp.RequestID,
+	}, nil
 }
 
 // OpenNewDownload opens the FileInfo window with an empty/manual request.

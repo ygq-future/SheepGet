@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"sheep-get/internal/config"
+	"sheep-get/internal/credentials"
 	"sheep-get/internal/task"
 	"strconv"
 	"strings"
@@ -350,7 +351,7 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 			LastModified:   t.LastModified,
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
-			RequestHeaders: t.RequestHeaders,
+			RequestHeaders: t.RequestHeaders.Clone(),
 		}
 		if err := m.store.Save(ctx, newTask); err != nil {
 			return nil, err
@@ -577,7 +578,8 @@ func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename st
 
 // StartPreDownloadWithHeaders creates a pre-download task with optional request headers.
 func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
-	info, err := m.downloader.Probe(ctx, urlStr, headers)
+	creds := credentials.New(headers)
+	info, err := m.downloader.Probe(ctx, urlStr, creds)
 	if err != nil {
 		// As per A03: a probe failure on a confirmed manual download still keeps a visible task.
 		t := &task.Task{
@@ -591,7 +593,7 @@ func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, 
 			FailurePhase:   task.FailurePhaseTransfer,
 			ErrorMsg:       err.Error(),
 			MaxConcurrency: maxConn,
-			RequestHeaders: headers,
+			RequestHeaders: creds,
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
 		}
@@ -625,7 +627,7 @@ func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, 
 		Resumable:      info.Resumable,
 		ETag:           info.ETag,
 		LastModified:   info.LastModified,
-		RequestHeaders: headers,
+		RequestHeaders: creds,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -751,7 +753,7 @@ func (m *Manager) CheckURLConsistency(ctx context.Context, taskID, newURL string
 
 	probeHeaders := t.RequestHeaders
 	if headers != nil {
-		probeHeaders = headers
+		probeHeaders = credentials.New(headers)
 	}
 
 	info, err := m.downloader.Probe(ctx, newURL, probeHeaders)
@@ -825,7 +827,7 @@ func (m *Manager) UpdateTaskURL(ctx context.Context, taskID, newURL string, head
 
 	t.URL = newURL
 	if headers != nil {
-		t.RequestHeaders = headers
+		t.RequestHeaders = credentials.New(headers)
 	}
 	// Adopt the refreshed resource's metadata so size, resumability and validators stop describing
 	// the dead link. A failed probe is not fatal here: the caller already verified the link, and the
@@ -861,7 +863,7 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 	m.RemoveTaskFiles(t)
 
 	if headers != nil {
-		t.RequestHeaders = headers
+		t.RequestHeaders = credentials.New(headers)
 	}
 	info, _ := m.downloader.Probe(ctx, newURL, t.RequestHeaders)
 	t.URL = newURL
@@ -898,7 +900,8 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 			return nil, fmt.Errorf("该下载链接已存在于任务列表中（状态：%s），请勿重复添加", ext.Status)
 		}
 	}
-	info, err := m.downloader.Probe(ctx, urlStr, headers)
+	creds := credentials.New(headers)
+	info, err := m.downloader.Probe(ctx, urlStr, creds)
 	if err != nil {
 		// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
 		t := &task.Task{
@@ -912,7 +915,7 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 			FailurePhase:   task.FailurePhaseTransfer,
 			ErrorMsg:       err.Error(),
 			MaxConcurrency: maxConn,
-			RequestHeaders: headers,
+			RequestHeaders: creds,
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
 		}
@@ -946,7 +949,7 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 		Resumable:      info.Resumable,
 		ETag:           info.ETag,
 		LastModified:   info.LastModified,
-		RequestHeaders: headers,
+		RequestHeaders: creds,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}

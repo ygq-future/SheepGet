@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as credentials$0 from "../credentials/models.js";
+
 /**
  * Chunk represents a segment of a file being downloaded.
  */
@@ -116,8 +120,9 @@ export class Task {
     /**
      * RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
      * links whose authorization has expired; applied to every probe and transfer request.
+     * Encapsulated in RequestCredentials to ensure sensitive fields are masked by default on serialization.
      */
-    "requestHeaders"?: { [_ in string]?: string };
+    "requestHeaders"?: credentials$0.RequestCredentials;
 
     /** Creates a new Task instance. */
     constructor($$source: Partial<Task> = {}) {
@@ -166,13 +171,9 @@ export class Task {
      */
     static createFrom($$source: any = {}): Task {
         const $$createField17_0 = $$createType1;
-        const $$createField18_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
             $$parsedSource["chunks"] = $$createField17_0($$parsedSource["chunks"]);
-        }
-        if ("requestHeaders" in $$parsedSource) {
-            $$parsedSource["requestHeaders"] = $$createField18_0($$parsedSource["requestHeaders"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -181,4 +182,3 @@ export class Task {
 // Private type creation functions
 const $$createType0 = Chunk.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Map($Create.Any, $Create.Any);

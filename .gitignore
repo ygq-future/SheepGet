@@ -29,6 +29,11 @@ bun.isolate*
 # Wails
 frontend/dist/
 
+# Extension
+dist-extension/
+.wxt/
+extension/.wxt/
+
 # Operating System Files
 .DS_Store
 Thumbs.db

@@ -45,7 +45,7 @@ export function UpdateLinkModal({
 }: UpdateLinkModalProps) {
   const [newUrl, setNewUrl] = useState('');
   const [headerText, setHeaderText] = useState(() =>
-    formatHeaderLines(currentTask?.requestHeaders),
+    formatHeaderLines(currentTask?.requestHeaders as Record<string, string> | undefined),
   );
   const [checking, setChecking] = useState(false);
   const [updating, setUpdating] = useState(false);

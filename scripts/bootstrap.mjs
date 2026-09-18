@@ -10,6 +10,7 @@ try {
   if (run('bun', ['--version']).trim() !== tools.bun) throw new Error(`Bun ${tools.bun} required`);
   run('bun', ['install', '--frozen-lockfile']);
   run('bun', ['install', '--frozen-lockfile'], { cwd: resolve('frontend') });
+  run('bun', ['install', '--frozen-lockfile'], { cwd: resolve('extension') });
   const env = { ...process.env, GOBIN: resolve('.tools') };
   run(
     'go',

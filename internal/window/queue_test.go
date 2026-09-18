@@ -515,7 +515,7 @@ func TestQueueController_RequestHeaders_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit failed: %v", err)
 	}
-	if task.RequestHeaders["Authorization"] != "Bearer token123" {
+	if task.RequestHeaders == nil || task.RequestHeaders.RawHeaders()["Authorization"] != "Bearer token123" {
 		t.Errorf("expected task.RequestHeaders to carry Authorization header, got %v", task.RequestHeaders)
 	}
 }
