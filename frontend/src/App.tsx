@@ -558,7 +558,7 @@ export function App() {
               title="打开下载进度窗口"
             >
               <Activity className="h-3.5 w-3.5 text-[var(--accent)]" />
-              <span className="hidden sm:inline">进度窗口</span>
+              <span className="hidden sm:inline">下载进度</span>
             </button>
 
             {/* Batch Delete Button */}

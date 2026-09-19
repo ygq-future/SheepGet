@@ -16,8 +16,11 @@ const (
 	progressWindowHeight   = 160
 	progressWindowMinWidth = 560
 	progressWindowMaxWidth = 560
-	progressWindowMinH     = 160
-	progressWindowMaxH     = 640
+	// progressWindowMinH 不是内容下限，而是窗口自身的防御值：窗口高度由内容决定，
+	// 空面板根本不会显示，任何一个真实内容高度都远高于它，这里只用于挡住非法值
+	// （内容还没测量出来）以及用户手动把窗口拖到不可用的尺寸。
+	progressWindowMinH = 96
+	progressWindowMaxH = 640
 	// progressWindowEdgeGap 是进度窗口停靠屏幕右下角时离边缘的间距。
 	progressWindowEdgeGap = 32
 	// progressWindowBottomOffset 是进度窗口停靠时底部预留的高度，让窗口从默认高度

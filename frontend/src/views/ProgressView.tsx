@@ -34,6 +34,7 @@ import {
 import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed } from '../lib/format';
+import { progressWindowHeightFor } from '../lib/windowSize';
 import {
   calculateChunkProgress,
   calculateChunkDividers,
@@ -110,7 +111,7 @@ export function ProgressView() {
   const autoRemoveCompletedOnOpen = settings?.download?.autoRemoveCompletedOnOpen ?? false;
 
   // Dynamic window height observation
-  // Measures contentRef's intrinsic content height and bounds window between 160px and 640px
+  // 窗口高度跟随内容自然高度，只受上限约束：超过上限后由内容区滚动，不再继续变高。
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
@@ -121,8 +122,7 @@ export function ProgressView() {
         const contentHeight = Math.ceil(
           entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height,
         );
-        // Header (32px) + main padding (24px) + borders (2px) = 58px chrome overhead
-        const targetHeight = Math.min(640, Math.max(160, contentHeight + 58));
+        const targetHeight = progressWindowHeightFor(contentHeight);
         if (Math.abs(targetHeight - lastHeight) >= 2) {
           lastHeight = targetHeight;
           void SetProgressWindowHeight(targetHeight);

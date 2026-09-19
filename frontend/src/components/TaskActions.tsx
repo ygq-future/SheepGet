@@ -68,10 +68,13 @@ export function TaskActions({
 
   const isCompleted = t.status === task.Status.StatusCompleted;
 
+  // 双击卡片本身会打开进度窗口（TaskItem 的 onDoubleClick），动作条浮在卡片上方，
+  // 双击它的按钮不该被当成双击卡片，因此点击与双击都要拦住冒泡。
   return (
     <div
       className={`flex items-center gap-0.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)]/95 px-1 py-0.5 shadow-md backdrop-blur-md transition-all duration-150 ${className}`}
       onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
     >
       {/* Copy link button */}
       <button

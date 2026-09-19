@@ -59,7 +59,7 @@ type wailsWindowView struct {
 func (w *wailsWindowView) Show() {
 	if app := w.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(w.name); ok {
-			win.Show()
+			showAndRaise(win)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func (w *wailsWindowView) Hide() {
 func (w *wailsWindowView) Focus() {
 	if app := w.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(w.name); ok {
-			win.Focus()
+			raiseWindow(win)
 		}
 	}
 }
@@ -770,7 +770,7 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 			if a.GetFileInfoQueueLength() > 0 {
 				if app := a.getApp(); app != nil {
 					if fileWin, ok := app.Window.GetByName(winNameFileInfo); ok {
-						fileWin.Focus()
+						raiseWindow(fileWin)
 					}
 				}
 			}
@@ -815,8 +815,7 @@ func (a *App) SwitchFileInfoActive(index int) (*window.FileInfoItem, error) {
 func (a *App) ShowMainWindow() {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(winNameMain); ok {
-			win.Show()
-			win.Focus()
+			showAndRaise(win)
 		}
 	}
 }
@@ -845,7 +844,9 @@ func (a *App) SetFileInfoWindowHeight(height int) {
 	}
 }
 
-// SetProgressWindowHeight dynamically adjusts the progress window's height between minHeight and maxHeight.
+// SetProgressWindowHeight adjusts the progress window's height to wrap its content.
+// 高度由内容决定：只有一个任务卡片时窗口就收成一张卡片的高度，不套用内容意义上的下限，
+// 只有超过上限时才封顶（超出部分由窗口内部滚动）。
 func (a *App) SetProgressWindowHeight(height int) {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(winNameProgress); ok {
@@ -872,8 +873,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 				}
 				a.progressPositioned = true
 			}
-			win.Show()
-			win.Focus()
+			showAndRaise(win)
 			if taskID != "" {
 				app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
 				app.Event.Emit(appevents.ProgressFocusTask, taskID)
@@ -897,7 +897,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 			event.Cancel()
 			progWin.Hide()
 		})
-		progWin.Focus()
+		showAndRaise(progWin)
 		if taskID != "" {
 			app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
 			app.Event.Emit(appevents.ProgressFocusTask, taskID)

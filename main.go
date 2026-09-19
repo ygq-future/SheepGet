@@ -119,18 +119,15 @@ func main() {
 		systemTray.SetIcon(appIcon)
 	}
 	systemTray.OnClick(func() {
-		mainWindow.Show()
-		mainWindow.Focus()
+		showAndRaise(mainWindow)
 	})
 
 	trayMenu := wailsApp.NewMenu()
 	trayMenu.Add("显示主窗口").OnClick(func(_ *application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
+		showAndRaise(mainWindow)
 	})
 	trayMenu.Add("偏好设置").OnClick(func(_ *application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
+		showAndRaise(mainWindow)
 		wailsApp.Event.Emit(appevents.AppOpenSettings)
 	})
 	trayMenu.Add("新建下载").OnClick(func(_ *application.Context) {

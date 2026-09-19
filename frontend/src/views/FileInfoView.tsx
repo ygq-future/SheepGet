@@ -207,6 +207,14 @@ export function FileInfoView() {
         if (item.suggestedFilename) {
           patch({ suggestedFilename: item.suggestedFilename });
         }
+        // 探测补齐真实文件名后，后端会按新名字重算命中分类与落点。这里与手动改链接的处理
+        // 保持一致：命中分类只取决于文件名，目录只在用户没自己改过时才跟随。
+        if (item.categoryId) {
+          patch({ autoCategoryId: item.categoryId });
+        }
+        if (item.directory && !current.dirEdited) {
+          patch({ directory: item.directory });
+        }
         // 后端探测完毕后会带着重新裁决的结果回来，界面照它更新选项与选中项。
         if (item.duplicateDecision) {
           applyDecision(item.duplicateDecision, { keepSelection: true });
@@ -345,7 +353,7 @@ export function FileInfoView() {
       opts.push({ value: c.id, label: `${c.name} (自定义)` });
     }
     for (const c of currentSettings?.download?.builtinCategories || []) {
-      opts.push({ value: c.id, label: `${c.name} (内置)` });
+      opts.push({ value: c.id, label: c.name });
     }
     return opts;
   }, [currentSettings?.download?.customCategories, currentSettings?.download?.builtinCategories]);
@@ -496,16 +504,19 @@ export function FileInfoView() {
     [activeItem, discardDraft, loadSettings, patch, setLoading],
   );
   const handleCancel = useCallback(async () => {
+    // 先记下这一项的 ID：取消成功后队列会推进到下一项，那时再读就取到别人了。
+    const itemId = useFileInfoDraftStore.getState().activeItemId;
     try {
-      const itemId = useFileInfoDraftStore.getState().activeItemId;
+      await CancelCurrentFileInfo();
       if (itemId) {
         discardDraft(itemId);
       }
-      await CancelCurrentFileInfo();
     } catch (err) {
-      console.error('Failed to cancel file info:', err);
+      // 后端拒绝（例如这一次提交的引擎调用还在路上）：静默吞掉会让用户以为按了没反应，
+      // 草稿也一并丢掉。把原因显示出来，草稿留着。
+      patch({ error: err instanceof Error ? err.message : String(err) });
     }
-  }, [discardDraft]);
+  }, [discardDraft, patch]);
   const handleMinimise = () => {
     void MinimiseFileInfoWindow();
   };

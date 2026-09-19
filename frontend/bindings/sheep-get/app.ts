@@ -345,7 +345,9 @@ export function SetLaunchAtStartup(enabled: boolean): $CancellablePromise<void> 
 }
 
 /**
- * SetProgressWindowHeight dynamically adjusts the progress window's height between minHeight and maxHeight.
+ * SetProgressWindowHeight adjusts the progress window's height to wrap its content.
+ * 高度由内容决定：只有一个任务卡片时窗口就收成一张卡片的高度，不套用内容意义上的下限，
+ * 只有超过上限时才封顶（超出部分由窗口内部滚动）。
  */
 export function SetProgressWindowHeight(height: number): $CancellablePromise<void> {
     return $Call.ByID(2403510243, height);

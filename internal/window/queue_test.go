@@ -67,6 +67,20 @@ func (s *testSettingsProvider) Get() config.Settings {
 
 func setupTestQueue(t *testing.T, policy config.DuplicateURLPolicy) (*QueueController, *mockWindowView, *engine.Manager, task.TaskStore, string) {
 	t.Helper()
+	winView := &mockWindowView{}
+	qc, mgr, store, tmpDir := setupQueueWithView(t, policy, winView, inlineOps)
+	return qc, winView, mgr, store, tmpDir
+}
+
+// inlineOps 同步执行窗口副作用。只用于逐次断言窗口调用的测试：生产执行器是异步的
+// （NewQueueController 用 newAsyncOps），把调用时机交给另一条队列——异步执行下的次序与
+// 不阻塞调用方的约定由 queue_dispatch_test.go 覆盖。
+func inlineOps(task func()) { task() }
+
+// setupQueueWithView 用给定的窗口视图与执行器装配队列。视图与执行器都由调用方决定，这样同一个
+// 装配过程既能跑逐次断言调用的 mockWindowView，也能跑会阻塞的视图（见 queue_dispatch_test.go）。
+func setupQueueWithView(t *testing.T, policy config.DuplicateURLPolicy, winView WindowView, runOps windowOps) (*QueueController, *engine.Manager, task.TaskStore, string) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
 	if err != nil {
@@ -81,10 +95,9 @@ func setupTestQueue(t *testing.T, policy config.DuplicateURLPolicy) (*QueueContr
 	settings.Download.DefaultConnectionsPerTask = 4
 	settingsProvider := &testSettingsProvider{settings: settings}
 
-	winView := &mockWindowView{}
-	qc := NewQueueController(mgr, settingsProvider, winView)
+	qc := newQueueController(mgr, settingsProvider, winView, runOps)
 
-	return qc, winView, mgr, store, tmpDir
+	return qc, mgr, store, tmpDir
 }
 
 func TestQueueController_SingleRequestConfirmAndCancel(t *testing.T) {

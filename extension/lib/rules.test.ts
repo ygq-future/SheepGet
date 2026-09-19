@@ -111,4 +111,30 @@ describe('rules', () => {
       { takeover: true, reason: 'force_shortcut_active' },
     );
   });
+
+  it('判定必须用响应头里的真实文件名：GitHub 资产链接的路径里没有后缀', () => {
+    const config: TakeoverConfigSync = {
+      version: 1,
+      extensions: ['exe', 'msi'],
+      excludedSites: [],
+      pauseShortcut: 'Delete',
+      forceShortcut: 'Insert',
+    };
+    // 真实形态：路径末段是 GUID，真名只在 Content-Disposition 里，
+    // Chrome 据此把文件存成 mihomo-multi_1.1.2_x64_en-US.msi。
+    const assetURL =
+      'https://github.com/ygq-future/mihomo-multi/releases/download/v1.1.2/12e1d8af-2024-4832-b73c-e67dc45d6a11';
+
+    // 只有 URL 时判定不出后缀，这次下载会被放回浏览器（用户看到的现象）。
+    assert.deepEqual(decideTakeover(assetURL, undefined, 'https://github.com', config, 0), {
+      takeover: false,
+      reason: 'extension_not_matched',
+    });
+
+    // 带上响应头里的真名就能命中。
+    assert.deepEqual(
+      decideTakeover(assetURL, 'mihomo-multi_1.1.2_x64_en-US.msi', 'https://github.com', config, 0),
+      { takeover: true, reason: 'extension_matched' },
+    );
+  });
 });

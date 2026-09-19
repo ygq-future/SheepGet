@@ -5,6 +5,12 @@ import type {
   TakeoverConfigSync,
 } from './types';
 
+/** 事件长连接句柄：既能主动断开，也能随时问「现在还连着吗」。 */
+export interface DesktopEventLink {
+  close(): void;
+  isOpen(): boolean;
+}
+
 export class DesktopClient {
   private session: SessionMetadata;
 
@@ -75,6 +81,12 @@ export class DesktopClient {
     }
   }
 
+  /**
+   * 交接一次下载。失败时除了原因文案，还带上失败种类：调用方据此决定
+   * 「重新发现会话后重试」还是「把下载还给浏览器」（见 lib/handover.ts）。
+   * 桌面端重启会换端口，把两者混成同一个 false 会让一次本可自愈的失败
+   * 变成「点了下载什么都没发生」。
+   */
   async sendHandover(req: HandoverRequest, timeoutMs = 2500): Promise<HandoverResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -88,9 +100,17 @@ export class DesktopClient {
       });
       clearTimeout(timer);
 
+      if (res.status === 401 || res.status === 403) {
+        return {
+          accepted: false,
+          failure: 'unauthorized',
+          reason: `Session token rejected (HTTP ${res.status})`,
+        };
+      }
       if (!res.ok) {
         return {
           accepted: false,
+          failure: 'rejected',
           reason: `Server returned HTTP ${res.status}`,
         };
       }
@@ -100,16 +120,37 @@ export class DesktopClient {
       const isTimeout = err instanceof DOMException && err.name === 'AbortError';
       return {
         accepted: false,
-        reason: isTimeout ? 'Request timed out after 2.5s' : String(err),
+        failure: isTimeout ? 'no_response' : 'not_delivered',
+        reason: isTimeout
+          ? `Request timed out after ${timeoutMs}ms`
+          : `Cannot reach desktop: ${String(err)}`,
       };
     }
   }
 
-  connectEvents(onConfigUpdated: (cfg: TakeoverConfigSync) => void): () => void {
+  /**
+   * 订阅桌面端的事件广播。
+   * `onLinkStateChange` 报告长连接的打开与关闭：桌面端进程一退出这个连接就会断，
+   * 它是「桌面端已经没了」最快的一条信号，比等到下一次交接失败再发现及时得多。
+   * 只有真正打开过的连接才会上报关闭——连都没连上时 HTTP 侧可能仍然可用，
+   * 那不该被当成链路掉线，否则界面状态会随每次保活探测来回跳。
+   */
+  connectEvents(
+    onConfigUpdated: (cfg: TakeoverConfigSync) => void,
+    onLinkStateChange?: (open: boolean) => void,
+  ): DesktopEventLink {
     const wsUrl = `ws://127.0.0.1:${this.session.port}/api/v1/events?token=${encodeURIComponent(this.session.sessionToken)}`;
     let ws: WebSocket | null = null;
+    let opened = false;
     try {
       ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        opened = true;
+        onLinkStateChange?.(true);
+      };
+      ws.onclose = () => {
+        if (opened) onLinkStateChange?.(false);
+      };
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data as string) as {
@@ -130,14 +171,19 @@ export class DesktopClient {
       // Ignore WebSocket connection error
     }
 
-    return () => {
-      if (ws) {
+    return {
+      isOpen: () => ws?.readyState === WebSocket.OPEN,
+      close: () => {
+        if (!ws) return;
+        // 主动断开不该被当成「桌面端掉线」，先把回调摘掉再关。
+        ws.onopen = null;
+        ws.onclose = null;
         try {
           ws.close();
         } catch {
           // Ignore
         }
-      }
+      },
     };
   }
 }

@@ -1,35 +1,73 @@
 import { useEffect, useState } from 'react';
+import { watchDesktopStatus } from '../../lib/liveStatus';
 import { formatBytes, type MediaResource } from '../../lib/media';
-import { getStoredSession } from '../../lib/storage';
-import type { HandoverResponse, SessionMetadata } from '../../lib/types';
+import type { DesktopStatus, HandoverResponse } from '../../lib/types';
+
+/** 读后台维护的链路状态；force 为真时要求先重新验证再回答。 */
+function requestStatus(force: boolean): Promise<DesktopStatus | null> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: force ? 'RECONNECT' : 'GET_STATUS' },
+      (res?: DesktopStatus) => {
+        resolve(res ?? null);
+      },
+    );
+  });
+}
+
+function formatClock(ts: number | null): string {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
 export default function App() {
   const [resources, setResources] = useState<MediaResource[]>([]);
   const [loading, setLoading] = useState(true);
-  const [session, setSession] = useState<SessionMetadata | null>(null);
-  const [probing, setProbing] = useState(false);
-  const [showManualConfig, setShowManualConfig] = useState(false);
-  const [manualPort, setManualPort] = useState('');
-  const [manualToken, setManualToken] = useState('');
+  const [status, setStatus] = useState<DesktopStatus | null>(null);
+  const [checking, setChecking] = useState(true);
   const [handoverStates, setHandoverStates] = useState<
     Record<string, 'idle' | 'sending' | 'success' | 'failed'>
   >({});
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const online = status?.online === true;
+
   useEffect(() => {
-    void loadData();
+    void loadMedia();
+    void refreshLink(false);
+    // 面板开着就一直盯着链路：桌面端中途退出、或者用户这会儿才启动它，状态都要跟着变，
+    // 而不是停在打开面板那一刻的答案上。
+    const watch = watchDesktopStatus({
+      probe: () => requestStatus(true),
+      onStatus: (next) => setStatus(next),
+    });
+    return watch.stop;
   }, []);
 
-  async function loadData() {
+  /**
+   * 连接状态一律问后台，不问本地存下来的会话：存着会话不代表连得上
+   * （桌面端重启会换端口），面板显示「已就绪」却交接失败是最误导人的状态。
+   * 打开面板时如果缓存显示离线，就直接做一次真实重连，把答案给出来而不是让用户猜。
+   */
+  async function refreshLink(force: boolean) {
+    setChecking(true);
+    try {
+      const cached = await requestStatus(force);
+      if (cached && !cached.online && !force) {
+        setStatus(await requestStatus(true));
+      } else {
+        setStatus(cached);
+      }
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function loadMedia() {
     setLoading(true);
     try {
-      const storedSession = await getStoredSession();
-      setSession(storedSession);
-      if (storedSession) {
-        setManualPort(String(storedSession.port));
-        setManualToken(storedSession.sessionToken);
-      }
-
       // Query active tab in current window
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       const currentTab = tabs[0];
@@ -51,56 +89,6 @@ export default function App() {
     }
   }
 
-  function handleProbeNative() {
-    setProbing(true);
-    setErrorMessage(null);
-    chrome.runtime.sendMessage(
-      { type: 'DISCOVER_SESSION' },
-      (res: { success?: boolean; session?: SessionMetadata } | undefined) => {
-        setProbing(false);
-        if (res?.session) {
-          setSession(res.session);
-          setManualPort(String(res.session.port));
-          setManualToken(res.session.sessionToken);
-          setErrorMessage(null);
-        } else {
-          setErrorMessage('未探测到运行中的桌面端。请确保桌面端已启动，或手动配置端口。');
-        }
-      },
-    );
-  }
-
-  function handleSaveManual() {
-    const port = parseInt(manualPort.trim(), 10);
-    if (!port || port <= 0 || port > 65535) {
-      setErrorMessage('请输入有效端口号 (1-65535)');
-      return;
-    }
-    if (!manualToken.trim()) {
-      setErrorMessage('请输入 Session Token');
-      return;
-    }
-    setProbing(true);
-    setErrorMessage(null);
-    const manualSession: SessionMetadata = {
-      port,
-      sessionToken: manualToken.trim(),
-    };
-    chrome.runtime.sendMessage(
-      { type: 'SET_MANUAL_SESSION', session: manualSession },
-      (res: { success?: boolean; session?: SessionMetadata } | undefined) => {
-        setProbing(false);
-        if (res?.success) {
-          setSession(manualSession);
-          setShowManualConfig(false);
-          setErrorMessage(null);
-        } else {
-          setErrorMessage('连接测试失败：无法连通指定端口或 Token 校验未通过');
-        }
-      },
-    );
-  }
-
   async function handleDownload(res: MediaResource) {
     setHandoverStates((prev) => ({ ...prev, [res.id]: 'sending' }));
     setErrorMessage(null);
@@ -108,6 +96,7 @@ export default function App() {
     chrome.runtime.sendMessage(
       { type: 'HANDOVER_MEDIA', resource: res },
       (response: HandoverResponse | undefined) => {
+        const runtimeError = chrome.runtime.lastError?.message;
         if (response?.accepted) {
           setHandoverStates((prev) => ({ ...prev, [res.id]: 'success' }));
           setTimeout(() => {
@@ -115,8 +104,10 @@ export default function App() {
           }, 3000);
         } else {
           setHandoverStates((prev) => ({ ...prev, [res.id]: 'failed' }));
-          setErrorMessage(response?.reason || '移交失败');
+          setErrorMessage(response?.reason || runtimeError || '移交失败');
         }
+        // 交接失败往往意味着链路刚断，顺手把面板状态刷新到真实值。
+        void refreshLink(false);
       },
     );
   }
@@ -162,8 +153,8 @@ export default function App() {
               alignItems: 'center',
               gap: '4px',
               fontSize: '11px',
-              color: session ? '#10b981' : '#94a3b8',
-              backgroundColor: session ? 'rgba(16, 185, 129, 0.1)' : 'rgba(148, 163, 184, 0.1)',
+              color: online ? '#10b981' : '#f59e0b',
+              backgroundColor: online ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
               padding: '2px 6px',
               borderRadius: '9999px',
             }}
@@ -173,31 +164,47 @@ export default function App() {
                 width: '6px',
                 height: '6px',
                 borderRadius: '50%',
-                backgroundColor: session ? '#10b981' : '#94a3b8',
+                backgroundColor: online ? '#10b981' : '#f59e0b',
               }}
             />
-            {session ? '已就绪' : '未连接'}
+            {checking ? '检查中…' : online ? '已连接' : '未连接'}
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {!session && (
-            <button
-              type="button"
-              onClick={handleProbeNative}
-              disabled={probing}
-              style={{
-                fontSize: '11px',
-                padding: '2px 8px',
-                backgroundColor: '#1e293b',
-                color: '#38bdf8',
-                border: '1px solid #334155',
-                borderRadius: '4px',
-                cursor: probing ? 'default' : 'pointer',
-              }}
+          <button
+            type="button"
+            onClick={() => void refreshLink(true)}
+            disabled={checking}
+            title="重新验证与桌面端的连接"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontSize: '11px',
+              padding: '2px 8px',
+              backgroundColor: '#1e293b',
+              color: checking ? '#64748b' : '#38bdf8',
+              border: '1px solid #334155',
+              borderRadius: '4px',
+              cursor: checking ? 'default' : 'pointer',
+            }}
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ animation: checking ? 'sheepget-spin 0.9s linear infinite' : 'none' }}
             >
-              {probing ? '探测中...' : '探测连接'}
-            </button>
-          )}
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <path d="M21 3v6h-6" />
+            </svg>
+            {checking ? '连接中…' : '刷新连接'}
+          </button>
           <span
             style={{
               fontSize: '11px',
@@ -213,7 +220,7 @@ export default function App() {
       </div>
 
       {/* Disconnected notification banner */}
-      {!session && (
+      {!online && !checking && (
         <div
           style={{
             padding: '10px 14px',
@@ -225,89 +232,10 @@ export default function App() {
             fontSize: '11px',
           }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ color: '#94a3b8' }}>未检测到活跃桌面端连接</span>
-            <button
-              type="button"
-              onClick={() => setShowManualConfig((v) => !v)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#38bdf8',
-                cursor: 'pointer',
-                padding: 0,
-                fontSize: '11px',
-                textDecoration: 'underline',
-              }}
-            >
-              {showManualConfig ? '收起配置' : '手动配置'}
-            </button>
-          </div>
-
-          {showManualConfig && (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
-                marginTop: '4px',
-                padding: '8px',
-                backgroundColor: '#090d16',
-                borderRadius: '4px',
-                border: '1px solid #334155',
-              }}
-            >
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <input
-                  type="number"
-                  placeholder="端口 (如 61011)"
-                  value={manualPort}
-                  onChange={(e) => setManualPort(e.target.value)}
-                  style={{
-                    width: '110px',
-                    padding: '4px 6px',
-                    fontSize: '11px',
-                    backgroundColor: '#1e293b',
-                    border: '1px solid #334155',
-                    color: '#f8fafc',
-                    borderRadius: '3px',
-                  }}
-                />
-                <input
-                  type="text"
-                  placeholder="Session Token"
-                  value={manualToken}
-                  onChange={(e) => setManualToken(e.target.value)}
-                  style={{
-                    flex: 1,
-                    padding: '4px 6px',
-                    fontSize: '11px',
-                    backgroundColor: '#1e293b',
-                    border: '1px solid #334155',
-                    color: '#f8fafc',
-                    borderRadius: '3px',
-                  }}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={handleSaveManual}
-                disabled={probing}
-                style={{
-                  padding: '4px 8px',
-                  backgroundColor: '#10b981',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '3px',
-                  cursor: 'pointer',
-                  fontWeight: 500,
-                  fontSize: '11px',
-                }}
-              >
-                保存并连接
-              </button>
-            </div>
-          )}
+          <span style={{ color: '#fbbf24' }}>
+            桌面端连接不可用：{status?.reason ?? '未检测到运行中的桌面端'}
+          </span>
+          <span style={{ color: '#64748b' }}>此时浏览器会自行下载，不受接管设置影响。</span>
         </div>
       )}
 
@@ -496,7 +424,11 @@ export default function App() {
           justifyContent: 'space-between',
         }}
       >
-        <span>{session ? `本地端口: ${session.port}` : '桌面端离线 (未启动)'}</span>
+        <span>
+          {online
+            ? `本地端口 ${status?.port} · 上次校验 ${formatClock(status?.lastVerifiedAt ?? null)}`
+            : '桌面端离线 (未启动或已退出)'}
+        </span>
         <span style={{ color: '#64748b' }}>v1.0.0</span>
       </div>
     </div>
