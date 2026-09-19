@@ -14,13 +14,13 @@ export default defineConfig({
     description: 'Browser integration and media download helper for SheepGet',
     version: '1.0.0',
     key: FIXED_PUBLIC_KEY,
-    // downloads.ui 用于 setUiOptions：接管可用时关掉 Chrome 自己的下载气泡与动画，
-    // 避免「桌面端弹窗」和「文件飞向下载按钮」两套反馈同时出现。
+    // 接管按次进行（onCreated 里 pause → 交接成功 cancel / 失败 resume），因此申请不到
+    // downloads.ui 也够用：它的 setUiOptions 作用于整个 profile，会把「不接管」的下载也
+    // 一起压掉，用户看不到任何反馈——那正是「文件静默丢失」的来源。
     // alarms 用于链路保活探测：桌面端重启会换端口，服务 worker 被挂起后单靠启动时
     // 那一次初始化无法发现，需要周期性重算链路状态（见 entrypoints/background.ts）。
     permissions: [
       'downloads',
-      'downloads.ui',
       'webRequest',
       'storage',
       'tabs',

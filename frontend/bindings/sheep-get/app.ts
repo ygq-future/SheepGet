@@ -241,7 +241,16 @@ export function PauseTask(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * ProbeMediaDuration 读远端音视频文件的时长（秒），供文件信息窗口在下载前展示。
+ * 识别不出来返回 0：时长是附加信息，不是下载流程的一环，读不到就不显示，绝不编一个数值。
+ */
+export function ProbeMediaDuration(urlStr: string, filename: string, totalBytes: number): $CancellablePromise<number> {
+    return $Call.ByID(564875139, urlStr, filename, totalBytes);
+}
+
+/**
  * ProbeURL inspects the URL metadata and reports whether an existing task already uses the URL.
+ * 手动改链接时由文件信息窗口调用，因此带上这一项的请求上下文，与登记时的探测口径一致。
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {

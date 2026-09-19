@@ -18,7 +18,8 @@ import {
 } from 'lucide-react';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
-import { formatBytes } from '../lib/format';
+import { formatBytes, formatDuration } from '../lib/format';
+import { isMediaFile } from '../lib/fileIcon';
 import {
   GetActiveFileInfo,
   SubmitFileInfo,
@@ -27,6 +28,7 @@ import {
   SetFileInfoWindowHeight,
   SelectDirectory,
   ProbeURL,
+  ProbeMediaDuration,
   CheckFileConflict,
   CheckURLFilesExist,
   ShowProgressWindow,
@@ -93,11 +95,59 @@ export function FileInfoView() {
   const filenameSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // 时长是异步读出来的：先转加载动画，读到了就显示，读不到就不再显示——它是附加信息，
+  // 不参与任何下载决策，因此绝不阻塞别的操作，也绝不编一个数值出来。
+  const [durationSeconds, setDurationSeconds] = useState(0);
+  const [durationLoading, setDurationLoading] = useState(false);
+  const durationSeqRef = useRef(0);
+  // 已经读过时长的那个组合。同一份资源不重复读：界面会多次收到同一条更新事件，
+  // 每来一次就发一次范围请求实在没必要。
+  const durationKeyRef = useRef('');
+
   // 切换项时作废在途请求：上一项的探测与文件名解析结果不得落到下一项上。
   const invalidateInFlight = useCallback(() => {
     probeSeqRef.current += 1;
     filenameSeqRef.current += 1;
   }, []);
+
+  const resetDuration = useCallback(() => {
+    durationSeqRef.current += 1;
+    durationKeyRef.current = '';
+    setDurationLoading(false);
+    setDurationSeconds(0);
+  }, []);
+
+  const refreshDuration = useCallback(
+    async (nextUrl: string, nextFilename: string, size: number) => {
+      // 不是音视频就不读：时长只对它们有意义，也没必要为别的类型多发一次请求。
+      if (!nextUrl || !isMediaFile(nextFilename)) {
+        resetDuration();
+        return;
+      }
+      // 文件大小参与判断：非 faststart 的 mp4 时长在文件尾，只有知道大小时才读得到。
+      const key = `${nextUrl}|${nextFilename}|${size}`;
+      if (key === durationKeyRef.current) return;
+      durationKeyRef.current = key;
+
+      const seq = ++durationSeqRef.current;
+      setDurationLoading(true);
+      setDurationSeconds(0);
+      try {
+        const seconds = await ProbeMediaDuration(nextUrl, nextFilename, size);
+        if (seq !== durationSeqRef.current) return;
+        setDurationSeconds(seconds);
+      } catch {
+        // 读不出来就按「没有时长」显示，不给用户看一个永远转下去的加载动画。
+        if (seq !== durationSeqRef.current) return;
+        setDurationSeconds(0);
+      } finally {
+        if (seq === durationSeqRef.current) {
+          setDurationLoading(false);
+        }
+      }
+    },
+    [resetDuration],
+  );
 
   // 裁决结果与选中项一起写回：用户已经选过的动作只要仍然可选就保留，否则回落到裁决给出的默认项。
   const applyDecision = useCallback(
@@ -138,14 +188,16 @@ export function FileInfoView() {
   const initItem = useCallback(
     async (item: windowModels.FileInfoItem) => {
       invalidateInFlight();
+      resetDuration();
       setActiveItem((prev) => ({
         ...item,
         queueIndex: item.queueIndex || prev?.queueIndex || 1,
         queueTotal: item.queueTotal || prev?.queueTotal || 1,
       }));
       await openDraft(item, useSettingsStore.getState().settings);
+      void refreshDuration(item.url, item.filename, item.totalBytes);
     },
-    [openDraft, invalidateInFlight],
+    [openDraft, invalidateInFlight, resetDuration, refreshDuration],
   );
 
   useEffect(() => {
@@ -195,6 +247,9 @@ export function FileInfoView() {
       if (item && item.id === useFileInfoDraftStore.getState().activeItemId) {
         setProbing(false);
         setActiveItem((prev) => (prev ? { ...prev, ...item } : item));
+        // 真实文件名与文件大小都要等这次探测回来才有（扩展名决定能不能读时长，大小决定
+        // 非 faststart 的 mp4 该读哪里），所以时长要在这里补一次。
+        void refreshDuration(item.url, item.filename, item.totalBytes);
         const current = useFileInfoDraftStore.getState().draft;
         if (item.totalBytes !== undefined && item.totalBytes > 0) {
           if (!current.nameEdited && item.filename) {
@@ -237,7 +292,7 @@ export function FileInfoView() {
       unlistenQueue();
       unlistenUpdated();
     };
-  }, [loadSettings, initItem, applyDecision, patch, setProbing]);
+  }, [loadSettings, initItem, applyDecision, patch, setProbing, refreshDuration]);
 
   // Handle URL probe when URL is changed manually
   // 手动改链接后的探测。每一步 await 之后都要重新确认请求还有效，否则上一项的结果会写进下一项。
@@ -329,6 +384,8 @@ export function FileInfoView() {
           duplicateTask: result.duplicateTask || null,
         };
       });
+      // 手输链接没有登记时那次探测，这里拿到的就是它的真名与大小，时长按它们读。
+      void refreshDuration(trimmed, chosenName, result.totalBytes);
     } catch (err: unknown) {
       if (seq !== probeSeqRef.current) return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -494,6 +551,9 @@ export function FileInfoView() {
         if (activeItem?.id) {
           discardDraft(activeItem.id);
         }
+        // 用户已经确认下载：这一项到此为止，不再为它读时长（下载完成后由任务自己的
+        // 本地文件给出时长，那时才读得准）。
+        resetDuration();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         patch({ error: `提交失败: ${msg}` });
@@ -501,7 +561,7 @@ export function FileInfoView() {
         setLoading(false);
       }
     },
-    [activeItem, discardDraft, loadSettings, patch, setLoading],
+    [activeItem, discardDraft, loadSettings, patch, setLoading, resetDuration],
   );
   const handleCancel = useCallback(async () => {
     // 先记下这一项的 ID：取消成功后队列会推进到下一项，那时再读就取到别人了。
@@ -676,13 +736,32 @@ export function FileInfoView() {
 
             {/* Compact Resource Meta Line */}
             <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
-              <span>
-                预估大小:{' '}
-                <span className="font-medium text-[var(--text-secondary)]">
-                  {activeItem && activeItem.totalBytes > 0
-                    ? formatBytes(activeItem.totalBytes)
-                    : '未知大小'}
+              <span className="flex items-center gap-1.5">
+                <span>
+                  预估大小:{' '}
+                  <span className="font-medium text-[var(--text-secondary)]">
+                    {activeItem && activeItem.totalBytes > 0
+                      ? formatBytes(activeItem.totalBytes)
+                      : '未知大小'}
+                  </span>
                 </span>
+                {/* 时长紧跟在大小之后；还没读出来时转加载动画，读不出来就整段不显示。 */}
+                {(durationLoading || durationSeconds > 0) && (
+                  <span className="flex items-center gap-1">
+                    <span className="text-[var(--border-hover)]">·</span>
+                    <span>时长:</span>
+                    {durationLoading ? (
+                      <Loader2
+                        className="h-3 w-3 animate-spin text-[var(--accent)]"
+                        aria-label="正在读取时长"
+                      />
+                    ) : (
+                      <span className="font-medium text-[var(--text-secondary)]">
+                        {formatDuration(durationSeconds)}
+                      </span>
+                    )}
+                  </span>
+                )}
               </span>
               <span>
                 续传支持:{' '}
@@ -932,6 +1011,8 @@ export function FileInfoView() {
                       })();
                     }
                   }}
+                  // 改名可能改变后缀，也就改变了「能不能读出时长」；每敲一个字都去读一次没必要。
+                  onBlur={() => void refreshDuration(url, filename, activeItem?.totalBytes ?? -1)}
                 />
               </div>
 

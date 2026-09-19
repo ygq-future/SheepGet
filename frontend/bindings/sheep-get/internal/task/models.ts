@@ -109,6 +109,12 @@ export class Task {
     "resumable": boolean;
     "etag"?: string;
     "lastModified"?: string;
+
+    /**
+     * Duration 是媒体文件的时长（秒），0 表示还没识别出来或不是媒体文件。
+     * 它在下载完成后由本地文件解析写入：那时文件已经落地，读它不需要任何网络请求。
+     */
+    "duration"?: number;
     "createdAt": string;
     "updatedAt": string;
 
@@ -170,10 +176,10 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField17_0 = $$createType1;
+        const $$createField18_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField17_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField18_0($$parsedSource["chunks"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

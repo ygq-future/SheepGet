@@ -26,7 +26,7 @@ let currentKeyMask = 0;
 
 // 与桌面端的链路。桌面端每次启动都换 loopback 端口，所以「连过」不等于「还连着」：
 // linkOnline 只在真实 ping 成功或事件长连接打开时置位，在 ping 失败、长连接关闭、
-// 交接失败时置否。界面状态与 Chrome 下载界面都读它，不再读「是否存过会话」。
+// 交接失败时置否。界面状态读它，不再读「是否存过会话」。
 let desktopClient: DesktopClient | null = null;
 let eventLink: DesktopEventLink | null = null;
 let linkOnline = false;
@@ -56,9 +56,6 @@ const tabMediaPool = new Map<number, MediaResource[]>();
 
 // 响应头里的真实文件名，供 onCreated 的接管判定与交接使用（见 lib/filenames.ts）。
 const responseFilenames = new ResponseFilenameCache();
-
-// Chrome 自身下载 UI 当前是否已被我们压掉；null 表示还没同步过，首次必须真的写一次。
-let chromeDownloadUiHidden: boolean | null = null;
 
 export default defineBackground(() => {
   console.log('[SheepGet] Background Service Worker starting...');
@@ -329,7 +326,7 @@ async function reverifyLink(trigger: string): Promise<DesktopStatus> {
 }
 
 /**
- * 采用一个已被证实可用的会话：替换长连接、刷新存活时刻、对齐配置、重算 Chrome 下载界面。
+ * 采用一个已被证实可用的会话：替换长连接、刷新存活时刻、对齐接管配置。
  */
 function adoptLink(session: SessionMetadata, client: DesktopClient) {
   // 先摘掉旧的 client 再关它的长连接：否则旧连接的 onclose 会把自己当成「桌面端掉线」上报。
@@ -354,7 +351,6 @@ function adoptLink(session: SessionMetadata, client: DesktopClient) {
   );
 
   void reconcileTakeoverConfig(client);
-  void syncChromeDownloadUi();
 }
 
 function teardownEvents() {
@@ -368,19 +364,17 @@ function noteLinkVerified() {
   linkOnline = true;
   linkLastVerifiedAt = Date.now();
   linkOfflineReason = null;
-  void syncChromeDownloadUi();
 }
 
 /**
  * 标记链路不可用。不改动 desktopClient：下一次 reverifyLink 会重新验证并替换它。
- * Chrome 下载界面在这里被恢复——这是「桌面端不在时，用户至少还能看见浏览器在下载」的保证。
+ * 浏览器下载界面始终归浏览器所有：链路断掉时它本来就在正常反馈，这里不需要动任何东西。
  */
 function markLinkOffline(reason: string) {
   if (!linkOnline && linkOfflineReason === reason) return;
   console.warn(`[SheepGet] Desktop link offline: ${reason}`);
   linkOnline = false;
   linkOfflineReason = reason;
-  void syncChromeDownloadUi();
 }
 
 async function reconcileTakeoverConfig(client: DesktopClient) {
@@ -487,6 +481,16 @@ async function handOverWithRetry(
   return resp;
 }
 
+/**
+ * 一次下载该不该接管，同时决定这次下载的浏览器反馈归谁。
+ *
+ * 接管按次进行：判定要接管就地 pause 这一次下载（下一行就发出来，不等任何网络），
+ * 交接成功 cancel、失败 resume；判定不接管则完全不插手——浏览器该有的气泡、动画、
+ * downloads 页记录一个不少。
+ *
+ * 注意 downloads.ui 的 setUiOptions：它作用于整个 profile，一旦压下，连「不接管」的下载
+ * 也没有任何可见反馈，用户看到的就是文件静默丢失。接管只动被接管的那一次。
+ */
 async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   if (!item || !item.id || inFlightDownloads.has(item.id)) {
     return;
@@ -552,8 +556,8 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
     if (resp.accepted) {
       await cancelDownload(item.id);
     } else {
-      // 桌面端确实接不了：把下载还给浏览器。链路若已断，Chrome 下载界面在
-      // handOverWithRetry 标记离线时就恢复了，这里不必再动它。
+      // 桌面端确实接不了：把这次下载还给浏览器。我们只挂起了这一次，resume 之后
+      // 它是浏览器的一个普通下载，气泡、进度与下载页记录都照常。
       console.warn('[SheepGet] Handing the download back to the browser:', {
         failure: resp.failure ?? 'unknown',
         reason: resp.reason,
@@ -641,35 +645,5 @@ async function resumeDownload(downloadId: number, paused: boolean) {
       downloadId,
       err,
     );
-  }
-}
-
-/**
- * 按「链路是否真的可用」切换 Chrome 自己的下载界面。
- *
- * Chrome 在 onCreated 之后就建好了下载条目，「文件飞向下载按钮」的动画在那时已经触发，
- * 事后再取消只能让残留变短，消不掉。downloads.ui 权限提供的 setUiOptions 是唯一能在
- * 下载开始前就关掉这套界面的接口，因此按链路状态提前切换：在线时关掉，断开或接管不可用时
- * 立刻恢复，浏览器接管下载时的正常反馈不受影响。
- *
- * 这里判据是 linkOnline 而不是「有没有 client」：桌面端一重启，旧 client 对象还在但已经
- * 连不上，用它当判据会让界面一直压着、失败也无声。每次 service worker 启动、每次保活
- * 探测、每次链路状态变化都会重算，不存在「关着没人管」的状态。
- */
-async function syncChromeDownloadUi() {
-  if (typeof chrome.downloads.setUiOptions !== 'function') {
-    return;
-  }
-  const hide = linkOnline;
-  if (hide === chromeDownloadUiHidden) {
-    return;
-  }
-  try {
-    await chrome.downloads.setUiOptions({ enabled: !hide });
-    chromeDownloadUiHidden = hide;
-    console.info(`[SheepGet] Chrome download UI ${hide ? 'hidden' : 'restored'}`);
-  } catch (err) {
-    // 另一个扩展（例如 IDM）已经把它关掉时，设回 true 会失败；保留标志以便下次再试。
-    console.warn('[SheepGet] Failed to change Chrome download UI:', err);
   }
 }

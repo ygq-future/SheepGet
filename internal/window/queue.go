@@ -41,10 +41,14 @@ type WindowView interface {
 
 // DownloadEngine abstracts download engine operations required by the window controller.
 type DownloadEngine interface {
-	ProbeURL(ctx context.Context, urlStr string) (*engine.ProbeResult, error)
+	// ProbeURL 探测链接元数据；headers 是这次请求的上下文（Referer/Cookie 等），交接过来的
+	// 链接常常只有带着它才探得准。
+	ProbeURL(ctx context.Context, urlStr string, headers map[string]string) (*engine.ProbeResult, error)
 	FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error)
 	AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
+	// AddTaskFromProbe 用登记时那次探测的结果建任务，不再联网。
+	AddTaskFromProbe(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *engine.ProbeResult, probeErr error) (*task.Task, error)
 	StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
 	ConfirmPreDownload(ctx context.Context, taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error)
@@ -100,13 +104,20 @@ type FileInfoItem struct {
 	QueueTotal        int                `json:"queueTotal"`
 	Headers           map[string]string  `json:"headers,omitempty"`
 
-	// 下面三个字段描述这一项自己有没有「引擎调用在路上」，不下发给界面：
+	// 下面这些字段描述这一项自己有没有「引擎调用在路上」，不下发给界面：
 	// submitting 表示提交的引擎调用还没回来；preDownloadStarting 与其完成信号一起表示
 	// 预下载正在启动（见 asyncProbeItem）。两者存在的理由都是同一个——引擎调用不能放在
 	// 队列锁里，于是锁一放开，这些中间状态就必须能被其他操作看见。
 	submitting           bool
 	preDownloadStarting  bool
 	preDownloadStartedCh chan struct{}
+
+	// probe 是登记时那次探测的原始结果，probeErr 是它的失败原因，probeDone 在探测
+	// 结束时关闭。提交建任务（AddTaskFromProbe）只认这一份结果，探测还在路上时就靠在
+	// probeDone 上等它——三者一起构成「提交是瞬时的」的前提。
+	probe     *engine.ProbeResult
+	probeErr  error
+	probeDone chan struct{}
 }
 
 // FileInfoSubmission represents user confirmation from the FileInfo window.
@@ -348,6 +359,10 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		DuplicateDecision: decision,
 		Headers:           req.Headers,
 	}
+	// 有链接就一定会探测：探测的完成信号在这里就先挂上，提交才知道该等谁。
+	if req.URL != "" {
+		item.probeDone = make(chan struct{})
+	}
 
 	qc.items = append(qc.items, item)
 	qc.updateQueueNumbersLocked()
@@ -385,12 +400,11 @@ func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[str
 	probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	probe, err := qc.engine.ProbeURL(probeCtx, reqURL)
-	if err != nil && probe == nil {
-		return
-	}
+	// 带上这一项的请求上下文：防盗链或需要登录的链接，没有 Referer/Cookie 只会探出 403，
+	// 界面显示「未知大小」，而提交时还得为同一份元数据再付一次探测。
+	probe, probeErr := qc.engine.ProbeURL(probeCtx, reqURL, headers)
 
-	start := qc.applyProbeResult(itemID, reqURL, headers, dir, dirFromCategory, policy, preDownload, maxConn, probe)
+	start := qc.applyProbeResult(itemID, reqURL, headers, dir, dirFromCategory, policy, preDownload, maxConn, probe, probeErr)
 	if start == nil {
 		return
 	}
@@ -420,7 +434,7 @@ type preDownloadStart struct {
 
 // applyProbeResult 把探测结果落进队列项（锁内），并返回需要启动的预下载。
 // 不需要启动、或这一项已经不在队列里时返回 nil。它不调用会联网的引擎方法。
-func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[string]string, dir string, dirFromCategory bool, policy config.DuplicateURLPolicy, preDownload bool, maxConn int, probe *engine.ProbeResult) *preDownloadStart {
+func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[string]string, dir string, dirFromCategory bool, policy config.DuplicateURLPolicy, preDownload bool, maxConn int, probe *engine.ProbeResult, probeErr error) *preDownloadStart {
 	qc.mu.Lock()
 	actions := newWindowActions(qc.windowView)
 	// 同 Enqueue：解锁先于窗口副作用执行。
@@ -430,6 +444,15 @@ func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[s
 	targetItem := qc.itemByIDLocked(itemID)
 	if targetItem == nil {
 		return nil
+	}
+
+	// 先把这次探测本身记下来并放行等待者，再谈别的：提交正是靠它建任务，而预下载启动失败
+	// 之类的原因都不该让提交一直等一个不会再有结果的信号。
+	targetItem.probe = probe
+	targetItem.probeErr = probeErr
+	if ch := targetItem.probeDone; ch != nil {
+		close(ch)
+		targetItem.probeDone = nil
 	}
 
 	if probe != nil {
@@ -451,6 +474,10 @@ func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[s
 				dir = resolvedDir
 			}
 		}
+	} else {
+		// 探测连兜底文件名都没给（引擎没做出任何结论）：这一项保持登记时的样子，
+		// 也不去启动预下载——重复裁决与预下载都要基于实实在在的元数据。
+		return nil
 	}
 
 	conflict, suggested := engine.CheckFileConflict(dir, targetItem.Filename)
@@ -532,9 +559,14 @@ func (qc *QueueController) finishPreDownloadStart(start *preDownloadStart, preTa
 
 // Submit confirms the active file info item with final user choices.
 //
-// 分成三段：锁内取事实与占位，锁外调引擎（会联网），再回锁内落地。
-// 中间那段不能放在锁里——真实引擎的探测会重试三次、还有一次 HEAD 兜底，HTTP 客户端没有超时，
-// 锁被它握住时读当前项、取消、下一次交接全都排在后面，交接会在 2.5 秒上限处静默失败。
+// 分成三段：锁内取事实与占位，锁外调引擎，再回锁内落地。
+// 中间那段不能放在锁里——真实引擎的建任务路径仍可能联网（探测会重试三次、还有一次 HEAD
+// 兜底，HTTP 客户端没有超时），锁被它握住时读当前项、取消、下一次交接全都排在后面，
+// 交接会在 2.5 秒上限处静默失败。
+//
+// 交接过来的链接在登记时就已经探过一次，提交直接用那次结果建任务（AddTaskFromProbe），
+// 因此寻常的提交根本不联网、瞬时返回；只有用户改过链接、或链接是手输的（没有任何探测
+// 结果）才退回让引擎自己探。
 func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (*task.Task, error) {
 	plan, err := qc.beginSubmit(ctx, sub)
 	if err != nil {
@@ -579,8 +611,11 @@ type submitPlan struct {
 	policy    config.DuplicateURLPolicy
 	sub       FileInfoSubmission
 	preTaskID string
-	// probeDuplicate 表示登记时没查到同链接历史任务，提交前再确认一次。
-	probeDuplicate bool
+	// probe 是登记时那次探测的结果，提交用它建任务、不再自己联网（见 runSubmit）。
+	// 它是空的就说明这次提交无从复用：链接是新输入的，或者用户改过链接（那份元数据
+	// 已经不属于这个链接了），只能退回让引擎自己探一次。
+	probe    *engine.ProbeResult
+	probeErr error
 
 	duplicateTask *task.Task
 	decision      duplicate.Decision
@@ -611,6 +646,19 @@ func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmissi
 			qc.mu.Unlock()
 			return nil, ErrStaleFileInfoSubmission
 		}
+		if active.probe == nil && active.probeErr == nil {
+			// 登记时发起的那次探测还没回来：提交只认它的结果，自己再探一次就是同一份元数据
+			// 付两次请求往返。窗口弹出到用户点确认之间通常早就跑完了，这里补的是极短的时间窗。
+			if done := active.probeDone; done != nil {
+				qc.mu.Unlock()
+				select {
+				case <-done:
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+		}
 		if active.preDownloadStarting {
 			// 预下载正在启动，这一项的 PreDownloadTaskID 还是空的：此刻提交会走「新建任务」，
 			// 在同一链接上建出第二份。等它落地再重新读一遍这一项。
@@ -630,17 +678,20 @@ func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmissi
 		active.submitting = true
 
 		plan := &submitPlan{
-			item:           active,
-			url:            sub.URL,
-			directory:      sub.Directory,
-			filename:       sub.Filename,
-			maxConn:        sub.MaxConn,
-			headers:        active.Headers,
-			policy:         qc.settings.Get().Download.DuplicateURLPolicy,
-			sub:            sub,
-			preTaskID:      active.PreDownloadTaskID,
-			probeDuplicate: active.DuplicateTask == nil && sub.URL != "",
-			duplicateTask:  active.DuplicateTask,
+			item:          active,
+			url:           sub.URL,
+			directory:     sub.Directory,
+			filename:      sub.Filename,
+			maxConn:       sub.MaxConn,
+			headers:       active.Headers,
+			policy:        qc.settings.Get().Download.DuplicateURLPolicy,
+			sub:           sub,
+			preTaskID:     active.PreDownloadTaskID,
+			duplicateTask: active.DuplicateTask,
+		}
+		// 探测结果只在链接没被改过时才算数：用户改过链接，手上这份元数据已经不属于它了。
+		if active.probe != nil && active.probe.URL == sub.URL {
+			plan.probe, plan.probeErr = active.probe, active.probeErr
 		}
 		qc.mu.Unlock()
 		return plan, nil
@@ -649,13 +700,6 @@ func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmissi
 
 // runSubmit 在锁外完成这次提交的引擎调用；它只读快照，不碰队列状态。
 func (qc *QueueController) runSubmit(ctx context.Context, plan *submitPlan) (*task.Task, error) {
-	if plan.probeDuplicate {
-		// 登记时没查到同链接历史任务，提交前再确认一次：用户可能在这中间又下载过同一个链接。
-		if probe, _ := qc.engine.ProbeURL(ctx, plan.url); probe != nil && probe.DuplicateTask != nil {
-			plan.duplicateTask = probe.DuplicateTask
-		}
-	}
-
 	// 用户可能改过目录或文件名，因此按最终落点重新裁决，而不是沿用登记时的结果。
 	// 策略取当前设置：它只影响默认动作，而用户已选定动作时默认动作不会被使用。
 	plan.decision = duplicate.Decide(duplicate.Facts{
@@ -681,6 +725,9 @@ func (qc *QueueController) runSubmit(ctx context.Context, plan *submitPlan) (*ta
 		return qc.engine.ResolveDuplicate(ctx, plan.duplicateTask.ID, string(action), plan.directory, plan.filename, plan.maxConn)
 	case plan.preTaskID != "":
 		return qc.engine.ConfirmPreDownload(ctx, plan.preTaskID, plan.directory, plan.filename, plan.maxConn)
+	case plan.probe != nil:
+		// 登记时那次探测已经给出结论：直接拿它建任务，提交因此不联网、瞬时返回。
+		return qc.engine.AddTaskFromProbe(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers, plan.probe, plan.probeErr)
 	default:
 		return qc.engine.AddTaskWithHeaders(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers)
 	}

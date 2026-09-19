@@ -37,12 +37,9 @@ export function TaskItem({
   const isUnknownSize = t.totalBytes <= 0;
   const percentText = isUnknownSize ? '未知大小' : `${percent}%`;
 
-  // Check if media file has duration information
-  const hasDuration =
-    isMediaFile(t.filename) && typeof (t as { duration?: number }).duration === 'number';
-  const durationText = hasDuration
-    ? formatDuration((t as { duration?: number }).duration || 0)
-    : null;
+  // 音视频文件的时长：文件落地后从本地文件里读出来，读不到就没有这一项，
+  // 不显示任何占位——未知就是未知，不编一个数值出来。
+  const durationText = isMediaFile(t.filename) && t.duration ? formatDuration(t.duration) : null;
 
   const handleRowClick = (e: MouseEvent) => {
     if (onToggleSelect) {
@@ -156,7 +153,9 @@ export function TaskItem({
         {/* File size and optional media duration */}
         <div className="text-right font-mono text-[11px] text-[var(--text-secondary)]">
           <span>{formatBytes(t.totalBytes > 0 ? t.totalBytes : t.downloaded)}</span>
-          {durationText && <span className="text-[var(--text-muted)]"> · {durationText}</span>}
+          {durationText && (
+            <span className="text-violet-600 dark:text-violet-400"> · {durationText}</span>
+          )}
         </div>
 
         {/* Last connected time with year */}

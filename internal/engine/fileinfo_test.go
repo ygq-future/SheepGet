@@ -477,7 +477,7 @@ func TestManager_ProbeURLAndDuplicateDetection(t *testing.T) {
 	store, mgr, ts := newTestManager(t, payload, 0, "")
 	ctx := context.Background()
 
-	result, err := mgr.ProbeURL(ctx, ts.URL+"/file.bin")
+	result, err := mgr.ProbeURL(ctx, ts.URL+"/file.bin", nil)
 	if err != nil {
 		t.Fatalf("ProbeURL failed: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestManager_ProbeURLAndDuplicateDetection(t *testing.T) {
 		t.Fatalf("AddTask failed: %v", err)
 	}
 
-	result2, err := mgr.ProbeURL(ctx, ts.URL+"/file.bin")
+	result2, err := mgr.ProbeURL(ctx, ts.URL+"/file.bin", nil)
 	if err != nil {
 		t.Fatalf("ProbeURL 2 failed: %v", err)
 	}

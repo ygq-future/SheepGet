@@ -543,7 +543,7 @@ export function SettingsPanel() {
           extensions: [],
         }),
       });
-      showToast('已重置为预置常用接管后缀', 'success');
+      showToast('已重置为内置分类的文件类型', 'success');
     } catch (err) {
       showToast(`重置失败: ${String(err)}`, 'error');
     }
@@ -1357,7 +1357,7 @@ export function SettingsPanel() {
                   <div className="flex-1">
                     <Slider
                       min={1}
-                      max={16}
+                      max={32}
                       value={download.maxConcurrentDownloads || 3}
                       onChange={(val) => {
                         void handleMaxConcurrentChange(val);
@@ -1756,13 +1756,16 @@ export function SettingsPanel() {
           <div className="space-y-6">
             {/* Automatic Takeover Extensions */}
             <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex items-center justify-between gap-4">
+                {/* 说明文字负责让位换行，按钮保持自身宽度不参与压缩。 */}
+                <div className="min-w-0 flex-1">
                   <label className="text-xs font-semibold text-[var(--text-primary)]">
                     自动接管文件类型
                   </label>
                   <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    配置浏览器扩展与剪贴板监视时自动触发接管的文件后缀
+                    浏览器扩展与剪贴板监视遇到这些后缀时自动交给
+                    SheepGet；内置分类中的类型必定包含在内，
+                    保存时会自动并入（要停止接管某个类型，请从「分类」页的内置分类里移除它）
                   </p>
                 </div>
                 <Button
@@ -1771,7 +1774,7 @@ export function SettingsPanel() {
                   onClick={() => {
                     void handleResetTakeoverExts();
                   }}
-                  className="h-7 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  className="h-7 shrink-0 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
                   <RotateCcw className="mr-1 h-3 w-3" />
                   恢复默认

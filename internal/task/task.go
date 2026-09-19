@@ -58,8 +58,11 @@ type Task struct {
 	Resumable      bool         `json:"resumable"`
 	ETag           string       `json:"etag,omitempty"`
 	LastModified   string       `json:"lastModified,omitempty"`
-	CreatedAt      time.Time    `json:"createdAt"`
-	UpdatedAt      time.Time    `json:"updatedAt"`
+	// Duration 是媒体文件的时长（秒），0 表示还没识别出来或不是媒体文件。
+	// 它在下载完成后由本地文件解析写入：那时文件已经落地，读它不需要任何网络请求。
+	Duration  float64   `json:"duration,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 
 	// Chunks for multi-connection download state
 	Chunks []Chunk `json:"chunks,omitempty"`

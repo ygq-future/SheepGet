@@ -31,7 +31,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         type={type}
-        className={`inline-flex cursor-pointer items-center justify-center rounded-md font-medium transition-all duration-150 select-none focus:ring-1 focus:ring-[var(--border-focus)]/40 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 ${variantStyles} ${sizeStyles} ${className}`}
+        className={`inline-flex cursor-pointer items-center justify-center rounded-md font-medium whitespace-nowrap transition-all duration-150 select-none focus:ring-1 focus:ring-[var(--border-focus)]/40 focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 ${variantStyles} ${sizeStyles} ${className}`}
         {...props}
       >
         {children}

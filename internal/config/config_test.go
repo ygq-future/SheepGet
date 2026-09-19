@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -729,5 +731,47 @@ func TestSettingsService_ReentrantDeadlock(t *testing.T) {
 		// Succeeded without deadlock
 	case <-time.After(1 * time.Second):
 		t.Fatal("DEADLOCK: service.Update deadlocked when onChanged callback called service.Get()")
+	}
+}
+
+// 接管清单必须覆盖内置分类：内置分类里有的类型如果在接管清单里没有，这些类型在浏览器里
+// 既不会被接管，也没有任何地方解释为什么；用户看到的是一份「比内置类型少很多」的清单。
+func TestTakeoverExtensionsCoverBuiltinCategories(t *testing.T) {
+	settings := DefaultSettings("/downloads", "/temp")
+
+	assertCovered := func(t *testing.T, s Settings) {
+		t.Helper()
+		have := make(map[string]bool, len(s.Takeover.Extensions))
+		for _, ext := range s.Takeover.Extensions {
+			have[ext] = true
+		}
+		for _, cat := range s.Download.BuiltinCategories {
+			for _, ext := range cat.Extensions {
+				if !have[strings.ToLower(ext)] {
+					t.Errorf("接管清单缺少内置分类 %q 的 .%s", cat.Name, ext)
+				}
+			}
+		}
+	}
+
+	assertCovered(t, settings)
+
+	// 老用户配置里存着上一版的接管清单：加载时必须把内置分类现有的类型并进来。
+	stored := settings
+	stored.Takeover.Extensions = []string{"torrent", "MSI"}
+	validated := stored.ValidateAndFallback("/downloads", "/temp")
+	assertCovered(t, validated)
+	for _, keep := range []string{"torrent", "msi"} {
+		if !slices.Contains(validated.Takeover.Extensions, keep) {
+			t.Errorf("并集把用户原有的 %s 弄丢了", keep)
+		}
+	}
+
+	// 「恢复默认」在界面上的动作是清空后保存：结果就是内置分类的并集。
+	stored.Takeover.Extensions = nil
+	reset := stored.ValidateAndFallback("/downloads", "/temp")
+	assertCovered(t, reset)
+	if want := BuiltinCategoryExtensions(reset.Download.BuiltinCategories); !slices.Equal(reset.Takeover.Extensions, want) {
+		t.Errorf("恢复默认 = %v, want 内置分类并集 %v", reset.Takeover.Extensions, want)
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
+	"time"
 )
 
 // FileConflictResult represents whether target file exists and suggests an alternative filename.
@@ -456,8 +457,43 @@ func (a *App) OpenFolder(folderPath string) error {
 }
 
 // ProbeURL inspects the URL metadata and reports whether an existing task already uses the URL.
+// 手动改链接时由文件信息窗口调用，因此带上这一项的请求上下文，与登记时的探测口径一致。
 func (a *App) ProbeURL(urlStr string) (*engine.ProbeResult, error) {
-	return a.manager.ProbeURL(a.ctx, urlStr)
+	return a.manager.ProbeURL(a.ctx, urlStr, a.activeItemHeaders(urlStr))
+}
+
+// activeItemHeaders 返回与这个链接对应的请求上下文（Referer/Cookie 等）。
+// 它只认当前这一项：用户改过链接之后，手上这份上下文已经不属于那个链接了。
+func (a *App) activeItemHeaders(urlStr string) map[string]string {
+	if a.windowQueue == nil {
+		return nil
+	}
+	item, err := a.windowQueue.GetActive()
+	if err != nil || item == nil || item.URL != urlStr {
+		return nil
+	}
+	return item.Headers
+}
+
+// mediaDurationProbeTimeout 是界面等一次时长探测的上限。它在等的时候转的是加载动画，
+// 不能因为一个不响应的服务器一直转下去——超时就按「识别不出来」显示。
+const mediaDurationProbeTimeout = 10 * time.Second
+
+// ProbeMediaDuration 读远端音视频文件的时长（秒），供文件信息窗口在下载前展示。
+// 识别不出来返回 0：时长是附加信息，不是下载流程的一环，读不到就不显示，绝不编一个数值。
+func (a *App) ProbeMediaDuration(urlStr, filename string, totalBytes int64) float64 {
+	if a.manager == nil || urlStr == "" {
+		return 0
+	}
+	// 界面只等一小会儿：它转的是加载动画，不能因为一个不响应的服务器一直转下去。
+	ctx, cancel := context.WithTimeout(a.ctx, mediaDurationProbeTimeout)
+	defer cancel()
+
+	seconds, ok := a.manager.ProbeMediaDuration(ctx, urlStr, filename, totalBytes, a.activeItemHeaders(urlStr))
+	if !ok {
+		return 0
+	}
+	return seconds
 }
 
 func (a *App) isFilenameTaken(dir, candidate string) bool {

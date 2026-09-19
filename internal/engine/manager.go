@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sheep-get/internal/config"
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/mediainfo"
 	"sheep-get/internal/task"
 	"strconv"
 	"strings"
@@ -262,7 +263,9 @@ func (m *Manager) waitTaskIdle(taskID string, timeout time.Duration) {
 }
 
 // ProbeURL inspects the URL metadata and reports whether an existing task already uses the URL.
-func (m *Manager) ProbeURL(ctx context.Context, urlStr string) (*ProbeResult, error) {
+// headers 是这次请求的上下文（Referer/Cookie 等）：需要登录或防盗链才能访问的链接，只有带上
+// 它才探得出真实的大小与文件名——交接过来的链接正是这种情形。
+func (m *Manager) ProbeURL(ctx context.Context, urlStr string, headers map[string]string) (*ProbeResult, error) {
 	existingList, err := m.store.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read task list: %w", err)
@@ -276,26 +279,35 @@ func (m *Manager) ProbeURL(ctx context.Context, urlStr string) (*ProbeResult, er
 		}
 	}
 
-	info, probeErr := m.downloader.Probe(ctx, urlStr, nil)
+	probe, probeErr := m.probeResource(ctx, urlStr, credentials.New(headers))
+	probe.DuplicateTask = dupTask
+	return probe, probeErr
+}
 
-	result := &ProbeResult{
-		URL:           urlStr,
-		DuplicateTask: dupTask,
-		TotalBytes:    -1,
-	}
+// probeResource 把下载器的探测结果整理成建任务与界面共用的那份事实。探测失败时它仍然返回一个
+// 带兜底文件名的结果：界面据此显示「未知大小」，而失败的下载也还要留下一条看得见的任务记录。
+func (m *Manager) probeResource(ctx context.Context, urlStr string, creds credentials.RequestCredentials) (*ProbeResult, error) {
+	info, err := m.downloader.Probe(ctx, urlStr, creds)
 
+	probe := &ProbeResult{URL: urlStr, TotalBytes: -1}
 	if info != nil {
-		result.Filename = info.Filename
-		result.TotalBytes = info.TotalBytes
-		result.Resumable = info.Resumable
-		result.ETag = info.ETag
-		result.LastModified = info.LastModified
-		result.ContentType = info.ContentType
-	} else {
-		result.Filename = extractFilenameFromURL(urlStr)
+		probe.Filename = info.Filename
+		probe.TotalBytes = info.TotalBytes
+		probe.Resumable = info.Resumable
+		probe.ETag = info.ETag
+		probe.LastModified = info.LastModified
+		probe.ContentType = info.ContentType
 	}
+	if probe.Filename == "" {
+		probe.Filename = extractFilenameFromURL(urlStr)
+	}
+	return probe, err
+}
 
-	return result, probeErr
+// ProbeMediaDuration 读远端媒体的时长（秒），供文件信息窗口在下载前展示。
+// 它不是任务流程的一环：读不出来就不显示，绝不因此影响下载本身。
+func (m *Manager) ProbeMediaDuration(ctx context.Context, urlStr, filename string, totalBytes int64, headers map[string]string) (float64, bool) {
+	return m.downloader.ProbeMediaDuration(ctx, urlStr, filename, credentials.New(headers), totalBytes)
 }
 
 // ResolveDuplicate resolves a duplicate task with strategy "continue", "redownload", "copy", or "show_completed".
@@ -893,6 +905,23 @@ func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, max
 
 // AddTaskWithHeaders creates a task carrying optional request headers context.
 func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
+	creds := credentials.New(headers)
+	probe, probeErr := m.probeResource(ctx, urlStr, creds)
+	return m.createTask(ctx, urlStr, dir, filename, maxConn, creds, probe, probeErr)
+}
+
+// AddTaskFromProbe 用一次已经完成的探测结果建任务，自己不再联网。
+//
+// 文件信息窗口靠它做到「提交瞬时」：链接在登记那一刻就已经探过一次（用户读对话框的这段时间
+// 足够它跑完），提交只是把手上已有的事实落成任务，不必为同一份元数据再付一次请求往返
+// （真实探测会重试三次，还带一次 HEAD 兜底）。
+func (m *Manager) AddTaskFromProbe(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *ProbeResult, probeErr error) (*task.Task, error) {
+	return m.createTask(ctx, urlStr, dir, filename, maxConn, credentials.New(headers), probe, probeErr)
+}
+
+// createTask 是两条建任务路径的共同实现：先挡住重复链接，再按探测结果落成一条任务。
+// 探测失败时仍然建一条可见的失败任务（A03），而不是什么都不留下。
+func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, maxConn int, creds credentials.RequestCredentials, probe *ProbeResult, probeErr error) (*task.Task, error) {
 	// Check duplicate URL in existing tasks
 	existingList, _ := m.store.List(ctx)
 	for _, ext := range existingList {
@@ -900,12 +929,12 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 			return nil, fmt.Errorf("该下载链接已存在于任务列表中（状态：%s），请勿重复添加", ext.Status)
 		}
 	}
-	creds := credentials.New(headers)
-	info, err := m.downloader.Probe(ctx, urlStr, creds)
-	if err != nil {
+
+	now := time.Now()
+	if probeErr != nil {
 		// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
 		t := &task.Task{
-			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
+			ID:             fmt.Sprintf("task_%d", now.UnixNano()),
 			URL:            urlStr,
 			Filename:       filename,
 			Directory:      dir,
@@ -913,11 +942,11 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 			TotalBytes:     -1,
 			Status:         task.StatusError,
 			FailurePhase:   task.FailurePhaseTransfer,
-			ErrorMsg:       err.Error(),
+			ErrorMsg:       probeErr.Error(),
 			MaxConcurrency: maxConn,
 			RequestHeaders: creds,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
 		if t.Filename == "" {
 			t.Filename = extractFilenameFromURL(urlStr)
@@ -930,28 +959,28 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 	}
 
 	if filename == "" {
-		filename = info.Filename
+		filename = probe.Filename
 	}
 	if maxConn <= 0 {
 		maxConn = m.config.DefaultConnectionsPerTask
 	}
 
 	t := &task.Task{
-		ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
+		ID:             fmt.Sprintf("task_%d", now.UnixNano()),
 		URL:            urlStr,
 		Filename:       filename,
 		Directory:      dir,
 		TempDir:        m.getTempDir(),
-		TotalBytes:     info.TotalBytes,
+		TotalBytes:     probe.TotalBytes,
 		Downloaded:     0,
 		Status:         task.StatusQueued,
 		MaxConcurrency: maxConn,
-		Resumable:      info.Resumable,
-		ETag:           info.ETag,
-		LastModified:   info.LastModified,
+		Resumable:      probe.Resumable,
+		ETag:           probe.ETag,
+		LastModified:   probe.LastModified,
 		RequestHeaders: creds,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := m.store.Save(ctx, t); err != nil {
 		return nil, err
@@ -1231,6 +1260,13 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 			t.Downloaded = t.TotalBytes
 		}
 		t.ErrorMsg = ""
+		// 文件已经落地：媒体时长从这里读，不再回头看远端。读不出来就留 0，
+		// 界面按「没有时长」显示，而不是一直转圈。
+		if t.Duration <= 0 {
+			if seconds, ok := mediainfo.FromFile(filepath.Join(t.Directory, t.Filename)); ok {
+				t.Duration = seconds
+			}
+		}
 	}
 	t.UpdatedAt = time.Now()
 	_ = m.store.Save(bgCtx, t)

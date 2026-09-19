@@ -29,6 +29,11 @@ type blockingEngine struct {
 	entered   map[string]chan struct{}
 	cancelled []string
 	confirmed string
+	// 探测相关的记录：提交到底有没有拿登记时那次结果，靠这几个字段断言。
+	probes       int
+	probeHeaders map[string]string
+	createdProbe *engine.ProbeResult
+	createdErr   error
 }
 
 func newBlockingEngine(blocked ...string) *blockingEngine {
@@ -104,9 +109,33 @@ func (e *blockingEngine) confirmedTaskID() string {
 	return e.confirmed
 }
 
-func (e *blockingEngine) ProbeURL(context.Context, string) (*engine.ProbeResult, error) {
+func (e *blockingEngine) ProbeURL(_ context.Context, urlStr string, headers map[string]string) (*engine.ProbeResult, error) {
 	e.enter("ProbeURL")
-	return &engine.ProbeResult{TotalBytes: 1024, Resumable: true}, nil
+	e.mu.Lock()
+	e.probes++
+	e.probeHeaders = headers
+	e.mu.Unlock()
+	// 真实引擎会把自己探的这个链接回填进结果里，提交据此判断手上这份结果还算不算数。
+	return &engine.ProbeResult{URL: urlStr, Filename: "probed.bin", TotalBytes: 1024, Resumable: true}, nil
+}
+
+func (e *blockingEngine) probeCallCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.probes
+}
+
+func (e *blockingEngine) probedHeaders() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.probeHeaders
+}
+
+// createdFromProbe 返回提交交给引擎的那份探测结果：它应当就是登记时探到的那一份。
+func (e *blockingEngine) createdFromProbe() (*engine.ProbeResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.createdProbe, e.createdErr
 }
 
 func (e *blockingEngine) FindDuplicateTask(context.Context, string) (*task.Task, error) {
@@ -121,6 +150,15 @@ func (e *blockingEngine) AddTask(context.Context, string, string, string, int) (
 
 func (e *blockingEngine) AddTaskWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
 	e.enter("AddTaskWithHeaders")
+	return &task.Task{ID: "task_manual"}, nil
+}
+
+func (e *blockingEngine) AddTaskFromProbe(_ context.Context, _, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, probeErr error) (*task.Task, error) {
+	e.enter("AddTaskFromProbe")
+	e.mu.Lock()
+	e.createdProbe = probe
+	e.createdErr = probeErr
+	e.mu.Unlock()
 	return &task.Task{ID: "task_manual"}, nil
 }
 
@@ -205,11 +243,12 @@ func hasItem(items []*FileInfoItem, id string) bool {
 	return false
 }
 
-// 提交会联网（补一次同链接探测，然后建任务或确认预下载）。这段时间里队列必须仍然可用，
-// 取消也必须立刻给出答复——而不是排在引擎调用后面，等它把 2.5 秒的交接预算耗光。
+// 手输链接（登记时没有任何探测结果）仍然要让引擎自己探一次，而这次联网同样必须在锁外：
+// 这段时间里队列必须仍然可用，取消也必须立刻给出答复——而不是排在引擎调用后面，
+// 等它把 2.5 秒的交接预算耗光。
 func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T) {
 	ctx := context.Background()
-	eng := newBlockingEngine("ProbeURL", "AddTaskWithHeaders")
+	eng := newBlockingEngine("AddTaskWithHeaders")
 	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
 
 	// 不带链接的登记不会触发后台探测，这里要控制的只有提交这条路径。
@@ -230,10 +269,6 @@ func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T
 		submitted <- err
 	}()
 
-	eng.waitFor(t, "ProbeURL")
-	assertQueueResponsive(t, qc, ctx, tmpDir)
-
-	eng.release("ProbeURL")
 	eng.waitFor(t, "AddTaskWithHeaders")
 	assertQueueResponsive(t, qc, ctx, tmpDir)
 
@@ -256,6 +291,134 @@ func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T
 	if hasItem(qc.GetQueueItems(), reg.RequestID) {
 		t.Fatal("the submitted item stayed in the queue")
 	}
+}
+
+// 交接过来的链接在登记时就已经探过一次（带上这一项的 Referer/Cookie），提交直接用那次结果
+// 建任务：整个提交过程不再有第二次探测，这正是「提交是瞬时的」的由来。
+func TestQueueController_SubmitReusesRegistrationProbe(t *testing.T) {
+	ctx := context.Background()
+	eng := newBlockingEngine("AddTaskFromProbe")
+	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
+
+	headers := map[string]string{"Referer": "https://example.com/page"}
+	reg, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/video.mp4",
+		Directory: tmpDir,
+		Headers:   headers,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	waitForProbe(t, qc)
+
+	if got := eng.probedHeaders(); got["Referer"] != headers["Referer"] {
+		t.Fatalf("登记时那次探测的请求上下文 = %v，应当带上这一项的 Referer", got)
+	}
+
+	submitted := make(chan error, 1)
+	go func() {
+		_, err := qc.Submit(ctx, FileInfoSubmission{
+			RequestID: reg.RequestID,
+			URL:       "https://example.com/video.mp4",
+			Filename:  "video.mp4",
+			Directory: tmpDir,
+			MaxConn:   4,
+		})
+		submitted <- err
+	}()
+
+	eng.waitFor(t, "AddTaskFromProbe")
+	assertQueueResponsive(t, qc, ctx, tmpDir)
+
+	eng.release("AddTaskFromProbe")
+	select {
+	case err := <-submitted:
+		if err != nil {
+			t.Fatalf("submit failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("submit never returned after the engine was released")
+	}
+
+	if got := eng.probeCallCount(); got != 1 {
+		t.Fatalf("探测次数 = %d，提交又自己探了一次（应当只有登记时那一次）", got)
+	}
+	probe, probeErr := eng.createdFromProbe()
+	if probeErr != nil {
+		t.Fatalf("交给引擎的探测结果是失败的：%v", probeErr)
+	}
+	if probe == nil || probe.TotalBytes != 1024 {
+		t.Fatalf("建任务用的探测结果 = %+v，应当是登记时探到的那一份", probe)
+	}
+	if eng.called("AddTaskWithHeaders") {
+		t.Fatal("提交绕过了手上的探测结果，又联网探了一次")
+	}
+}
+
+// 用户点得比探测快：登记时的探测还在路上时，提交要等它出结果，而不是另起一次探测。
+func TestQueueController_SubmitWaitsForProbeInFlight(t *testing.T) {
+	ctx := context.Background()
+	eng := newBlockingEngine("ProbeURL", "AddTaskFromProbe")
+	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
+
+	reg, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/video.mp4",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	eng.waitFor(t, "ProbeURL")
+
+	submitted := make(chan error, 1)
+	go func() {
+		_, err := qc.Submit(ctx, FileInfoSubmission{
+			RequestID: reg.RequestID,
+			URL:       "https://example.com/video.mp4",
+			Filename:  "video.mp4",
+			Directory: tmpDir,
+			MaxConn:   4,
+		})
+		submitted <- err
+	}()
+
+	// 探测还没回来，提交本该在等它；等待期间队列仍然可用。
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case err := <-submitted:
+		t.Fatalf("探测还在路上，提交却已经返回：%v", err)
+	default:
+	}
+	assertQueueResponsive(t, qc, ctx, tmpDir)
+
+	eng.release("ProbeURL")
+	eng.waitFor(t, "AddTaskFromProbe")
+	eng.release("AddTaskFromProbe")
+	select {
+	case err := <-submitted:
+		if err != nil {
+			t.Fatalf("submit failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("探测落地之后提交没有继续走完")
+	}
+
+	if got := eng.probeCallCount(); got != 1 {
+		t.Fatalf("探测次数 = %d，提交在等探测的同时又探了一次", got)
+	}
+}
+
+// waitForProbe 等到登记时那次后台探测落地。它跑在自己的 goroutine 里，快慢不由调用方决定。
+func waitForProbe(t *testing.T, qc *QueueController) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if item, _ := qc.GetActive(); item != nil && item.probe != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("登记时那次探测一直没有落地")
 }
 
 // 预下载启动也是联网调用（StartPreDownloadWithHeaders 内部会探测 URL）。它一旦挪出锁外，

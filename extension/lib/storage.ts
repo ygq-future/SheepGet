@@ -1,24 +1,14 @@
 import type { SessionMetadata, TakeoverConfigSync } from './types';
 
+/**
+ * 接管清单的唯一来源是桌面端：内置分类的类型与用户在「接管」页加的后缀都由它下发。
+ * 扩展这边不持有自己的预置清单——两份清单必然漂移，而漂移的表现是「设置页里明明接管了，
+ * 浏览器却没接管」。没同步到桌面端配置时（桌面端没运行、首次安装）空清单意味着不接管，
+ * 下载留在浏览器里正常完成，这比按一份过期清单抢下载要好。
+ */
 export const DEFAULT_TAKEOVER_CONFIG: TakeoverConfigSync = {
   version: 0,
-  extensions: [
-    'zip',
-    'rar',
-    '7z',
-    'tar',
-    'gz',
-    'bz2',
-    'iso',
-    'exe',
-    'msi',
-    'dmg',
-    'pkg',
-    'apk',
-    'mp4',
-    'mkv',
-    'flv',
-  ],
+  extensions: [],
   excludedSites: [],
   pauseShortcut: 'Delete',
   forceShortcut: 'Insert',
