@@ -1,7 +1,12 @@
 import { DesktopClient, type DesktopEventLink } from '../lib/client';
 import { ResponseFilenameCache } from '../lib/filenames';
 import { LINK_VERIFY_TTL_MS, planHandoverFailure, shouldReverifyLink } from '../lib/handover';
-import { isMediaResponse, parseContentDispositionFilename, type MediaResource } from '../lib/media';
+import {
+  isMediaResponse,
+  isHlsSegment,
+  parseContentDispositionFilename,
+  type MediaResource,
+} from '../lib/media';
 import { decideTakeover, type TakeoverDecision } from '../lib/rules';
 import { updateKeyMask } from '../lib/shortcuts';
 import { addResourceOnce, resolveTabId } from '../lib/tabmedia';
@@ -17,6 +22,8 @@ import type {
   ExtensionMessage,
   HandoverRequest,
   HandoverResponse,
+  HLSVariantsResponse,
+  MediaProbeInfo,
   SessionMetadata,
   TakeoverConfigSync,
 } from '../lib/types';
@@ -54,8 +61,126 @@ const inFlightDownloads = new Set<number>();
 // In-memory media resource pool indexed by tabId
 const tabMediaPool = new Map<number, MediaResource[]>();
 
+// 页面标题/真实 URL 的缓存。content script 上报标题通常在资源请求之后，这里缓存起来，
+// 后到的资源在构建时直接取用，不必等下一次上报。
+const tabPageContext = new Map<number, { title: string; url: string }>();
+
 // 响应头里的真实文件名，供 onCreated 的接管判定与交接使用（见 lib/filenames.ts）。
 const responseFilenames = new ResponseFilenameCache();
+
+// 探测展示信息（时长/大小）的 URL 级缓存：同一地址的结果不会变，面板反复打开、
+// 页面反复刷新都只算一次。service worker 被挂起重启后缓存随内存消失，那只是
+// 「多探一次」，不值得为此引入持久化。
+const mediaProbeCache = new Map<string, MediaProbeInfo>();
+const MEDIA_PROBE_CACHE_LIMIT = 200;
+// 同一 URL 正在进行的探测：并发请求共享同一个 promise，不打两遍桌面端。
+const mediaProbeInFlight = new Map<string, Promise<MediaProbeInfo | null>>();
+// 最近一次探测失败的 URL 与时刻。离线时每条资源入池都会排队探测，冷却避免它们
+// 各自白跑一趟 ensureDesktop；成功的结果进缓存，不经过这里。
+const mediaProbeFailedAt = new Map<string, number>();
+const MEDIA_PROBE_RETRY_COOLDOWN_MS = 60_000;
+
+function cacheMediaProbe(url: string, info: MediaProbeInfo) {
+  if (mediaProbeCache.size >= MEDIA_PROBE_CACHE_LIMIT) {
+    // Map 迭代按插入序：淘汰最早进入的一条。
+    const oldest = mediaProbeCache.keys().next().value;
+    if (oldest !== undefined) mediaProbeCache.delete(oldest);
+  }
+  mediaProbeCache.set(url, info);
+}
+
+/**
+ * 探测一条资源的展示信息：命中缓存立即返回，进行中的请求共享同一个 promise，
+ * 未命中才打桌面端。面板的懒探测与嗅探时的后台预探测走的是这一个入口，
+ * 因此「打开面板时重新算一遍」这件事在结构上不会发生。
+ */
+function probeMediaCached(req: {
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  isHls?: boolean;
+  totalBytes?: number;
+  pageUrl?: string;
+}): Promise<MediaProbeInfo | null> {
+  const cached = mediaProbeCache.get(req.url);
+  if (cached) return Promise.resolve(cached);
+  const pending = mediaProbeInFlight.get(req.url);
+  if (pending) return pending;
+
+  const promise = (async () => {
+    try {
+      const info = await fetchMediaProbe(req);
+      if (info && (info.durationSeconds || info.totalBytes || info.variants)) {
+        cacheMediaProbe(req.url, info);
+        mediaProbeFailedAt.delete(req.url);
+        return info;
+      }
+      mediaProbeFailedAt.set(req.url, Date.now());
+      return info;
+    } finally {
+      mediaProbeInFlight.delete(req.url);
+    }
+  })();
+  mediaProbeInFlight.set(req.url, promise);
+  return promise;
+}
+
+// 后台预探测队列。资源一入池就排队，一次跑一条：HLS 探测要读清单、可能逐分片询问，
+// 并发多份互相抢带宽，串行让先到的资源先出结果。
+const mediaProbeQueue: MediaResource[] = [];
+let mediaProbeQueueRunning = false;
+
+function scheduleMediaProbe(resource: MediaResource) {
+  if (mediaProbeCache.has(resource.url)) return;
+  if (mediaProbeInFlight.has(resource.url)) return;
+  const failedAt = mediaProbeFailedAt.get(resource.url);
+  if (failedAt !== undefined && Date.now() - failedAt < MEDIA_PROBE_RETRY_COOLDOWN_MS) return;
+  if (mediaProbeQueue.some((r) => r.url === resource.url)) return;
+  mediaProbeQueue.push(resource);
+  void runMediaProbeQueue();
+}
+
+async function runMediaProbeQueue() {
+  if (mediaProbeQueueRunning) return;
+  mediaProbeQueueRunning = true;
+  try {
+    while (mediaProbeQueue.length > 0) {
+      const resource = mediaProbeQueue.shift()!;
+      const info = await probeMediaCached({
+        url: resource.url,
+        filename: resource.filename,
+        mimeType: resource.mimeType,
+        isHls: resource.isHls,
+        totalBytes: resource.totalBytes,
+        pageUrl: resource.pageUrl,
+      });
+      if (!info) {
+        // 桌面端离线或这条探测失败：整队清空，失败的 URL 有冷却。桌面端上线后
+        // 新入池的资源会重新触发预探测，不必在这里轮询重试。
+        mediaProbeQueue.length = 0;
+        return;
+      }
+      applyProbeToPool(resource.tabId, resource.url, info);
+    }
+  } finally {
+    mediaProbeQueueRunning = false;
+  }
+}
+
+/** 把预探测结果回填到该标签页里同地址的所有资源上，并推给页面（面板重开时直接可见）。 */
+function applyProbeToPool(tabId: number, url: string, info: MediaProbeInfo) {
+  const list = tabMediaPool.get(tabId);
+  if (!list) return;
+  let changed = false;
+  for (const r of list) {
+    if (r.url !== url) continue;
+    r.probeDuration = info.durationSeconds;
+    r.probeTotalBytes = info.totalBytes;
+    r.probeVariants = info.variants;
+    changed = true;
+  }
+  if (changed) void publishTabResources(tabId);
+}
 
 export default defineBackground(() => {
   console.log('[SheepGet] Background Service Worker starting...');
@@ -73,12 +198,44 @@ export default defineBackground(() => {
       // content script 不知道自己所在标签页的编号，退回发送者标签页；
       // popup 会显式带上 tabId，优先采用它。
       const tabId = resolveTabId(msg.tabId, sender.tab?.id);
+      // 面板打开意味着用户正看着这个标签页：顺手校准一次角标。
+      // per-tab 角标会在导航等时机被浏览器重置，这里是低成本的自我修复点。
+      if (tabId !== null) void updateBadge(tabId);
       sendResponse(tabId === null ? [] : tabMediaPool.get(tabId) || []);
       return true;
+    } else if (msg?.type === 'GET_MEDIA_PROBE') {
+      void (async () => {
+        sendResponse(
+          await fetchMediaProbe({
+            url: msg.url,
+            filename: msg.filename,
+            mimeType: msg.mimeType,
+            isHls: msg.isHls,
+            totalBytes: msg.totalBytes,
+            pageUrl: msg.pageUrl,
+          }),
+        );
+      })();
+      return true;
+    } else if (msg?.type === 'REPORT_PAGE_CONTEXT') {
+      // content script 上报的页面标题/URL。iframe 也会上报，但主框架的标题才是视频名
+      // 的可靠来源——只接受顶层框架的，避免把嵌入框架的空标题/重复标题盖掉真名。
+      if (sender.frameId === 0) {
+        applyPageContext(sender.tab?.id, msg.pageTitle, msg.pageUrl);
+      }
+      sendResponse(undefined);
     } else if (msg?.type === 'HANDOVER_MEDIA') {
       void (async () => {
-        const result = await handleMediaHandover(msg.resource as MediaResource);
+        const result = await handleMediaHandover(
+          msg.resource as MediaResource,
+          msg.resource.variantUri,
+        );
         sendResponse(result);
+      })();
+      return true;
+    } else if (msg?.type === 'GET_HLS_VARIANTS') {
+      void (async () => {
+        sendResponse(await fetchHLSVariants(msg.url, msg.pageUrl));
       })();
       return true;
     } else if (msg?.type === 'GET_STATUS') {
@@ -151,6 +308,11 @@ export default defineBackground(() => {
       const detected = isMediaResponse(details.url, contentType);
       if (!detected.isMedia) return;
 
+      // HLS 分片（.ts / audio|video/mp2t）不进入资源池：它们是清单的内部实现细节，
+      // 真正要下载的是 m3u8 清单（或其最终视频）。放进来会把面板刷成几百个 seg*.ts，
+      // 还会让悬浮条的兜底关联误命中第一个分片而不是清单。
+      if (isHlsSegment(details.url, contentType)) return;
+
       let list = tabMediaPool.get(details.tabId);
       if (!list) {
         list = [];
@@ -162,18 +324,29 @@ export default defineBackground(() => {
         details.url.split('?')[0]?.split('/').pop() ||
         (detected.isHls ? 'stream.m3u8' : 'media.mp4');
 
+      // HLS 清单的 URL 末段往往是 index.m3u8，真正的视频名在页面标题里。
+      // 命名优先级：Content-Disposition 头 → 页面标题（补上媒体后缀）→ URL 末段。
+      // 标题可能尚未上报（媒体请求先于 content script 就绪），拿到时后补。
+      const pageCtx = tabPageContext.get(details.tabId);
+      const suggestedName = suggestFilename(filename, detected, pageCtx?.title);
+
       const resource: MediaResource = {
         id: `${details.tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         url: details.url,
         tabId: details.tabId,
-        filename,
+        filename: suggestedName,
         mimeType: detected.mime,
         totalBytes: contentLength > 0 ? contentLength : undefined,
         isHls: detected.isHls,
+        pageTitle: pageCtx?.title,
+        pageUrl: pageCtx?.url,
         foundAt: Date.now(),
       };
       if (!addResourceOnce(list, resource)) return undefined;
       void updateBadge(details.tabId);
+      // 预探测：时长与大小现在就在后台算好并缓存，面板打开时直接有结果，
+      // 而不是每次打开都从头问一遍桌面端。
+      scheduleMediaProbe(resource);
       // 播放器可能晚于资源请求出现，也可能页面先就绪再触发媒体请求，
       // 因此每次新增资源都推给该标签页，让悬浮条无需重新加载页面即可关联。
       publishTabResources(details.tabId);
@@ -186,22 +359,92 @@ export default defineBackground(() => {
   // 8. Clean up media resources on tab close and navigation
   chrome.tabs.onRemoved.addListener((tabId) => {
     tabMediaPool.delete(tabId);
+    tabPageContext.delete(tabId);
   });
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === 'loading' && changeInfo.url) {
       tabMediaPool.delete(tabId);
+      tabPageContext.delete(tabId);
+      void updateBadge(tabId);
+    }
+    // 导航完成时校准一次角标：per-tab 角标可能在导航过程中被浏览器重置，
+    // 资源池里已有的媒体数量就是此刻该显示的数字。
+    if (changeInfo.status === 'complete') {
       void updateBadge(tabId);
     }
   });
 });
 
 // publishTabResources 把某个标签页的最新嗅探结果推给页面内的悬浮条。
-function publishTabResources(tabId: number) {
+// 播放器可能在 iframe 里，而 tabs.sendMessage 默认只到主框架；遍历所有 frame 逐个投递，
+// 才能让 iframe 内的悬浮条也拿到新嗅探到的资源（否则只有启动那次 GET_TAB_MEDIA 拉到的旧结果）。
+async function publishTabResources(tabId: number) {
   const resources = tabMediaPool.get(tabId) || [];
-  // 特权页与尚未注入 content script 的页面没有接收方，投递失败属正常情况
-  chrome.tabs.sendMessage(tabId, { type: 'TAB_MEDIA_UPDATED', resources }, () => {
-    void chrome.runtime.lastError;
-  });
+  const payload = { type: 'TAB_MEDIA_UPDATED' as const, resources };
+
+  let frameIds: number[] = [0];
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    frameIds = (frames ?? []).filter((f) => f.frameId !== undefined).map((f) => f.frameId);
+  } catch {
+    // 拿不到 frame 列表（如特权页）就只投主框架
+  }
+
+  for (const frameId of frameIds) {
+    chrome.tabs.sendMessage(tabId, payload, { frameId }, () => {
+      void chrome.runtime.lastError;
+    });
+  }
+}
+
+/**
+ * 把页面标题与真实 URL 回填到该标签页已嗅探到的所有资源上。
+ * 资源池里的条目是在页面标题可读之前（onHeadersReceived）写进去的，标题只能后补；
+ * 后到的资源在构建时也会读到已经缓存的标题（见 tabPageContext）。
+ */
+function applyPageContext(tabId: number | undefined, pageTitle: string, pageUrl: string) {
+  if (tabId === undefined || tabId < 0) return;
+  tabPageContext.set(tabId, { title: pageTitle, url: pageUrl });
+
+  const list = tabMediaPool.get(tabId);
+  if (!list) return;
+  for (const r of list) {
+    if (!r.pageTitle && pageTitle) r.pageTitle = pageTitle;
+    // pageUrl 始终用真实页面地址，不能用 m3u8 的清单地址冒充。
+    r.pageUrl = pageUrl;
+    // 标题补到之后，之前按 index.m3u8 命名的 HLS 资源要重新用真名命名。
+    r.filename = suggestFilename(r.filename, { isHls: r.isHls, mime: r.mimeType }, pageTitle);
+  }
+}
+
+/**
+ * 生成建议文件名。命名来源优先级与 IDM 一致：
+ *   1. 已经落定的文件名（Content-Disposition 头给出的真名）原样保留；
+ *   2. 否则若 URL 末段是 index.m3u8 / stream.m3u8 这类占位名，且拿到了页面标题，
+ *      用标题 + 媒体后缀命名；
+ *   3. 否则保留 URL 末段。
+ */
+function suggestFilename(
+  fallback: string,
+  detected: { isHls: boolean; mime: string },
+  pageTitle?: string,
+): string {
+  const urlBasename = fallback.split('?')[0]?.split('/').pop() || '';
+  const isPlaceholder =
+    !urlBasename || /^(index|stream|playlist|master|chunklist)\.m3u8?$/i.test(urlBasename);
+  if (!isPlaceholder || !pageTitle) return fallback;
+
+  const suffix = detected.isHls ? '.mp4' : `.${detected.mime.split('/').pop() || 'mp4'}`;
+  return sanitizeFilename(pageTitle + suffix);
+}
+
+/** 去掉文件名里的非法字符，避免把换行/路径分隔符/控制符带进文件名。 */
+function sanitizeFilename(name: string): string {
+  const cleaned = name
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+  return cleaned || 'media';
 }
 
 async function updateBadge(tabId: number) {
@@ -218,7 +461,10 @@ async function updateBadge(tabId: number) {
   }
 }
 
-async function handleMediaHandover(resource: MediaResource): Promise<HandoverResponse> {
+async function handleMediaHandover(
+  resource: MediaResource,
+  variantUri?: string,
+): Promise<HandoverResponse> {
   let cookiesStr = '';
   try {
     const cookies = await chrome.cookies.getAll({ url: resource.url });
@@ -245,9 +491,75 @@ async function handleMediaHandover(resource: MediaResource): Promise<HandoverRes
       },
     },
     mediaMeta: resource.isHls ? { isHls: true } : undefined,
+    variantUri,
   };
 
   return await handOverWithRetry(handoverReq, 3000, 'media-handover');
+}
+
+/** 拉取一份清单的可选清晰度：带 cookies/referer 转发给桌面端解析。 */
+async function fetchHLSVariants(url: string, pageUrl?: string): Promise<HLSVariantsResponse> {
+  let cookiesStr = '';
+  try {
+    const cookies = await chrome.cookies.getAll({ url });
+    cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  } catch {
+    // Ignore cookie error
+  }
+
+  const client = await ensureDesktop();
+  if (!client) {
+    return { variants: [] };
+  }
+  const resp = await client.fetchHLSVariants(url, {
+    cookies: cookiesStr,
+    headers: {
+      'User-Agent': navigator.userAgent,
+      ...(pageUrl ? { Referer: pageUrl } : {}),
+    },
+  });
+  return resp ?? { variants: [] };
+}
+
+/**
+ * 面板资源项的展示信息探测（时长与大小），经桌面端完成。请求带着嗅探时已有的
+ * 上下文（Cookie/Referer），防盗链的清单与媒体不带它们只会得到 403。桌面端离线或
+ * 探测失败时返回 null——面板保持「未知大小」的现状，不为此阻塞任何交互。
+ */
+async function fetchMediaProbe(req: {
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  isHls?: boolean;
+  totalBytes?: number;
+  pageUrl?: string;
+}): Promise<MediaProbeInfo | null> {
+  let cookiesStr = '';
+  try {
+    const cookies = await chrome.cookies.getAll({ url: req.url });
+    cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  } catch {
+    // Ignore cookie error
+  }
+
+  const client = await ensureDesktop();
+  if (!client) return null;
+  return await client.fetchMediaProbe(
+    {
+      url: req.url,
+      filename: req.filename,
+      mimeType: req.mimeType,
+      isHls: req.isHls,
+      totalBytes: req.totalBytes,
+    },
+    {
+      cookies: cookiesStr,
+      headers: {
+        'User-Agent': navigator.userAgent,
+        ...(req.pageUrl ? { Referer: req.pageUrl } : {}),
+      },
+    },
+  );
 }
 
 async function init() {

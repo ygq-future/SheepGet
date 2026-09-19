@@ -51,3 +51,6 @@ desktop.ini
 
 .tools/
 *.tsbuildinfo
+
+# Local debugging scratch
+.tmp/

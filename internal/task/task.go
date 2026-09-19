@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/hls"
 )
 
 // Status represents the download task status.
@@ -67,10 +68,36 @@ type Task struct {
 	// Chunks for multi-connection download state
 	Chunks []Chunk `json:"chunks,omitempty"`
 
+	// Media 是 HLS 任务选定的媒体来源（清单地址、清晰度、独立音轨、时长、分片数）。
+	// 为空表示这是一次普通 HTTP 传输：一次请求得到的就是成品，没有处理阶段。
+	// 续传、重试与重启都只靠它重新取回清单，不依赖上一次运行留下的内存状态。
+	Media *hls.Source `json:"media,omitempty"`
+	// SegmentsDone/SegmentsTotal 是 HLS 传输的分片进度，界面据此显示「分片 N/M」。
+	// 分片下载是多路并发进行的，但字节数进度条本身看不出这一点；有了这个计数，
+	// 「正在并发抓取分片」对用户才是可见的。普通 HTTP 传输两个字段都是 0，界面不显示。
+	SegmentsDone  int `json:"segmentsDone,omitempty"`
+	SegmentsTotal int `json:"segmentsTotal,omitempty"`
+	// SegmentDone 是每个分片的完成状态，索引即分片序号（视频清单在前、音轨清单在后拼接）。
+	// 界面据此把进度条画成一格一分片的分段条——和普通 HTTP 的多线程分段同样的视觉，
+	// 否则 HLS 只有一根从头到尾的实心条，多路并发完全看不出来。普通 HTTP 传输为空。
+	SegmentDone []bool `json:"segmentDone,omitempty"`
+	// MediaInputs 是本次传输已经落盘、要交给 Media Processor 的输入（分片目录内的文件名）。
+	// 传输与处理是两条不同的失败路径（ADR-0004）：有了它，重试处理直接用现成输入，
+	// 不必再为取一次清单把网络再走一遍。
+	MediaInputs *hls.Inputs `json:"mediaInputs,omitempty"`
+	// TransferDone 表示 MediaInputs 已经全部就绪，剩下的只是处理。
+	// 它是「传输已完成」这一事实的唯一记录——处理失败后不能靠重新传输来恢复。
+	TransferDone bool `json:"transferDone,omitempty"`
+
 	// RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
 	// links whose authorization has expired; applied to every probe and transfer request.
 	// Encapsulated in RequestCredentials to ensure sensitive fields are masked by default on serialization.
 	RequestHeaders credentials.RequestCredentials `json:"requestHeaders,omitempty"`
+}
+
+// IsHLS reports whether this task downloads an HLS playlist and therefore has a processing stage.
+func (t *Task) IsHLS() bool {
+	return t != nil && t.Media != nil
 }
 
 // TaskStore defines the storage interface for persisting and querying tasks.

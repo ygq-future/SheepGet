@@ -12,6 +12,10 @@ export interface MediaResource {
   pageTitle?: string;
   pageUrl?: string;
   foundAt: number;
+  /** 后台预探测到的展示信息（时长/大小/清晰度数），探测完成后回填到池内资源上。 */
+  probeDuration?: number;
+  probeTotalBytes?: number;
+  probeVariants?: number;
 }
 
 const HLS_EXTENSIONS = new Set(['m3u8', 'm3u']);
@@ -81,6 +85,19 @@ export function isMediaResponse(
   return { isMedia: false, isHls: false, mime };
 }
 
+/**
+ * 判断一次请求是不是 HLS 分片。分片是清单的内部实现，真正要下载的是 m3u8 清单，
+ * 所以资源池把它过滤掉，避免面板被几百个 seg*.ts 刷屏、悬浮条兜底关联误命中分片。
+ * 判据是「MPEG-TS 内容」：`audio/mp2t` / `video/mp2t`，或 `.ts` 后缀且 MIME 是 ts 类型。
+ */
+export function isHlsSegment(url: string, contentTypeHeader?: string): boolean {
+  const mime = normalizeMime(contentTypeHeader);
+  if (mime === 'video/mp2t' || mime === 'audio/mp2t') return true;
+  const ext = extractExtension(url);
+  if (ext === 'ts' && (mime.startsWith('video/') || mime.startsWith('audio/'))) return true;
+  return false;
+}
+
 export function parseContentDispositionFilename(header?: string): string {
   if (!header) return '';
   const parts = header.split(';');
@@ -105,6 +122,26 @@ export function parseContentDispositionFilename(header?: string): string {
   return '';
 }
 
+/**
+ * 从页面 DOM 推断视频/资源的真实名称，与 IDM 的做法对齐：
+ * og:title（站点专门为分享准备的标题）→ 页面 <title>。两者都做同样的清洗：
+ * 去掉 `(数字)` 这类番号前缀、折叠空白、去掉常见的播放/片头占位符。
+ * 拿不到任何标题时返回空串，由调用方回退到 URL 末段。
+ */
+export function inferPageTitle(doc: Pick<Document, 'querySelector' | 'title'>): string {
+  const ogTitle = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || '';
+  const raw = (ogTitle || doc.title || '').trim();
+  if (!raw) return '';
+
+  const cleaned = raw
+    // 去掉 `(12)` / `（12）` 这类播放列表番号前缀（IDM 的正则 `^\(\d+\)`）
+    .replace(/^[(（]\d+[)）]\s*/, '')
+    // 折叠换行/制表符/重复空格，避免多行标题带进文件名
+    .replace(/[ \t\r\n]+/g, ' ')
+    .trim();
+  return cleaned;
+}
+
 export function formatBytes(bytes?: number): string {
   if (bytes === undefined || bytes === null || bytes <= 0) {
     return '未知大小';
@@ -117,4 +154,26 @@ export function formatBytes(bytes?: number): string {
     unitIndex++;
   }
   return `${val.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+/** 把秒数格式化成 mm:ss（或 h:mm:ss）；探不出时长时返回空串，调用方按没有处理。 */
+export function formatDuration(seconds?: number): string {
+  if (seconds === undefined || seconds === null || seconds <= 0) return '';
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/**
+ * 把完整 MIME 压成面板一行能放下的短标签。`application/vnd.apple.mpegurl` 这类
+ * 全称没有信息量还挤占版面：清单按 m3u8 显示，其余取子类型（video/mp4 → mp4）。
+ */
+export function mimeShortLabel(mime?: string): string {
+  if (!mime) return '';
+  const subtype = mime.split('/')[1] || mime;
+  if (subtype.includes('mpegurl')) return 'm3u8';
+  return subtype;
 }

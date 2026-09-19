@@ -20,6 +20,8 @@ export interface HandoverRequest {
   pageContext: PageContext;
   credentials?: CredentialsPayload;
   mediaMeta?: unknown;
+  /** 悬浮条上已经选好的清晰度地址；多清晰度时在交接前选定。 */
+  variantUri?: string;
 }
 
 /**
@@ -91,6 +93,13 @@ export interface TabMediaUpdatedMessage {
   resources: MediaResource[];
 }
 
+/** content script 上报所在页面的真实标题与 URL，供 HLS 等资源智能命名。 */
+export interface ReportPageContextMessage {
+  type: 'REPORT_PAGE_CONTEXT';
+  pageTitle: string;
+  pageUrl: string;
+}
+
 export interface HandoverMediaMessage {
   type: 'HANDOVER_MEDIA';
   resource: {
@@ -101,12 +110,53 @@ export interface HandoverMediaMessage {
     isHls: boolean;
     pageUrl?: string;
     pageTitle?: string;
+    variantUri?: string;
   };
+}
+
+/** 清晰度选项，桌面端与文件信息窗口共用同一份命名。 */
+export interface HLSVariantOption {
+  uri: string;
+  label: string;
+  bandwidth?: number;
+}
+
+/** 交接前拉取某份清单的可选清晰度。 */
+export interface GetHLSVariantsMessage {
+  type: 'GET_HLS_VARIANTS';
+  url: string;
+  pageUrl?: string;
+}
+
+/** GET_HLS_VARIANTS 的响应。 */
+export interface HLSVariantsResponse {
+  variants: HLSVariantOption[];
+}
+
+/** 面板媒体概览探测的结果：下载之前就能显示的时长与大小。 */
+export interface MediaProbeInfo {
+  /** 媒体时长（秒）。 */
+  durationSeconds?: number;
+  /** 这次下载的总大小（字节）。HLS 由桌面端逐分片询问得出。 */
+  totalBytes?: number;
+  /** 大于 1 表示清单有多个清晰度：先选清晰度才有「这次下载的大小」，时长大小不给。 */
+  variants?: number;
 }
 
 /** 读当前链路状态（不发网络请求，读的是后台维护的观测结果）。 */
 export interface GetStatusMessage {
   type: 'GET_STATUS';
+}
+
+/** 面板请后台代为探测一条资源的展示信息（时长与大小），经桌面端完成。 */
+export interface GetMediaProbeMessage {
+  type: 'GET_MEDIA_PROBE';
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  isHls?: boolean;
+  totalBytes?: number;
+  pageUrl?: string;
 }
 
 /** 强制重新验证链路：ping 现会话，失效就问原生消息宿主拿最新端口与令牌。 */
@@ -119,6 +169,9 @@ export type ExtensionMessage =
   | ResetKeysMessage
   | GetTabMediaMessage
   | TabMediaUpdatedMessage
+  | ReportPageContextMessage
   | HandoverMediaMessage
+  | GetHLSVariantsMessage
+  | GetMediaProbeMessage
   | GetStatusMessage
   | ReconnectMessage;

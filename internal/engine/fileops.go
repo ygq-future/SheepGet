@@ -93,7 +93,8 @@ func removeDestinationFiles(dir, filename string) {
 	_ = os.Remove(destPath + ".sheepget")
 }
 
-// RemoveTaskFiles 删除任务的全部磁盘产物：落点上的成品与同名分片，以及可能位于独立临时目录中的分片。
+// RemoveTaskFiles 删除任务的全部磁盘产物：落点上的成品与同名分片、HLS 任务的分片目录，
+// 以及可能位于独立临时目录中的分片。
 // GetPartPath 在配置了独立临时目录时把分片放在别处，只清理落点旁的文件会留下无人引用的孤儿分片。
 func (m *Manager) RemoveTaskFiles(t *task.Task) {
 	if t == nil || t.Directory == "" || t.Filename == "" {
@@ -102,5 +103,8 @@ func (m *Manager) RemoveTaskFiles(t *task.Task) {
 	removeDestinationFiles(t.Directory, t.Filename)
 	if partPath := m.GetPartPath(t); partPath != filepath.Join(t.Directory, t.Filename+".sheepget") {
 		_ = os.Remove(partPath)
+	}
+	if t.IsHLS() {
+		m.removeSegmentDir(t)
 	}
 }

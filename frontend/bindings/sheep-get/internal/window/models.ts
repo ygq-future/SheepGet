@@ -10,6 +10,9 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as duplicate$0 from "../duplicate/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as hls$0 from "../hls/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 /**
@@ -22,6 +25,12 @@ export class DownloadRequest {
     "filename"?: string;
     "maxConn"?: number;
     "preDownload"?: boolean | null;
+
+    /**
+     * VariantURI 是浏览器扩展在悬浮条上已经选好的清晰度（清单里的一个 EXT-X-STREAM-INF 地址）。
+     * 有它时这一项不必再问一次清晰度：多清晰度的选择已经发生在进入本窗口之前。
+     */
+    "variantUri"?: string;
 
     /** Creates a new DownloadRequest instance. */
     constructor($$source: Partial<DownloadRequest> = {}) {
@@ -107,6 +116,23 @@ export class FileInfoItem {
     "queueTotal": number;
     "headers"?: { [_ in string]?: string };
 
+    /**
+     * 下面三项描述这条链接的 HLS 事实，界面据此先选清晰度、再展示选定后的大小与时长。
+     * Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。
+     */
+    "variants"?: hls$0.VariantOption[];
+
+    /**
+     * QualityLabel 是已选清晰度的展示名，为空表示还没选定（或这条链接不是清单）。
+     */
+    "qualityLabel"?: string;
+
+    /**
+     * MediaDuration 是清单声明的时长（秒）；0 表示这份清单没给出时长。时长与大小都只来自
+     * 能证实的信息，读不到就留空由界面显示未知，不用别处的数字凑一个出来。
+     */
+    "mediaDuration"?: number;
+
     /** Creates a new FileInfoItem instance. */
     constructor($$source: Partial<FileInfoItem> = {}) {
         if (!("id" in $$source)) {
@@ -162,6 +188,7 @@ export class FileInfoItem {
         const $$createField13_0 = $$createType2;
         const $$createField14_0 = $$createType3;
         const $$createField17_0 = $$createType0;
+        const $$createField18_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
             $$parsedSource["duplicateTask"] = $$createField13_0($$parsedSource["duplicateTask"]);
@@ -171,6 +198,9 @@ export class FileInfoItem {
         }
         if ("headers" in $$parsedSource) {
             $$parsedSource["headers"] = $$createField17_0($$parsedSource["headers"]);
+        }
+        if ("variants" in $$parsedSource) {
+            $$parsedSource["variants"] = $$createField18_0($$parsedSource["variants"]);
         }
         return new FileInfoItem($$parsedSource as Partial<FileInfoItem>);
     }
@@ -232,3 +262,5 @@ const $$createType0 = $Create.Map($Create.Any, $Create.Any);
 const $$createType1 = task$0.Task.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
 const $$createType3 = duplicate$0.Decision.createFrom;
+const $$createType4 = hls$0.VariantOption.createFrom;
+const $$createType5 = $Create.Array($$createType4);

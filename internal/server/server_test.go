@@ -30,6 +30,14 @@ func (m *mockDownloadHandler) HandleHandover(_ context.Context, req *HandoverReq
 	return m.resp, nil
 }
 
+func (m *mockDownloadHandler) HandleHLSVariants(_ context.Context, _ *HLSVariantsRequest) (*HLSVariantsResponse, error) {
+	return &HLSVariantsResponse{Variants: []HLSVariantOption{}}, nil
+}
+
+func (m *mockDownloadHandler) HandleMediaProbe(_ context.Context, _ *MediaProbeRequest) (*MediaProbeResponse, error) {
+	return &MediaProbeResponse{}, nil
+}
+
 type mockConfigProvider struct {
 	cfg config.TakeoverConfig
 }

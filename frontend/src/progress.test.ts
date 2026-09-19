@@ -3,6 +3,7 @@ import { sortActiveTasks } from './views/ProgressView';
 import {
   calculateChunkProgress,
   calculateChunkDividers,
+  aggregateSegmentCells,
   isProcessingFailure,
 } from './lib/progress';
 import * as taskModels from '../bindings/sheep-get/internal/task/models';
@@ -250,5 +251,38 @@ describe('calculateChunkProgress and calculateChunkDividers algorithm', () => {
     expect(items[0].widthPercent).toBe(20);
     expect(items[0].downloadedPercent).toBe(20); // clamped to widthPercent
     expect(items[0].assisted).toBe(true);
+  });
+});
+
+describe('aggregateSegmentCells (HLS segment cell bar)', () => {
+  it('returns empty for missing or empty bitmaps', () => {
+    expect(aggregateSegmentCells(undefined)).toEqual([]);
+    expect(aggregateSegmentCells([])).toEqual([]);
+  });
+
+  it('maps one segment to one cell when under the cell limit', () => {
+    const done = [true, true, false, false];
+    expect(aggregateSegmentCells(done)).toEqual([1, 1, 0, 0]);
+  });
+
+  it('fills cells in playlist order, video playlist first then audio', () => {
+    // 视频清单 3 片（前 2 片已完成）+ 音轨 2 片（已完成 1 片）：从左到右逐步填充。
+    const done = [true, true, false, true, false];
+    expect(aggregateSegmentCells(done)).toEqual([1, 1, 0, 1, 0]);
+  });
+
+  it('aggregates long playlists into groups with fractional completion', () => {
+    const total = 970; // 超过格子上限，必须聚合
+    const done = Array.from({ length: total }, (_, i) => i < 97); // 前 10% 完成
+    const cells = aggregateSegmentCells(done);
+    expect(cells.length).toBeLessThanOrEqual(160);
+    // 组内比例：10% 的整体完成度在聚合后仍然守恒（允许分组取整的少量误差）
+    const sum = cells.reduce((a, b) => a + b, 0);
+    const ratio = sum / cells.length;
+    expect(ratio).toBeGreaterThan(0.08);
+    expect(ratio).toBeLessThan(0.12);
+    // 填充从左侧开始：第一格必满，最后一格必空
+    expect(cells[0]).toBe(1);
+    expect(cells[cells.length - 1]).toBe(0);
   });
 });

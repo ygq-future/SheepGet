@@ -10,6 +10,7 @@ import (
 
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
+	"sheep-get/internal/hls"
 	"sheep-get/internal/task"
 )
 
@@ -201,6 +202,11 @@ func (e *blockingEngine) NumberedCopyName(_ context.Context, _, filename string)
 func (e *blockingEngine) ReuseExistingFile(_ context.Context, taskID, _, _ string) (*task.Task, error) {
 	e.enter("ReuseExistingFile")
 	return &task.Task{ID: taskID}, nil
+}
+
+func (e *blockingEngine) ResolveHLSVariant(_ context.Context, _, _ string, _ map[string]string) (*hls.Source, error) {
+	e.enter("ResolveHLSVariant")
+	return nil, errors.New("not configured in test")
 }
 
 func setupQueueWithEngine(t *testing.T, eng DownloadEngine, view WindowView, runOps windowOps) (*QueueController, string) {

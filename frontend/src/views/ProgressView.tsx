@@ -38,6 +38,7 @@ import { progressWindowHeightFor } from '../lib/windowSize';
 import {
   calculateChunkProgress,
   calculateChunkDividers,
+  aggregateSegmentCells,
   isProcessingFailure,
 } from '../lib/progress';
 
@@ -547,46 +548,46 @@ export function ProgressView() {
                       >
                         {/* Top Row: Filename + Status Badge + Actions */}
                         <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className="truncate text-xs font-semibold text-[var(--text-primary)]"
-                                title={t.filename}
-                              >
-                                {t.filename}
+                          {/* min-w-0 让这一列可以收缩：长文件名在这里截断省略，
+                              而不是把行撑爆、把状态徽章挤到逐字换行。 */}
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <span
+                              className="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--text-primary)]"
+                              title={t.filename}
+                            >
+                              {t.filename}
+                            </span>
+                            {/* Status Badge */}
+                            {t.status === taskModels.Status.StatusDownloading && (
+                              <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-1.5 text-[9px] font-medium text-[var(--accent)]">
+                                <span className="h-1 w-1 animate-pulse rounded-full bg-[var(--accent)]" />
+                                下载中
                               </span>
-                              {/* Status Badge */}
-                              {t.status === taskModels.Status.StatusDownloading && (
-                                <span className="py-0.2 inline-flex items-center gap-1 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-1.5 text-[9px] font-medium text-[var(--accent)]">
-                                  <span className="h-1 w-1 animate-pulse rounded-full bg-[var(--accent)]" />
-                                  下载中
-                                </span>
-                              )}
-                              {t.status === taskModels.Status.StatusProcessing && (
-                                <span className="py-0.2 inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/15 px-1.5 text-[9px] font-medium text-cyan-400">
-                                  <Loader2 className="h-2 w-2 animate-spin" />
-                                  处理中
-                                </span>
-                              )}
-                              {t.status === taskModels.Status.StatusQueued && (
-                                <span className="py-0.2 inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 text-[9px] font-medium text-amber-400">
-                                  <Clock className="h-2 w-2" />
-                                  排队中
-                                </span>
-                              )}
-                              {t.status === taskModels.Status.StatusPaused && (
-                                <span className="py-0.2 inline-flex items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 text-[9px] font-medium text-[var(--text-muted)]">
-                                  <Pause className="h-2 w-2" />
-                                  已暂停
-                                </span>
-                              )}
-                              {t.status === taskModels.Status.StatusError && (
-                                <span className="py-0.2 inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/15 px-1.5 text-[9px] font-medium text-rose-400">
-                                  <AlertCircle className="h-2 w-2" />
-                                  {isProcessingError ? '处理失败' : '下载失败'}
-                                </span>
-                              )}
-                            </div>
+                            )}
+                            {t.status === taskModels.Status.StatusProcessing && (
+                              <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/15 px-1.5 text-[9px] font-medium text-cyan-400">
+                                <Loader2 className="h-2 w-2 animate-spin" />
+                                处理中
+                              </span>
+                            )}
+                            {t.status === taskModels.Status.StatusQueued && (
+                              <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/15 px-1.5 text-[9px] font-medium text-amber-400">
+                                <Clock className="h-2 w-2" />
+                                排队中
+                              </span>
+                            )}
+                            {t.status === taskModels.Status.StatusPaused && (
+                              <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 text-[9px] font-medium text-[var(--text-muted)]">
+                                <Pause className="h-2 w-2" />
+                                已暂停
+                              </span>
+                            )}
+                            {t.status === taskModels.Status.StatusError && (
+                              <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/15 px-1.5 text-[9px] font-medium text-rose-400">
+                                <AlertCircle className="h-2 w-2" />
+                                {isProcessingError ? '处理失败' : '下载失败'}
+                              </span>
+                            )}
                           </div>
 
                           {/* Control Buttons */}
@@ -629,7 +630,37 @@ export function ProgressView() {
                         {/* Seamless Multi-Chunk Progress Bar with In-place Split Dividers */}
                         <div className="mt-1.5 space-y-1">
                           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[0.5px]">
-                            {isUnknownSize && t.status === taskModels.Status.StatusDownloading ? (
+                            {t.segmentDone && t.segmentDone.length > 1 ? (
+                              /* HLS 分段格子条：一格一分片（长清单按组聚合），完成一格亮一格。
+                                 和普通 HTTP 的多线程分段同样的视觉——多路并发抓分片要看得见，
+                                 不能是一根从头到尾的实心条。放最前：HLS 多数大小未知，
+                                 落到后面的 unknown-size 分支就只剩 indeterminate 动画了。 */
+                              (() => {
+                                const cells = aggregateSegmentCells(t.segmentDone);
+                                const isSegmentError = t.status === taskModels.Status.StatusError;
+                                return (
+                                  <div className="absolute inset-0 flex items-stretch gap-[1px]">
+                                    {cells.map((ratio, i) => (
+                                      <div
+                                        key={i}
+                                        className="relative h-full min-w-0 flex-1"
+                                        title={`分片 ${i + 1}/${cells.length}${ratio < 1 && ratio > 0 ? `（${Math.round(ratio * 100)}%）` : ''}`}
+                                      >
+                                        {ratio > 0 && (
+                                          <div
+                                            className={`absolute inset-y-0 left-0 rounded-[1px] ${
+                                              isSegmentError ? 'bg-rose-500' : 'bg-[var(--accent)]'
+                                            }`}
+                                            style={{ width: `${ratio * 100}%` }}
+                                          />
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              })()
+                            ) : isUnknownSize &&
+                              t.status === taskModels.Status.StatusDownloading ? (
                               <div className="animate-indeterminate h-full w-2/5 rounded-full bg-[var(--accent)]" />
                             ) : t.chunks && t.chunks.length > 1 ? (
                               (() => {
@@ -699,6 +730,16 @@ export function ProgressView() {
                               <span>{formatBytes(t.downloaded)}</span>
                               <span>/</span>
                               <span>{isUnknownSize ? '未知大小' : formatBytes(t.totalBytes)}</span>
+                              {/* HLS 分片进度：分片是多路并发抓取的，把计数亮出来，
+                                  「正在并发下载」对用户才是可见的，而不是看起来像单线程流。 */}
+                              {(t.segmentsTotal ?? 0) > 0 && (
+                                <>
+                                  <span>•</span>
+                                  <span className="font-semibold text-[var(--text-secondary)]">
+                                    分片 {t.segmentsDone ?? 0}/{t.segmentsTotal}
+                                  </span>
+                                </>
+                              )}
                               {t.speed > 0 && t.status === taskModels.Status.StatusDownloading && (
                                 <>
                                   <span>•</span>

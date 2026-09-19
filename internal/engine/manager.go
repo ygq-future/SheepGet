@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sheep-get/internal/config"
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/hls"
 	"sheep-get/internal/mediainfo"
 	"sheep-get/internal/task"
 	"strconv"
@@ -25,8 +26,6 @@ var (
 	ErrProcessingRetryRequired = errors.New("task failed during media processing; retry processing instead")
 	// ErrNotProcessingFailure 表示任务并非处理失败，不能按仅重试处理处理。
 	ErrNotProcessingFailure = errors.New("task did not fail during media processing")
-	// ErrProcessingUnavailable 表示媒体处理层尚未接入（ADR-0001 的 Media Processor）。
-	ErrProcessingUnavailable = errors.New("media processing is not available")
 )
 
 // TaskListener allows observing task state transitions and progress updates.
@@ -57,6 +56,8 @@ type ProbeResult struct {
 	LastModified  string     `json:"lastModified"`
 	ContentType   string     `json:"contentType"`
 	DuplicateTask *task.Task `json:"duplicateTask,omitempty"`
+	// HLS 是这条链接的 HLS 事实；为空表示它不是清单，按普通文件下载。
+	HLS *HLSProbe `json:"hls,omitempty"`
 }
 
 // ConsistencyResult reports whether an updated URL is consistent with original task file.
@@ -298,6 +299,34 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		probe.LastModified = info.LastModified
 		probe.ContentType = info.ContentType
 	}
+
+	if looksLikePlaylist(urlStr, probe.ContentType) {
+		hlsProbe, hlsErr := m.inspectPlaylist(ctx, urlStr, creds)
+		if hlsErr != nil {
+			// 看起来是清单却读不出来，就不要把它当普通文件接着走：把一个 m3u8 下成成品文件
+			// 不是用户要的东西，按失败报出来更接近事实。
+			if probe.Filename == "" {
+				probe.Filename = extractFilenameFromURL(urlStr)
+			}
+			probe.Filename = HLSOutputName(urlStr, probe.Filename)
+			return probe, hlsErr
+		}
+		probe.HLS = hlsProbe
+		// 清单自己的字节数不是这次下载的大小——真正的分片要等清晰度选定后才知道。
+		probe.TotalBytes = -1
+		probe.Filename = HLSOutputName(urlStr, probe.Filename)
+
+		// 只有一版就没有选择可做，直接定下来。多清晰度时留在这里等用户选：
+		// 替用户在几版之间挑一个，等于替他做了一个他没做过的决定。
+		if len(hlsProbe.Variants) == 1 {
+			src, resolveErr := m.resolveHLS(ctx, urlStr, hlsProbe.Variants[0].URI, creds)
+			if resolveErr != nil {
+				return probe, resolveErr
+			}
+			ApplyHLSSelection(probe, src)
+		}
+	}
+
 	if probe.Filename == "" {
 		probe.Filename = extractFilenameFromURL(urlStr)
 	}
@@ -583,73 +612,45 @@ func (m *Manager) FindDuplicateTask(ctx context.Context, urlStr string) (*task.T
 	return nil, nil
 }
 
-// StartPreDownload creates a task that begins transferring while the file info dialog is still open.
+// PreDownloadRequest 是启动一次提前下载的输入。
+type PreDownloadRequest struct {
+	URL       string
+	Directory string
+	Filename  string
+	MaxConn   int
+	Headers   map[string]string
+	// Probe 是登记时已经完成的探测结果（HLS 链接还带着选定清晰度后的来源）。
+	// 为 nil 时自己探一次。
+	Probe *ProbeResult
+}
+
+// StartPreDownloadFromProbe creates a task that begins transferring while the file info dialog is
+// still open.
+//
+// 它接受一份现成的探测结果：HLS 链接的清晰度是在打开对话框之前选定的，那份事实必须原样
+// 传给任务，否则提前下载下来的会是另一个版本（Ticket 07：提前下载使用已选版本）。
+func (m *Manager) StartPreDownloadFromProbe(ctx context.Context, req PreDownloadRequest) (*task.Task, error) {
+	creds := credentials.New(req.Headers)
+	probe := req.Probe
+	var probeErr error
+	if probe == nil {
+		probe, probeErr = m.probeResource(ctx, req.URL, creds)
+	}
+	return m.createTask(ctx, req.URL, req.Directory, req.Filename, req.MaxConn, creds, probe, probeErr)
+}
+
+// StartPreDownload creates a pre-download task without request context.
 func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error) {
-	return m.StartPreDownloadWithHeaders(ctx, urlStr, dir, filename, maxConn, nil)
+	return m.StartPreDownloadFromProbe(ctx, PreDownloadRequest{
+		URL: urlStr, Directory: dir, Filename: filename, MaxConn: maxConn,
+	})
 }
 
 // StartPreDownloadWithHeaders creates a pre-download task with optional request headers.
 func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
-	creds := credentials.New(headers)
-	info, err := m.downloader.Probe(ctx, urlStr, creds)
-	if err != nil {
-		// As per A03: a probe failure on a confirmed manual download still keeps a visible task.
-		t := &task.Task{
-			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
-			URL:            urlStr,
-			Filename:       filename,
-			Directory:      dir,
-			TempDir:        m.getTempDir(),
-			TotalBytes:     -1,
-			Status:         task.StatusError,
-			FailurePhase:   task.FailurePhaseTransfer,
-			ErrorMsg:       err.Error(),
-			MaxConcurrency: maxConn,
-			RequestHeaders: creds,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-		if t.Filename == "" {
-			t.Filename = extractFilenameFromURL(urlStr)
-		}
-		if saveErr := m.store.Save(ctx, t); saveErr != nil {
-			return nil, saveErr
-		}
-		m.notify(t)
-		return t, nil
-	}
-
-	if filename == "" {
-		filename = info.Filename
-	}
-	if maxConn <= 0 {
-		maxConn = m.config.DefaultConnectionsPerTask
-	}
-
-	t := &task.Task{
-		ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
-		URL:            urlStr,
-		Filename:       filename,
-		Directory:      dir,
-		TempDir:        m.getTempDir(),
-		TotalBytes:     info.TotalBytes,
-		Downloaded:     0,
-		Status:         task.StatusQueued,
-		MaxConcurrency: maxConn,
-		Resumable:      info.Resumable,
-		ETag:           info.ETag,
-		LastModified:   info.LastModified,
-		RequestHeaders: creds,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-	}
-
-	if err := m.store.Save(ctx, t); err != nil {
-		return nil, err
-	}
-	m.notify(t)
-	m.schedule()
-	return t, nil
+	return m.StartPreDownloadFromProbe(ctx, PreDownloadRequest{
+		URL: urlStr, Directory: dir, Filename: filename, MaxConn: maxConn, Headers: headers,
+	})
 }
 
 // ConfirmPreDownload finalizes the save directory, filename and connection count of a task whose
@@ -844,11 +845,11 @@ func (m *Manager) UpdateTaskURL(ctx context.Context, taskID, newURL string, head
 	// Adopt the refreshed resource's metadata so size, resumability and validators stop describing
 	// the dead link. A failed probe is not fatal here: the caller already verified the link, and the
 	// transfer itself reports a real error if it cannot proceed.
-	if info, probeErr := m.downloader.Probe(ctx, newURL, t.RequestHeaders); probeErr == nil {
-		t.TotalBytes = info.TotalBytes
-		t.Resumable = info.Resumable
-		t.ETag = info.ETag
-		t.LastModified = info.LastModified
+	//
+	// HLS 任务换链接要重新选定清晰度，认不出原来那一个就拒绝这次更新——替用户挑版本不是
+	// 这里该做的事。
+	if err := m.adoptNewURL(ctx, t, newURL); err != nil {
+		return nil, err
 	}
 	t.ErrorMsg = ""
 	if t.Status != task.StatusCompleted {
@@ -861,6 +862,66 @@ func (m *Manager) UpdateTaskURL(ctx context.Context, taskID, newURL string, head
 	m.notify(t)
 	m.schedule()
 	return t, nil
+}
+
+// adoptNewURL 把一次针对新链接的探测结果落进已有任务：大小、断点、校验信息，以及 HLS 来源。
+//
+// 换了链接就不再是同一份媒体，旧的 HLS 状态一律清掉——留着它会让任务按上一个链接选定的
+// 清晰度去下载另一个版本。
+func (m *Manager) adoptNewURL(ctx context.Context, t *task.Task, newURL string) error {
+	previous := t.Media
+	probe, _ := m.probeResource(ctx, newURL, t.RequestHeaders)
+	t.URL = newURL
+
+	t.Media = nil
+	t.MediaInputs = nil
+	t.TransferDone = false
+	if probe == nil {
+		return nil
+	}
+	t.TotalBytes = probe.TotalBytes
+	t.Resumable = probe.Resumable
+	t.ETag = probe.ETag
+	t.LastModified = probe.LastModified
+
+	if probe.HLS == nil {
+		// 新链接不是清单：名字回到探测给出的那个，不再按成品规则保留 .mp4。
+		if previous != nil && probe.Filename != "" {
+			t.Filename = probe.Filename
+		}
+		return nil
+	}
+
+	// 新链接还是清单：成品名不变（仍然是处理出来的 MP4），清晰度沿用原来选定的那一个。
+	t.Filename = HLSOutputName(newURL, t.Filename)
+	picked, ok := reuseVariant(previous, probe.HLS.Variants)
+	if !ok {
+		return errors.New("新链接的清晰度清单与原来选定的对不上，请重新添加这次下载并选择清晰度")
+	}
+	source, err := m.resolveHLS(ctx, newURL, picked.URI, t.RequestHeaders.RawHeaders())
+	if err != nil {
+		return err
+	}
+	t.Media = source
+	t.TotalBytes = source.TotalBytes
+	return nil
+}
+
+// reuseVariant 在新清单里找回原来选定的清晰度。候选唯一时它本来就没有选择可做；
+// 候选多于一个时只认地址完全一致的那一个，认不出来就说明该由用户重新选。
+func reuseVariant(previous *hls.Source, variants []hls.Variant) (hls.Variant, bool) {
+	if len(variants) == 1 {
+		return variants[0], true
+	}
+	if previous == nil {
+		return hls.Variant{}, false
+	}
+	for _, v := range variants {
+		if v.URI == previous.Variant.URI {
+			return v, true
+		}
+	}
+	return hls.Variant{}, false
 }
 
 // ResetAndDownloadWithNewURL resets progress and downloads from scratch with new URL.
@@ -877,18 +938,13 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 	if headers != nil {
 		t.RequestHeaders = credentials.New(headers)
 	}
-	info, _ := m.downloader.Probe(ctx, newURL, t.RequestHeaders)
-	t.URL = newURL
+	if err := m.adoptNewURL(ctx, t, newURL); err != nil {
+		return nil, err
+	}
 	t.Downloaded = 0
 	t.Chunks = nil
 	t.Status = task.StatusQueued
 	t.ErrorMsg = ""
-	if info != nil {
-		t.TotalBytes = info.TotalBytes
-		t.Resumable = info.Resumable
-		t.ETag = info.ETag
-		t.LastModified = info.LastModified
-	}
 	t.UpdatedAt = time.Now()
 	if err := m.store.Save(ctx, t); err != nil {
 		return nil, err
@@ -958,8 +1014,20 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 		return t, nil
 	}
 
+	// 清单还没定下要下哪一版就不能建任务：下出来的会是清单本身（只是名字被改成 .mp4），
+	// 既不是用户要的成品，也永远不会成功。多清晰度时这一步该由用户选定，其余情形
+	// probeResource 已经替它定好了。
+	if probe.HLS != nil && probe.HLS.Media == nil {
+		return nil, errors.New("这份清单还没有选定清晰度，请先选定一个")
+	}
+
 	if filename == "" {
 		filename = probe.Filename
+	}
+	// HLS 的成品是处理出来的 MP4：无论名字从哪来（用户输入、服务器头、URL），
+	// 后缀都要落在成品上，不能留下一个名字与内容不符的文件。
+	if probe.HLS != nil {
+		filename = HLSOutputName(urlStr, filename)
 	}
 	if maxConn <= 0 {
 		maxConn = m.config.DefaultConnectionsPerTask
@@ -981,6 +1049,14 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 		RequestHeaders: creds,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+	}
+	// HLS 任务的总大小来自选定的清晰度：清单自己的字节数与这次下载无关。
+	if probe.HLS != nil && probe.HLS.Media != nil {
+		t.Media = probe.HLS.Media
+		t.TotalBytes = probe.HLS.Media.TotalBytes
+		// 清单声明的时长是下载前就能拿到的已知信息，界面据此展示；成品出来之后
+		// 不再覆盖它——同一个数值来回变只会让人以为哪里错了。
+		t.Duration = probe.HLS.Media.Duration
 	}
 	if err := m.store.Save(ctx, t); err != nil {
 		return nil, err
@@ -1056,10 +1132,10 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 	return m.Resume(ctx, id)
 }
 
-// RetryProcessing retries media processing for a task whose transfer finished but whose
-// 成品生成 failed, reusing the segments already on disk instead of transferring again.
-// 媒体处理由 ADR-0001 的 Media Processor 承担，尚未接入；此处保证契约正确：
-// 传输失败的任务不会被当作处理失败重试，处理失败也不会退化为重新下载。
+// RetryProcessing 重新跑一次媒体处理，复用已经落盘的分片而不是重新传输。
+//
+// 它不联网：清单、清晰度与分片落点都记在任务里，处理失败留下的分片也原样保留，
+// 于是重试既不必再取一次清单，也不会丢掉上一次失败的原因（ADR-0004）。
 func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
 	t, err := m.store.Get(ctx, id)
 	if err != nil {
@@ -1068,7 +1144,21 @@ func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
 	if t.FailurePhase != task.FailurePhaseProcessing {
 		return ErrNotProcessingFailure
 	}
-	return ErrProcessingUnavailable
+	if !t.IsHLS() || !t.TransferDone {
+		// 没有处理阶段的任务谈不上「仅重试处理」；分片不在就不能假装它还在。
+		return ErrNotProcessingFailure
+	}
+
+	t.Status = task.StatusQueued
+	t.FailurePhase = task.FailurePhaseNone
+	t.ErrorMsg = ""
+	t.UpdatedAt = time.Now()
+	if err := m.store.Save(ctx, t); err != nil {
+		return err
+	}
+	m.notify(t)
+	m.schedule()
+	return nil
 }
 
 // Delete removes task from store and stops running transfer.
@@ -1233,25 +1323,60 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 		}
 	}
 
-	err = m.downloader.Download(ctx, t, progressCb)
+	// TransferDone 是「分片已经全部就绪」这一事实的记录。处理失败重试时它让任务直接进入
+	// 处理阶段，不必再为取一次清单把网络走一遍（ADR-0004：两条失败路径各自恢复）。
+	var transferErr error
+	if !t.TransferDone {
+		transferErr = m.runTransfer(ctx, t, progressCb)
+		if transferErr == nil {
+			t.TransferDone = true
+			_ = m.store.Save(bgCtx, t)
+		}
+	}
 
+	// 传输一结束就释放下载名额：媒体处理不再占用它，排队中的下一个任务可以进来。
 	m.finishTask(taskID)
+	m.schedule()
+
+	var processErr error
+	if transferErr == nil && t.IsHLS() {
+		t.Status = task.StatusProcessing
+		t.UpdatedAt = time.Now()
+		_ = m.store.Save(bgCtx, t)
+		m.notify(t)
+
+		processErr = m.runMediaProcessing(ctx, t)
+		if processErr == nil {
+			// 成品已经生成，分片不再有任何用途。
+			m.removeSegmentDir(t)
+		}
+	}
 
 	t.Speed = 0
-	if err != nil {
-		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-			t.Status = task.StatusPaused
-			t.FailurePhase = task.FailurePhaseNone
-		} else if latest, getErr := m.store.Get(bgCtx, taskID); getErr == nil && latest.Status == task.StatusPaused {
-			// A concurrent Pause already persisted the paused state; keep it.
-			t.Status = task.StatusPaused
-			t.FailurePhase = task.FailurePhaseNone
-		} else {
-			t.Status = task.StatusError
-			t.FailurePhase = task.FailurePhaseTransfer
-			t.ErrorMsg = err.Error()
-		}
-	} else {
+	switch {
+	case transferErr != nil && canceledOrPaused(transferErr, ctx):
+		t.Status = task.StatusPaused
+		t.FailurePhase = task.FailurePhaseNone
+	case transferErr != nil && m.pausedElsewhere(bgCtx, taskID):
+		// A concurrent Pause already persisted the paused state; keep it.
+		t.Status = task.StatusPaused
+		t.FailurePhase = task.FailurePhaseNone
+	case transferErr != nil:
+		t.Status = task.StatusError
+		t.FailurePhase = task.FailurePhaseTransfer
+		t.ErrorMsg = transferErr.Error()
+	case processErr != nil && canceledOrPaused(processErr, ctx):
+		// 处理中途被暂停或取消：分片原样保留，继续时从处理阶段接着走。
+		t.Status = task.StatusPaused
+		t.FailurePhase = task.FailurePhaseNone
+	case processErr != nil && m.pausedElsewhere(bgCtx, taskID):
+		t.Status = task.StatusPaused
+		t.FailurePhase = task.FailurePhaseNone
+	case processErr != nil:
+		t.Status = task.StatusError
+		t.FailurePhase = task.FailurePhaseProcessing
+		t.ErrorMsg = processErr.Error()
+	default:
 		t.Status = task.StatusCompleted
 		t.FailurePhase = task.FailurePhaseNone
 		if t.TotalBytes > 0 {
@@ -1274,6 +1399,30 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 
 	// Free slot and promote next queued task
 	m.schedule()
+}
+
+// runTransfer 执行任务的传输阶段：HLS 任务下载分片，其余任务走 HTTP 传输。
+func (m *Manager) runTransfer(ctx context.Context, t *task.Task, onProgress ProgressFunc) error {
+	if !t.IsHLS() {
+		return m.downloader.Download(ctx, t, onProgress)
+	}
+	inputs, err := m.runHLSTransfer(ctx, t, onProgress)
+	if err != nil {
+		return err
+	}
+	t.MediaInputs = inputs
+	return nil
+}
+
+// canceledOrPaused 判断一次失败是不是这次运行的上下文被取消（暂停或退出）导致的。
+func canceledOrPaused(err error, ctx context.Context) bool {
+	return errors.Is(err, context.Canceled) || ctx.Err() != nil
+}
+
+// pausedElsewhere 判断任务是否已被别的路径（例如并发到达的暂停操作）置为暂停。
+func (m *Manager) pausedElsewhere(ctx context.Context, taskID string) bool {
+	latest, err := m.store.Get(ctx, taskID)
+	return err == nil && latest.Status == task.StatusPaused
 }
 
 func (m *Manager) finishTask(taskID string) {

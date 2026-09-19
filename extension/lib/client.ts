@@ -1,6 +1,8 @@
 import type {
   HandoverRequest,
   HandoverResponse,
+  HLSVariantsResponse,
+  MediaProbeInfo,
   SessionMetadata,
   TakeoverConfigSync,
 } from './types';
@@ -129,6 +131,66 @@ export class DesktopClient {
   }
 
   /**
+   * 拉取一份 HLS 清单的可选清晰度，供悬浮条在交接前弹菜单。请求上下文（Referer/Cookie）
+   * 由调用方随 cookies/headers 一并传进来——防盗链的清单不带它只会拿到 403。
+   */
+  async fetchHLSVariants(
+    url: string,
+    credentials: { cookies?: string; headers?: Record<string, string> },
+    timeoutMs = 3000,
+  ): Promise<HLSVariantsResponse | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/hls/variants`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ url, credentials }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      return (await res.json()) as HLSVariantsResponse;
+    } catch {
+      clearTimeout(timer);
+      return null;
+    }
+  }
+
+  /**
+   * 探测一条媒体的展示信息（时长与大小），供面板在下载之前显示。
+   * 探测在桌面端完成（直链走容器解析、HLS 读清单），失败返回 null，调用方按未知显示。
+   */
+  async fetchMediaProbe(
+    req: {
+      url: string;
+      filename?: string;
+      mimeType?: string;
+      isHls?: boolean;
+      totalBytes?: number;
+    },
+    credentials: { cookies?: string; headers?: Record<string, string> },
+    timeoutMs = 12000,
+  ): Promise<MediaProbeInfo | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/media/probe`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ ...req, credentials }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      return (await res.json()) as MediaProbeInfo;
+    } catch {
+      clearTimeout(timer);
+      return null;
+    }
+  }
+
+  /**
    * 订阅桌面端的事件广播。
    * `onLinkStateChange` 报告长连接的打开与关闭：桌面端进程一退出这个连接就会断，
    * 它是「桌面端已经没了」最快的一条信号，比等到下一次交接失败再发现及时得多。
@@ -139,7 +201,9 @@ export class DesktopClient {
     onConfigUpdated: (cfg: TakeoverConfigSync) => void,
     onLinkStateChange?: (open: boolean) => void,
   ): DesktopEventLink {
-    const wsUrl = `ws://127.0.0.1:${this.session.port}/api/v1/events?token=${encodeURIComponent(this.session.sessionToken)}`;
+    const wsUrl = `ws://127.0.0.1:${this.session.port}/api/v1/events?token=${encodeURIComponent(
+      this.session.sessionToken,
+    )}`;
     let ws: WebSocket | null = null;
     let opened = false;
     try {

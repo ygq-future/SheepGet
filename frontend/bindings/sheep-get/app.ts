@@ -333,6 +333,15 @@ export function SelectDirectory(): $CancellablePromise<string> {
 }
 
 /**
+ * SelectHLSVariant 记下用户在文件信息窗口里选定的清晰度，并把这一版的事实（大小、时长）
+ * 取回来。多清晰度的清单必须先选定才能提交；只有一项时不构成选择，无需调用。
+ * urlStr 由界面把当前链接显式传进来：手输链接时队列项里没有登记过 URL。
+ */
+export function SelectHLSVariant(requestID: string, urlStr: string, variantURI: string): $CancellablePromise<void> {
+    return $Call.ByID(2368695079, requestID, urlStr, variantURI);
+}
+
+/**
  * SetCategoryDirectory sets the save directory for a category by ID and updates settings.
  */
 export function SetCategoryDirectory(targetCategoryID: string, directory: string): $CancellablePromise<void> {

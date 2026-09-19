@@ -26,6 +26,10 @@ import (
 // DownloadHandler is implemented by the desktop app to accept handover requests.
 type DownloadHandler interface {
 	HandleHandover(ctx context.Context, req *HandoverRequest) (*HandoverResponse, error)
+	// HandleHLSVariants 读取一份清单的可选清晰度，供扩展悬浮条在交接前弹菜单。
+	HandleHLSVariants(ctx context.Context, req *HLSVariantsRequest) (*HLSVariantsResponse, error)
+	// HandleMediaProbe 为扩展面板探测一条链接的展示信息（时长与大小）。
+	HandleMediaProbe(ctx context.Context, req *MediaProbeRequest) (*MediaProbeResponse, error)
 }
 
 // ConfigProvider is implemented by the settings service to provide current takeover config.
@@ -102,6 +106,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("GET /api/v1/config/takeover", s.authMiddleware(s.handleTakeoverConfig))
 	mux.HandleFunc("HEAD /api/v1/config/takeover", s.authMiddleware(s.handleTakeoverConfig))
 	mux.HandleFunc("POST /api/v1/handover", s.authMiddleware(s.handleHandover))
+	mux.HandleFunc("POST /api/v1/hls/variants", s.authMiddleware(s.handleHLSVariants))
+	mux.HandleFunc("POST /api/v1/media/probe", s.authMiddleware(s.handleMediaProbe))
 	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
 
 	s.httpServer = &http.Server{
@@ -273,6 +279,58 @@ func (s *Server) handleHandover(w http.ResponseWriter, r *http.Request) {
 			Accepted: false,
 			Reason:   err.Error(),
 		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleHLSVariants(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req HLSVariantsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid JSON payload"}`))
+		return
+	}
+	if s.handler == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"handler not configured"}`))
+		return
+	}
+
+	resp, err := s.handler.HandleHLSVariants(r.Context(), &req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleMediaProbe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req MediaProbeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid JSON payload"}`))
+		return
+	}
+	if s.handler == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"handler not configured"}`))
+		return
+	}
+
+	resp, err := s.handler.HandleMediaProbe(r.Context(), &req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 

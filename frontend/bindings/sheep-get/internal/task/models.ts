@@ -8,6 +8,9 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as credentials$0 from "../credentials/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as hls$0 from "../hls/models.js";
 
 /**
  * Chunk represents a segment of a file being downloaded.
@@ -124,6 +127,41 @@ export class Task {
     "chunks"?: Chunk[];
 
     /**
+     * Media 是 HLS 任务选定的媒体来源（清单地址、清晰度、独立音轨、时长、分片数）。
+     * 为空表示这是一次普通 HTTP 传输：一次请求得到的就是成品，没有处理阶段。
+     * 续传、重试与重启都只靠它重新取回清单，不依赖上一次运行留下的内存状态。
+     */
+    "media"?: hls$0.Source | null;
+
+    /**
+     * SegmentsDone/SegmentsTotal 是 HLS 传输的分片进度，界面据此显示「分片 N/M」。
+     * 分片下载是多路并发进行的，但字节数进度条本身看不出这一点；有了这个计数，
+     * 「正在并发抓取分片」对用户才是可见的。普通 HTTP 传输两个字段都是 0，界面不显示。
+     */
+    "segmentsDone"?: number;
+    "segmentsTotal"?: number;
+
+    /**
+     * SegmentDone 是每个分片的完成状态，索引即分片序号（视频清单在前、音轨清单在后拼接）。
+     * 界面据此把进度条画成一格一分片的分段条——和普通 HTTP 的多线程分段同样的视觉，
+     * 否则 HLS 只有一根从头到尾的实心条，多路并发完全看不出来。普通 HTTP 传输为空。
+     */
+    "segmentDone"?: boolean[];
+
+    /**
+     * MediaInputs 是本次传输已经落盘、要交给 Media Processor 的输入（分片目录内的文件名）。
+     * 传输与处理是两条不同的失败路径（ADR-0004）：有了它，重试处理直接用现成输入，
+     * 不必再为取一次清单把网络再走一遍。
+     */
+    "mediaInputs"?: hls$0.Inputs | null;
+
+    /**
+     * TransferDone 表示 MediaInputs 已经全部就绪，剩下的只是处理。
+     * 它是「传输已完成」这一事实的唯一记录——处理失败后不能靠重新传输来恢复。
+     */
+    "transferDone"?: boolean;
+
+    /**
      * RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
      * links whose authorization has expired; applied to every probe and transfer request.
      * Encapsulated in RequestCredentials to ensure sensitive fields are masked by default on serialization.
@@ -177,9 +215,21 @@ export class Task {
      */
     static createFrom($$source: any = {}): Task {
         const $$createField18_0 = $$createType1;
+        const $$createField19_0 = $$createType3;
+        const $$createField22_0 = $$createType4;
+        const $$createField23_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
             $$parsedSource["chunks"] = $$createField18_0($$parsedSource["chunks"]);
+        }
+        if ("media" in $$parsedSource) {
+            $$parsedSource["media"] = $$createField19_0($$parsedSource["media"]);
+        }
+        if ("segmentDone" in $$parsedSource) {
+            $$parsedSource["segmentDone"] = $$createField22_0($$parsedSource["segmentDone"]);
+        }
+        if ("mediaInputs" in $$parsedSource) {
+            $$parsedSource["mediaInputs"] = $$createField23_0($$parsedSource["mediaInputs"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -188,3 +238,8 @@ export class Task {
 // Private type creation functions
 const $$createType0 = Chunk.createFrom;
 const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = hls$0.Source.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = $Create.Array($Create.Any);
+const $$createType5 = hls$0.Inputs.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);

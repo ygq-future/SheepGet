@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"sheep-get/internal/engine"
+	"sheep-get/internal/hls"
 	"sheep-get/internal/task"
 )
 
@@ -176,7 +177,8 @@ func TestManager_RetryContractByFailurePhase(t *testing.T) {
 		t.Fatalf("transfer failure must remain retryable as a transfer, got %v", err)
 	}
 
-	// 处理阶段失败：不能重新传输，只能重试处理。
+	// 处理阶段失败：不能重新传输，只能重试处理。分片已经就绪是这条契约的前提——重新传输
+	// 既没必要，也会把处理失败留下的分片一起丢掉。
 	processingFailed := &task.Task{
 		ID:           "processing-failed",
 		URL:          "https://example.com/media.m3u8",
@@ -185,6 +187,9 @@ func TestManager_RetryContractByFailurePhase(t *testing.T) {
 		Status:       task.StatusError,
 		FailurePhase: task.FailurePhaseProcessing,
 		ErrorMsg:     "mux failed",
+		Media:        &hls.Source{PlaylistURL: "https://example.com/media.m3u8"},
+		MediaInputs:  &hls.Inputs{Segments: []string{"seg_00000.ts"}},
+		TransferDone: true,
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -195,8 +200,14 @@ func TestManager_RetryContractByFailurePhase(t *testing.T) {
 	if err := mgr.Retry(ctx, processingFailed.ID); !errors.Is(err, engine.ErrProcessingRetryRequired) {
 		t.Fatalf("expected ErrProcessingRetryRequired, got %v", err)
 	}
-	if err := mgr.RetryProcessing(ctx, processingFailed.ID); !errors.Is(err, engine.ErrProcessingUnavailable) {
-		t.Fatalf("expected ErrProcessingUnavailable, got %v", err)
+	if err := mgr.RetryProcessing(ctx, processingFailed.ID); err != nil {
+		// 分片与清单都在任务里，重试处理不联网、不需要用户再提供任何东西。
+		t.Fatalf("expected processing retry to be accepted, got %v", err)
+	}
+
+	// 没有处理阶段的任务（普通 HTTP 传输，或分片已不在）不能被当作「仅重试处理」。
+	if err := mgr.RetryProcessing(ctx, transferFailed.ID); !errors.Is(err, engine.ErrNotProcessingFailure) {
+		t.Fatalf("expected ErrNotProcessingFailure, got %v", err)
 	}
 }
 

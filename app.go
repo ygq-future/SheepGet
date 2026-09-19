@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
+	"sheep-get/internal/credentials"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	appevents "sheep-get/internal/events"
@@ -722,6 +723,14 @@ func (a *loopbackServerAdapter) HandleHandover(ctx context.Context, req *server.
 	return a.app.handleHandover(ctx, req)
 }
 
+func (a *loopbackServerAdapter) HandleHLSVariants(ctx context.Context, req *server.HLSVariantsRequest) (*server.HLSVariantsResponse, error) {
+	return a.app.handleHLSVariants(ctx, req)
+}
+
+func (a *loopbackServerAdapter) HandleMediaProbe(ctx context.Context, req *server.MediaProbeRequest) (*server.MediaProbeResponse, error) {
+	return a.app.handleMediaProbe(ctx, req)
+}
+
 func (a *loopbackServerAdapter) GetTakeoverConfig() config.TakeoverConfig {
 	return a.app.getTakeoverConfig()
 }
@@ -759,9 +768,10 @@ func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*s
 	}
 
 	dlReq := window.DownloadRequest{
-		URL:      req.URL,
-		Filename: req.FilenameSuggestion,
-		Headers:  headers,
+		URL:        req.URL,
+		Filename:   req.FilenameSuggestion,
+		Headers:    headers,
+		VariantURI: req.VariantURI,
 	}
 
 	resp, err := a.TriggerDownload(dlReq)
@@ -771,6 +781,63 @@ func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*s
 	return &server.HandoverResponse{
 		Accepted:    resp.Handled,
 		QueueItemID: resp.RequestID,
+	}, nil
+}
+
+// handleHLSVariants 读取一份清单的可选清晰度，供扩展悬浮条在交接前弹菜单。
+// 请求上下文（Referer/Cookie）与交接走同一条整理路径：扩展交过来什么就带什么。
+// 它不导出为 Wails 绑定——只被 loopback 服务器调用，绑定只会把 server 包的类型
+// 泄漏进桌面前端的模型图里。
+func (a *App) handleHLSVariants(ctx context.Context, req *server.HLSVariantsRequest) (*server.HLSVariantsResponse, error) {
+	headers := make(map[string]string)
+	if req.Credentials != nil {
+		for k, v := range req.Credentials.Headers {
+			headers[k] = v
+		}
+		if req.Credentials.Cookies != "" && headers["Cookie"] == "" {
+			headers["Cookie"] = req.Credentials.Cookies
+		}
+	}
+
+	opts, err := a.manager.HLSVariantOptions(ctx, req.URL, credentials.New(headers))
+	if err != nil {
+		return nil, err
+	}
+
+	out := &server.HLSVariantsResponse{Variants: make([]server.HLSVariantOption, 0, len(opts))}
+	for _, o := range opts {
+		out.Variants = append(out.Variants, server.HLSVariantOption{
+			URI:       o.URI,
+			Label:     o.Label,
+			Bandwidth: o.Bandwidth,
+		})
+	}
+	return out, nil
+}
+
+// handleMediaProbe 为扩展面板探测一条链接的展示信息（时长与大小）。
+// 请求上下文（Referer/Cookie）与交接走同一条整理路径：扩展交过来什么就带什么。
+// 它不导出为 Wails 绑定——只被 loopback 服务器调用，导出只会把 server 包的类型
+// 泄漏进桌面前端的模型图里。
+func (a *App) handleMediaProbe(ctx context.Context, req *server.MediaProbeRequest) (*server.MediaProbeResponse, error) {
+	headers := make(map[string]string)
+	if req.Credentials != nil {
+		for k, v := range req.Credentials.Headers {
+			headers[k] = v
+		}
+		if req.Credentials.Cookies != "" && headers["Cookie"] == "" {
+			headers["Cookie"] = req.Credentials.Cookies
+		}
+	}
+
+	ov, err := a.manager.ProbeMediaOverview(ctx, req.URL, req.Filename, req.MimeType, req.IsHls, req.TotalBytes, headers)
+	if err != nil {
+		return nil, err
+	}
+	return &server.MediaProbeResponse{
+		DurationSeconds: ov.DurationSeconds,
+		TotalBytes:      ov.TotalBytes,
+		Variants:        ov.Variants,
 	}, nil
 }
 
@@ -821,6 +888,16 @@ func (a *App) CancelCurrentFileInfo() error {
 		return nil
 	}
 	return a.windowQueue.CancelCurrent(a.ctx)
+}
+
+// SelectHLSVariant 记下用户在文件信息窗口里选定的清晰度，并把这一版的事实（大小、时长）
+// 取回来。多清晰度的清单必须先选定才能提交；只有一项时不构成选择，无需调用。
+// urlStr 由界面把当前链接显式传进来：手输链接时队列项里没有登记过 URL。
+func (a *App) SelectHLSVariant(requestID, urlStr, variantURI string) error {
+	if a.windowQueue == nil {
+		return fmt.Errorf("window queue not initialized")
+	}
+	return a.windowQueue.SelectHLSVariant(a.ctx, requestID, urlStr, variantURI)
 }
 
 // GetFileInfoQueueLength returns the number of requests currently waiting in the queue.

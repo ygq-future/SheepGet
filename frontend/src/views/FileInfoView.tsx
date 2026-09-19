@@ -37,6 +37,7 @@ import {
   ResolveDuplicateDecision,
   AssignExtensionToCategory,
   SetCategoryDirectory,
+  SelectHLSVariant,
 } from '../../bindings/sheep-get/app';
 import type * as windowModels from '../../bindings/sheep-get/internal/window/models';
 import * as duplicateModels from '../../bindings/sheep-get/internal/duplicate/models';
@@ -94,6 +95,9 @@ export function FileInfoView() {
   const probeSeqRef = useRef(0);
   const filenameSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 清晰度选择是「选定后固定」的一次动作：选定期间禁用再次点选，避免同一项上并发两次解析。
+  const [selectingVariant, setSelectingVariant] = useState(false);
 
   // 时长是异步读出来的：先转加载动画，读到了就显示，读不到就不再显示——它是附加信息，
   // 不参与任何下载决策，因此绝不阻塞别的操作，也绝不编一个数值出来。
@@ -375,6 +379,10 @@ export function FileInfoView() {
       });
       setActiveItem((prev) => {
         if (!prev) return null;
+        // 手输链接换了，之前选定的清晰度与这个链接已经无关；多清晰度的清单把选项带出来，
+        // 由界面先让用户选定再放开提交。选项与展示名由后端算好（ProbeResult.hls.options），
+        // 界面不自行推导。
+        const hlsOptions = result.hls?.options ?? [];
         return {
           ...prev,
           url: trimmed,
@@ -382,6 +390,9 @@ export function FileInfoView() {
           totalBytes: result.totalBytes,
           resumable: result.resumable,
           duplicateTask: result.duplicateTask || null,
+          variants: hlsOptions.length > 0 ? hlsOptions : undefined,
+          qualityLabel: undefined,
+          mediaDuration: result.hls?.media?.duration ?? 0,
         };
       });
       // 手输链接没有登记时那次探测，这里拿到的就是它的真名与大小，时长按它们读。
@@ -404,6 +415,11 @@ export function FileInfoView() {
   const isOverwriteSelected = overwriteOption !== undefined && selectedAction === overwriteOption;
   const destinationOccupied =
     duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied;
+
+  // 多清晰度的清单必须选定后固定。variants 只有一项时不构成选择；qualityLabel 非空表示已选定。
+  const variants = activeItem?.variants || [];
+  const needsVariantSelection = variants.length > 1 && !activeItem?.qualityLabel;
+  const hlsDuration = activeItem?.mediaDuration ?? 0;
   const categoryOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
     for (const c of currentSettings?.download?.customCategories || []) {
@@ -457,6 +473,23 @@ export function FileInfoView() {
       }
     } catch (err) {
       console.error('Failed to select directory:', err);
+    }
+  };
+
+  // 选定清晰度后固定：调用后端把这一版的事实（大小、时长）取回来，后端会再推一条
+  // FileInfoUpdated 更新 activeItem，界面据此显示「已选清晰度」并放开提交。
+  const handleSelectVariant = async (variantURI: string) => {
+    const owner = useFileInfoDraftStore.getState().activeItemId;
+    const current = useFileInfoDraftStore.getState().draft;
+    if (!owner || !variantURI || !current.url) return;
+    setSelectingVariant(true);
+    try {
+      await SelectHLSVariant(owner, current.url.trim(), variantURI);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      patch({ error: `清晰度选择失败: ${msg}` }, owner);
+    } finally {
+      setSelectingVariant(false);
     }
   };
 
@@ -734,9 +767,52 @@ export function FileInfoView() {
               )}
             </div>
 
+            {/* 清晰度选择：多清晰度的清单必须先选定一个，选定后固定，不再变化。 */}
+            {needsVariantSelection && (
+              <div className="space-y-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-[var(--text-secondary)]">
+                    选择清晰度
+                  </span>
+                  {selectingVariant && (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--accent)]" />
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {variants.map((v) => (
+                    <button
+                      key={v.uri}
+                      type="button"
+                      disabled={selectingVariant}
+                      onClick={() => void handleSelectVariant(v.uri)}
+                      className="flex flex-col items-start gap-0.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/60 px-2.5 py-2 text-left transition-all hover:border-[var(--accent)] hover:bg-[var(--bg-surface-hover)] disabled:pointer-events-none disabled:opacity-50"
+                    >
+                      <span className="text-[11px] font-medium text-[var(--text-primary)]">
+                        {v.label || '清晰度'}
+                      </span>
+                      {(v.bandwidth ?? 0) > 0 && (
+                        <span className="text-[10px] text-[var(--text-muted)]">
+                          {((v.bandwidth ?? 0) / 1e6).toFixed(1)} Mbps
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Compact Resource Meta Line */}
             <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
               <span className="flex items-center gap-1.5">
+                {/* 已选清晰度：选定后固定显示，不随其他元信息变化。 */}
+                {activeItem?.qualityLabel && (
+                  <span>
+                    清晰度:{' '}
+                    <span className="font-medium text-[var(--text-secondary)]">
+                      {activeItem.qualityLabel}
+                    </span>
+                  </span>
+                )}
                 <span>
                   预估大小:{' '}
                   <span className="font-medium text-[var(--text-secondary)]">
@@ -745,22 +821,32 @@ export function FileInfoView() {
                       : '未知大小'}
                   </span>
                 </span>
-                {/* 时长紧跟在大小之后；还没读出来时转加载动画，读不出来就整段不显示。 */}
-                {(durationLoading || durationSeconds > 0) && (
+                {/* HLS 清单声明的时长在下载前就已知，直接展示；否则走异步探测。 */}
+                {hlsDuration > 0 ? (
                   <span className="flex items-center gap-1">
                     <span className="text-[var(--border-hover)]">·</span>
                     <span>时长:</span>
-                    {durationLoading ? (
-                      <Loader2
-                        className="h-3 w-3 animate-spin text-[var(--accent)]"
-                        aria-label="正在读取时长"
-                      />
-                    ) : (
-                      <span className="font-medium text-[var(--text-secondary)]">
-                        {formatDuration(durationSeconds)}
-                      </span>
-                    )}
+                    <span className="font-medium text-[var(--text-secondary)]">
+                      {formatDuration(hlsDuration)}
+                    </span>
                   </span>
+                ) : (
+                  (durationLoading || durationSeconds > 0) && (
+                    <span className="flex items-center gap-1">
+                      <span className="text-[var(--border-hover)]">·</span>
+                      <span>时长:</span>
+                      {durationLoading ? (
+                        <Loader2
+                          className="h-3 w-3 animate-spin text-[var(--accent)]"
+                          aria-label="正在读取时长"
+                        />
+                      ) : (
+                        <span className="font-medium text-[var(--text-secondary)]">
+                          {formatDuration(durationSeconds)}
+                        </span>
+                      )}
+                    </span>
+                  )
                 )}
               </span>
               <span>
@@ -1150,7 +1236,7 @@ export function FileInfoView() {
         <Button
           size="sm"
           variant="primary"
-          disabled={loading || probing}
+          disabled={loading || probing || selectingVariant || needsVariantSelection}
           onClick={() => void handleConfirm()}
         >
           {loading ? (
@@ -1159,7 +1245,7 @@ export function FileInfoView() {
               <span>提交中...</span>
             </>
           ) : (
-            <span>开始下载 (Enter)</span>
+            <span>{needsVariantSelection ? '请先选择清晰度' : '开始下载 (Enter)'}</span>
           )}
         </Button>
       </footer>

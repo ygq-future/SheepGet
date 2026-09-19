@@ -10,7 +10,9 @@ import (
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/events"
+	"sheep-get/internal/hls"
 	"sheep-get/internal/task"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +30,10 @@ var ErrStaleFileInfoSubmission = errors.New("submission targets a task that is n
 // （与引擎里那些用户可见的错误一致），所以用中文。
 var ErrSubmitInProgress = errors.New("正在提交这一次下载，暂时无法取消")
 
+// ErrHLSVariantRequired 表示这条链接有多个清晰度而用户还没选定。界面据此把确认操作挡住；
+// 引擎里另有一道同样的把关，防止别的路径绕过它建出一条下不了的任务。
+var ErrHLSVariantRequired = errors.New("请先选择清晰度，再开始下载")
+
 // WindowView abstracts a native OS/Wails window.
 //
 // 它的方法可能在主线程被占住时长时间不返回（Wails 的窗口调用会同步派发回主线程等待执行），
@@ -44,6 +50,10 @@ type DownloadEngine interface {
 	// ProbeURL 探测链接元数据；headers 是这次请求的上下文（Referer/Cookie 等），交接过来的
 	// 链接常常只有带着它才探得准。
 	ProbeURL(ctx context.Context, urlStr string, headers map[string]string) (*engine.ProbeResult, error)
+	// ResolveHLSVariant 在探测出的清晰度里选定一个，给出这次下载的完整事实（清单、独立音轨、
+	// 时长、分片数与大小）。它只在用户选定或交接已带来选择时调用，是唯一会为「选中哪一版」
+	// 联网的地方。
+	ResolveHLSVariant(ctx context.Context, playlistURL, variantURI string, headers map[string]string) (*hls.Source, error)
 	FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error)
 	AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
@@ -71,6 +81,9 @@ type DownloadRequest struct {
 	Filename    string            `json:"filename,omitempty"`
 	MaxConn     int               `json:"maxConn,omitempty"`
 	PreDownload *bool             `json:"preDownload,omitempty"`
+	// VariantURI 是浏览器扩展在悬浮条上已经选好的清晰度（清单里的一个 EXT-X-STREAM-INF 地址）。
+	// 有它时这一项不必再问一次清晰度：多清晰度的选择已经发生在进入本窗口之前。
+	VariantURI string `json:"variantUri,omitempty"`
 }
 
 // DownloadResponse is the result of enqueuing or dispatching a download request.
@@ -103,6 +116,19 @@ type FileInfoItem struct {
 	QueueIndex        int                `json:"queueIndex"`
 	QueueTotal        int                `json:"queueTotal"`
 	Headers           map[string]string  `json:"headers,omitempty"`
+
+	// 下面三项描述这条链接的 HLS 事实，界面据此先选清晰度、再展示选定后的大小与时长。
+	// Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。
+	Variants []hls.VariantOption `json:"variants,omitempty"`
+	// QualityLabel 是已选清晰度的展示名，为空表示还没选定（或这条链接不是清单）。
+	QualityLabel string `json:"qualityLabel,omitempty"`
+	// MediaDuration 是清单声明的时长（秒）；0 表示这份清单没给出时长。时长与大小都只来自
+	// 能证实的信息，读不到就留空由界面显示未知，不用别处的数字凑一个出来。
+	MediaDuration float64 `json:"mediaDuration,omitempty"`
+
+	// media 是已选定的来源。它就是这次下载要处理的东西，提交时随探测结果一起建任务。
+	// 与 Variants 分开：Variants 是给界面挑的选项，media 是已经做出的决定。
+	media *hls.Source
 
 	// 下面这些字段描述这一项自己有没有「引擎调用在路上」，不下发给界面：
 	// submitting 表示提交的引擎调用还没回来；preDownloadStarting 与其完成信号一起表示
@@ -383,10 +409,17 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	// Trigger background async probe if URL is present
 	if req.URL != "" {
-		itemID := item.ID
-		reqURL := req.URL
-		reqHeaders := req.Headers
-		go qc.asyncProbeItem(itemID, reqURL, reqHeaders, dir, dirFromCategory, policy, preDownload, maxConn)
+		go qc.asyncProbeItem(probeJob{
+			itemID:          item.ID,
+			url:             req.URL,
+			headers:         req.Headers,
+			dir:             dir,
+			dirFromCategory: dirFromCategory,
+			policy:          policy,
+			preDownload:     preDownload,
+			maxConn:         maxConn,
+			variantURI:      req.VariantURI,
+		})
 	}
 
 	return &DownloadResponse{
@@ -396,15 +429,41 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}, nil
 }
 
-func (qc *QueueController) asyncProbeItem(itemID, reqURL string, headers map[string]string, dir string, dirFromCategory bool, policy config.DuplicateURLPolicy, preDownload bool, maxConn int) {
+// probeJob 是一次登记探测的全部输入。登记时定下的事实集中在这里，让「锁外探测」与
+// 「回锁内落地」两段共用同一份参数；这些参数共同描述「这一项是怎么登记进来的」。
+type probeJob struct {
+	itemID          string
+	url             string
+	headers         map[string]string
+	dir             string
+	dirFromCategory bool
+	policy          config.DuplicateURLPolicy
+	preDownload     bool
+	maxConn         int
+	// variantURI 是交接时已经选好的清晰度。有它时这一项不必再问一次：多清晰度的选择
+	// 已经发生在进入文件信息窗口之前。
+	variantURI string
+}
+
+func (qc *QueueController) asyncProbeItem(job probeJob) {
 	probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// 带上这一项的请求上下文：防盗链或需要登录的链接，没有 Referer/Cookie 只会探出 403，
 	// 界面显示「未知大小」，而提交时还得为同一份元数据再付一次探测。
-	probe, probeErr := qc.engine.ProbeURL(probeCtx, reqURL, headers)
+	probe, probeErr := qc.engine.ProbeURL(probeCtx, job.url, job.headers)
 
-	start := qc.applyProbeResult(itemID, reqURL, headers, dir, dirFromCategory, policy, preDownload, maxConn, probe, probeErr)
+	// 交接已经带来清晰度：这里一次把它解析成这次下载的完整事实，窗口打开时显示的就是
+	// 「已选清晰度 + 大小 + 时长」，用户不必再选一遍。
+	if probeErr == nil && job.variantURI != "" && probe.HLS != nil {
+		if src, err := qc.engine.ResolveHLSVariant(probeCtx, job.url, job.variantURI, job.headers); err != nil {
+			probeErr = err
+		} else {
+			engine.ApplyHLSSelection(probe, src)
+		}
+	}
+
+	start := qc.applyProbeResult(job, probe, probeErr)
 	if start == nil {
 		return
 	}
@@ -434,17 +493,19 @@ type preDownloadStart struct {
 
 // applyProbeResult 把探测结果落进队列项（锁内），并返回需要启动的预下载。
 // 不需要启动、或这一项已经不在队列里时返回 nil。它不调用会联网的引擎方法。
-func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[string]string, dir string, dirFromCategory bool, policy config.DuplicateURLPolicy, preDownload bool, maxConn int, probe *engine.ProbeResult, probeErr error) *preDownloadStart {
+func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeResult, probeErr error) *preDownloadStart {
 	qc.mu.Lock()
 	actions := newWindowActions(qc.windowView)
 	// 同 Enqueue：解锁先于窗口副作用执行。
 	defer actions.run(qc.runOps)
 	defer qc.mu.Unlock()
 
-	targetItem := qc.itemByIDLocked(itemID)
+	targetItem := qc.itemByIDLocked(job.itemID)
 	if targetItem == nil {
 		return nil
 	}
+	reqURL, headers, dir, dirFromCategory := job.url, job.headers, job.dir, job.dirFromCategory
+	policy, preDownload, maxConn := job.policy, job.preDownload, job.maxConn
 
 	// 先把这次探测本身记下来并放行等待者，再谈别的：提交正是靠它建任务，而预下载启动失败
 	// 之类的原因都不该让提交一直等一个不会再有结果的信号。
@@ -459,6 +520,7 @@ func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[s
 		targetItem.TotalBytes = probe.TotalBytes
 		targetItem.MimeType = probe.ContentType
 		targetItem.Resumable = probe.Resumable
+		applyHLSFacts(targetItem, probe)
 		if probe.DuplicateTask != nil {
 			targetItem.DuplicateTask = probe.DuplicateTask
 		}
@@ -527,6 +589,127 @@ func (qc *QueueController) applyProbeResult(itemID, reqURL string, headers map[s
 	actions.emit(events.FileInfoUpdated, &itemCopy)
 
 	return start
+}
+
+// applyHLSFacts 把探测出的 HLS 事实落进队列项：可选清晰度、已选定的那一版，以及它的
+// 大小与时长。大小取自选定的版本而不是清单自己——清单的字节数不是这次下载的大小。
+func applyHLSFacts(item *FileInfoItem, probe *engine.ProbeResult) {
+	if item == nil || probe == nil || probe.HLS == nil {
+		return
+	}
+	item.Variants = probe.HLS.Options
+	src := probe.HLS.Media
+	if src == nil {
+		return
+	}
+	item.media = src
+	item.QualityLabel = src.Variant.Label()
+	item.MediaDuration = src.Duration
+	item.TotalBytes = src.TotalBytes
+}
+
+// hlsSelection 是一次清晰度选择的快照：锁内取走，锁外用来联网。
+type hlsSelection struct {
+	// url 是这一次选择要解析的清单地址，由界面把当前链接显式传进来：手输链接时队列项里
+	// 没有 URL（登记时是空的），不传就会拿到空地址。
+	url     string
+	headers map[string]string
+	// probe 是手上已有的探测结果。为空表示这条链接是手动输入的，登记时没探过，
+	// 需要先补一次探测才知道有哪些清晰度可选。
+	probe *engine.ProbeResult
+}
+
+// SelectHLSVariant 记下用户在文件信息窗口里选定的清晰度，并把这一版的事实取回来。
+//
+// 解析会读清单，必要时还要为「显示一个真实大小」逐分片询问服务器，因此它和别处的引擎调用
+// 一样在锁外执行，回来再按 ID 落地——期间用户可能已经切走或取消了这一项。
+func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlStr, variantURI string) error {
+	job, err := qc.beginHLSSelection(ctx, requestID, urlStr)
+	if err != nil {
+		return err
+	}
+
+	if job.probe == nil {
+		// 手动输入的链接在登记时没有探测过，这里补一次：既是为了拿到可选清晰度，
+		// 也是为了让提交能沿用这份结果，不再为同一份元数据多付一次请求。
+		probe, probeErr := qc.engine.ProbeURL(ctx, job.url, job.headers)
+		if probeErr != nil {
+			return probeErr
+		}
+		if probe == nil || probe.HLS == nil {
+			return errors.New("这个链接不是 HLS 清单，没有清晰度可选")
+		}
+		job.probe = probe
+	} else if job.probe.HLS == nil {
+		// 探测已经回来且确认不是清单：这个链接根本没有清晰度这一说，直接拒绝，
+		// 不必再为它发起一次「选定清晰度」的解析。
+		return errors.New("这个链接不是 HLS 清单，没有清晰度可选")
+	}
+
+	src, err := qc.engine.ResolveHLSVariant(ctx, job.url, variantURI, job.headers)
+	if err != nil {
+		return err
+	}
+	if src == nil {
+		return errors.New("所选清晰度解析失败，请重试")
+	}
+
+	engine.ApplyHLSSelection(job.probe, src)
+
+	qc.mu.Lock()
+	actions := newWindowActions(qc.windowView)
+	defer actions.run(qc.runOps)
+	defer qc.mu.Unlock()
+
+	item := qc.itemByIDLocked(requestID)
+	if item == nil {
+		return ErrStaleFileInfoSubmission
+	}
+	item.probe = job.probe
+	item.probeErr = nil
+	applyHLSFacts(item, job.probe)
+	itemCopy := *item
+	actions.emit(events.FileInfoUpdated, &itemCopy)
+	return nil
+}
+
+// beginHLSSelection 在锁内确认这一项还在，并取走选择清晰度要用的事实。
+func (qc *QueueController) beginHLSSelection(ctx context.Context, requestID, urlStr string) (*hlsSelection, error) {
+	for {
+		qc.mu.Lock()
+
+		item := qc.itemByIDLocked(requestID)
+		if item == nil {
+			qc.mu.Unlock()
+			return nil, ErrStaleFileInfoSubmission
+		}
+		if strings.TrimSpace(urlStr) == "" {
+			qc.mu.Unlock()
+			return nil, errors.New("缺少下载链接，无法选择清晰度")
+		}
+		if item.probe == nil && item.probeErr == nil {
+			// 登记时那次探测还没回来。等它落地，否则这里补出来的元数据会盖掉它，
+			// 而它才是提交要复用的那一份。
+			if done := item.probeDone; done != nil {
+				qc.mu.Unlock()
+				select {
+				case <-done:
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+		}
+
+		// 探测结果只在链接没被改过时才算数：用户改过链接，手上这份元数据已经不属于它了。
+		probe := item.probe
+		if probe != nil && probe.URL != urlStr {
+			probe = nil
+		}
+		job := &hlsSelection{url: urlStr, headers: item.Headers, probe: probe}
+		qc.mu.Unlock()
+		return job, nil
+	}
 }
 
 // finishPreDownloadStart 收尾一次预下载启动：记录任务 ID，并解除「正在启动」这个状态。

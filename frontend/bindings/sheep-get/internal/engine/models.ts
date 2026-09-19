@@ -7,6 +7,9 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as hls$0 from "../hls/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "../task/models.js";
 
 /**
@@ -47,6 +50,64 @@ export class ConsistencyResult {
 }
 
 /**
+ * HLSProbe 是一条链接的 HLS 事实。
+ */
+export class HLSProbe {
+    "isHls": boolean;
+
+    /**
+     * PlaylistURL 是清单地址，原样保留（可能带查询串，取回清单必须与用户给的一致）。
+     */
+    "playlistUrl"?: string;
+
+    /**
+     * Variants 是可选清晰度。只有一项时不构成选择，界面不必弹选择步骤。
+     */
+    "variants"?: hls$0.Variant[];
+
+    /**
+     * Options 是 Variants 的界面形态：展示名只在后端算一次（hls.VariantOptions），
+     * 文件信息窗口与扩展悬浮条拿同一份名字，不在前端各算一遍。
+     */
+    "options"?: hls$0.VariantOption[];
+
+    /**
+     * Media 是登记前已经选定的来源。为空表示清晰度还没选——多清晰度时界面先选再进来
+     * （Ticket 07：多清晰度在进入信息对话框前选择）。有它时建任务直接采用，不再重新探测。
+     */
+    "media"?: hls$0.Source | null;
+
+    /** Creates a new HLSProbe instance. */
+    constructor($$source: Partial<HLSProbe> = {}) {
+        if (!("isHls" in $$source)) {
+            this["isHls"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HLSProbe instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HLSProbe {
+        const $$createField2_0 = $$createType1;
+        const $$createField3_0 = $$createType3;
+        const $$createField4_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("variants" in $$parsedSource) {
+            $$parsedSource["variants"] = $$createField2_0($$parsedSource["variants"]);
+        }
+        if ("options" in $$parsedSource) {
+            $$parsedSource["options"] = $$createField3_0($$parsedSource["options"]);
+        }
+        if ("media" in $$parsedSource) {
+            $$parsedSource["media"] = $$createField4_0($$parsedSource["media"]);
+        }
+        return new HLSProbe($$parsedSource as Partial<HLSProbe>);
+    }
+}
+
+/**
  * ProbeResult holds the probed metadata and duplicate-task state for a URL.
  */
 export class ProbeResult {
@@ -58,6 +119,11 @@ export class ProbeResult {
     "lastModified": string;
     "contentType": string;
     "duplicateTask"?: task$0.Task | null;
+
+    /**
+     * HLS 是这条链接的 HLS 事实；为空表示它不是清单，按普通文件下载。
+     */
+    "hls"?: HLSProbe | null;
 
     /** Creates a new ProbeResult instance. */
     constructor($$source: Partial<ProbeResult> = {}) {
@@ -90,15 +156,27 @@ export class ProbeResult {
      * Creates a new ProbeResult instance from a string or object.
      */
     static createFrom($$source: any = {}): ProbeResult {
-        const $$createField7_0 = $$createType1;
+        const $$createField7_0 = $$createType7;
+        const $$createField8_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
             $$parsedSource["duplicateTask"] = $$createField7_0($$parsedSource["duplicateTask"]);
+        }
+        if ("hls" in $$parsedSource) {
+            $$parsedSource["hls"] = $$createField8_0($$parsedSource["hls"]);
         }
         return new ProbeResult($$parsedSource as Partial<ProbeResult>);
     }
 }
 
 // Private type creation functions
-const $$createType0 = task$0.Task.createFrom;
-const $$createType1 = $Create.Nullable($$createType0);
+const $$createType0 = hls$0.Variant.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = hls$0.VariantOption.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = hls$0.Source.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = task$0.Task.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = HLSProbe.createFrom;
+const $$createType9 = $Create.Nullable($$createType8);

@@ -102,3 +102,32 @@ export function isProcessingFailure(t: taskModels.Task): boolean {
     t.failurePhase === taskModels.FailurePhase.FailurePhaseProcessing
   );
 }
+
+/** 分段格子数上限：长视频分片可达上千，格子按组聚合后视觉密度保持稳定。 */
+export const SEGMENT_CELL_LIMIT = 160;
+
+/**
+ * 把 HLS 分片完成位图折算成进度条上的分段格子：每格一个 0~1 的完成比例。
+ * 分片数不超过上限时一格一分片；超过时相邻分片合并成一组，按组内完成比例填充，
+ * 让「多路并发抓分片」在任何分片数下都看得见（整条从左到右逐步填充）。
+ */
+export function aggregateSegmentCells(
+  done: boolean[] | undefined,
+  maxCells: number = SEGMENT_CELL_LIMIT,
+): number[] {
+  if (!done || done.length === 0) {
+    return [];
+  }
+  const total = done.length;
+  const groupSize = Math.ceil(total / Math.min(maxCells, total));
+  const cells: number[] = [];
+  for (let start = 0; start < total; start += groupSize) {
+    const end = Math.min(start + groupSize, total);
+    let finished = 0;
+    for (let i = start; i < end; i++) {
+      if (done[i]) finished++;
+    }
+    cells.push(finished / (end - start));
+  }
+  return cells;
+}

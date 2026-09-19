@@ -1,10 +1,14 @@
 import { MediaBarManager } from '../lib/mediabar';
-import type { MediaResource } from '../lib/media';
+import { inferPageTitle, type MediaResource } from '../lib/media';
 import { normalizeKeyName } from '../lib/shortcuts';
 import type { ExtensionMessage, KeyStateMessage, ResetKeysMessage } from '../lib/types';
 export default defineContentScript({
   matches: ['*://*/*'],
   runAt: 'document_start',
+  // 视频播放器常被嵌在 iframe 里（嵌入页、视频站的分帧播放、外站引用），
+  // 只在主框架注入会让这类页面的悬浮条永远不出现。与 IDM 对齐，注入所有框架。
+  allFrames: true,
+  matchAboutBlank: true,
   main() {
     function handleKeyEvent(e: KeyboardEvent) {
       if (e.repeat) return;
@@ -37,6 +41,27 @@ export default defineContentScript({
     window.addEventListener('keydown', handleKeyEvent, true);
     window.addEventListener('keyup', handleKeyEvent, true);
     window.addEventListener('blur', handleBlur);
+
+    // 上报页面真实标题与 URL：HLS 清单的 URL 末段往往是 index.m3u8，真正的视频名
+    // 只存在于页面标题里（og:title / <title>）。background 据此给本标签页的资源命名。
+    // 标题可能在 media script 注入后仍被 SPA 改写，这里延迟到 DOM 就绪后再报一次。
+    function reportPageContext() {
+      try {
+        const msg: ExtensionMessage = {
+          type: 'REPORT_PAGE_CONTEXT',
+          pageTitle: inferPageTitle(document),
+          pageUrl: location.href,
+        };
+        void chrome.runtime.sendMessage(msg);
+      } catch {
+        // Extension context might be invalidated
+      }
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', reportPageContext, { once: true });
+    } else {
+      reportPageContext();
+    }
 
     // Initialize media floating bar manager
     const mediaBar = new MediaBarManager();

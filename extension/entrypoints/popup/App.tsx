@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { watchDesktopStatus } from '../../lib/liveStatus';
-import { formatBytes, type MediaResource } from '../../lib/media';
-import type { DesktopStatus, HandoverResponse } from '../../lib/types';
+import { formatBytes, formatDuration, mimeShortLabel, type MediaResource } from '../../lib/media';
+import type { DesktopStatus, HandoverResponse, MediaProbeInfo } from '../../lib/types';
 
 /** 读后台维护的链路状态；force 为真时要求先重新验证再回答。 */
 function requestStatus(force: boolean): Promise<DesktopStatus | null> {
@@ -31,6 +31,10 @@ export default function App() {
     Record<string, 'idle' | 'sending' | 'success' | 'failed'>
   >({});
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** 每条资源探测到的展示信息（时长与大小），按资源 id 存。 */
+  const [probeInfo, setProbeInfo] = useState<Record<string, MediaProbeInfo>>({});
+  /** 已经发起过探测的资源：探测失败也不重试，避免面板开着时反复打桌面端。 */
+  const probedRef = useRef<Set<string>>(new Set());
 
   const online = status?.online === true;
 
@@ -45,6 +49,35 @@ export default function App() {
     });
     return watch.stop;
   }, []);
+
+  // 链路在线时对还没探过的资源发起概览探测：时长与大小在下载之前就显示出来。
+  // 后台预探测已经回填的资源（probe* 字段）直接用，不再发请求；探测本身命中
+  // background 的 URL 级缓存，同一地址反复打开面板只算一次。失败静默——面板
+  // 不为展示信息阻塞。
+  useEffect(() => {
+    if (!online) return;
+    for (const res of resources) {
+      if (probedRef.current.has(res.id)) continue;
+      if (res.probeDuration || res.probeTotalBytes || res.probeVariants) continue;
+      probedRef.current.add(res.id);
+      chrome.runtime.sendMessage(
+        {
+          type: 'GET_MEDIA_PROBE',
+          url: res.url,
+          filename: res.filename,
+          mimeType: res.mimeType,
+          isHls: res.isHls,
+          totalBytes: res.totalBytes,
+          pageUrl: res.pageUrl,
+        },
+        (info: MediaProbeInfo | undefined) => {
+          if (info && (info.durationSeconds || info.totalBytes || info.variants)) {
+            setProbeInfo((prev) => ({ ...prev, [res.id]: info }));
+          }
+        },
+      );
+    }
+  }, [online, resources]);
 
   /**
    * 连接状态一律问后台，不问本地存下来的会话：存着会话不代表连得上
@@ -117,7 +150,8 @@ export default function App() {
       style={{
         display: 'flex',
         flexDirection: 'column',
-        width: '380px',
+        width: '100%',
+        minHeight: '160px',
         maxHeight: '520px',
         backgroundColor: '#090d16',
         color: '#e2e8f0',
@@ -295,6 +329,17 @@ export default function App() {
         ) : (
           resources.map((item) => {
             const state = handoverStates[item.id] || 'idle';
+            // 探测信息两路合并：面板自己探测到的优先，其次后台预探测回填到资源上的。
+            // HLS 的响应头大小只是清单本身的大小（几 KB），没有意义，真实总大小要等
+            // 桌面端逐分片问出来；时长同理，探到了才显示。
+            const info = probeInfo[item.id];
+            const durationText = formatDuration(info?.durationSeconds ?? item.probeDuration);
+            const sizeText = formatBytes(
+              info?.totalBytes ?? item.probeTotalBytes ?? item.totalBytes,
+            );
+            const variantCount = info?.variants ?? item.probeVariants;
+            const variantsText = variantCount && variantCount > 1 ? `${variantCount} 个清晰度` : '';
+            const mimeText = mimeShortLabel(item.mimeType);
             return (
               <div
                 key={item.id}
@@ -363,18 +408,33 @@ export default function App() {
                       gap: '8px',
                       fontSize: '11px',
                       color: '#64748b',
+                      whiteSpace: 'nowrap',
+                      minWidth: 0,
                     }}
                   >
-                    <span>{formatBytes(item.totalBytes)}</span>
-                    <span>•</span>
+                    {variantsText ? (
+                      <span style={{ color: '#c084fc', flexShrink: 0 }}>{variantsText}</span>
+                    ) : (
+                      <>
+                        {durationText && (
+                          <span style={{ color: '#94a3b8', flexShrink: 0 }}>{durationText}</span>
+                        )}
+                        {durationText && <span style={{ flexShrink: 0 }}>•</span>}
+                        <span style={{ flexShrink: 0 }}>{sizeText}</span>
+                      </>
+                    )}
+                    <span style={{ flexShrink: 0 }}>•</span>
                     <span
+                      title={item.mimeType}
                       style={{
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
+                        flex: 1,
+                        minWidth: 0,
                       }}
                     >
-                      {item.mimeType}
+                      {mimeText}
                     </span>
                   </div>
                 </div>
