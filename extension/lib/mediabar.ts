@@ -15,7 +15,7 @@ export interface RectLike {
   height: number;
 }
 
-export interface ViewportLike {
+export interface SizeLike {
   width: number;
   height: number;
 }
@@ -26,12 +26,14 @@ export interface BarPosition {
   top: number;
 }
 
-// 悬浮条贴近播放器右上角：右侧留 MARGIN，顶部留 MARGIN，并保证始终留在视口内。
+// 悬浮条挂在播放器右上角的外侧：右边缘与播放器右边缘对齐，整体位于画面上方，
+// 因此不遮挡任何画面内容。上方放不下（播放器贴着视口顶、或被滚动到顶部）时退到播放器
+// 下方，同样在画面之外；只有当播放器占满视口、上下都没有位置时才落回视口内。
 // 播放器完全离开视口或小到放不下悬浮条时不显示。
 export function computeBarPosition(
   videoRect: RectLike,
-  viewport: ViewportLike,
-  barWidth: number,
+  viewport: SizeLike,
+  bar: SizeLike,
 ): BarPosition {
   if (
     videoRect.width < MEDIA_BAR_MIN_VIDEO_WIDTH ||
@@ -51,13 +53,15 @@ export function computeBarPosition(
 
   const maxLeft = Math.max(
     MEDIA_BAR_VIEWPORT_PADDING,
-    viewport.width - barWidth - MEDIA_BAR_VIEWPORT_PADDING,
+    viewport.width - bar.width - MEDIA_BAR_VIEWPORT_PADDING,
   );
-  const left = Math.min(
-    Math.max(videoRect.right - barWidth - MEDIA_BAR_MARGIN, MEDIA_BAR_VIEWPORT_PADDING),
-    maxLeft,
-  );
-  const top = Math.max(MEDIA_BAR_VIEWPORT_PADDING, videoRect.top + MEDIA_BAR_MARGIN);
+  const left = Math.min(Math.max(videoRect.right - bar.width, MEDIA_BAR_VIEWPORT_PADDING), maxLeft);
+
+  const minTop = MEDIA_BAR_VIEWPORT_PADDING;
+  const maxTop = Math.max(minTop, viewport.height - bar.height - MEDIA_BAR_VIEWPORT_PADDING);
+  const above = videoRect.top - MEDIA_BAR_MARGIN - bar.height;
+  const below = videoRect.bottom + MEDIA_BAR_MARGIN;
+  const top = above >= minTop ? above : below <= maxTop ? below : minTop;
 
   return { visible: true, left, top };
 }
@@ -241,14 +245,14 @@ export class MediaBarManager {
       return;
     }
 
-    // 先让宿主可见，才量得到悬浮条的真实宽度
+    // 先让宿主可见，才量得到悬浮条的真实尺寸（宽度决定右对齐位置，高度决定落在播放器上方的 y）
     tracked.container.style.display = 'block';
     const bar = tracked.shadowRoot.getElementById('bar');
-    const barWidth = bar ? bar.getBoundingClientRect().width : 0;
+    const barRect = bar?.getBoundingClientRect();
     const position = computeBarPosition(
       tracked.video.getBoundingClientRect(),
       { width: window.innerWidth, height: window.innerHeight },
-      barWidth,
+      { width: barRect?.width ?? 0, height: barRect?.height ?? 0 },
     );
 
     if (!position.visible) {

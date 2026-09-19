@@ -508,7 +508,16 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   const filename = responseFilename || item.filename;
 
   // Check takeover rules
-  const decision = decideTakeover(url, filename, item.referrer, currentConfig, currentKeyMask);
+  // `item.mime` 是这次响应真实的 Content-Type：后缀命中但内容其实是页面/脚本时
+  // （`.ts` 的 TypeScript 源码、签名过期后返回 HTML 错误页的 `.mp4`），规则会否决接管。
+  const decision = decideTakeover(
+    url,
+    filename,
+    item.referrer,
+    currentConfig,
+    currentKeyMask,
+    item.mime,
+  );
   logDownloadDecision(item.id, url, filename, responseFilename !== undefined, decision);
 
   if (!decision.takeover) {

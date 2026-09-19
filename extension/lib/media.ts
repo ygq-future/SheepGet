@@ -1,4 +1,5 @@
 import { extractExtension } from './rules';
+import { isDocumentOrScriptMime, normalizeMime } from './mimetypes';
 
 export interface MediaResource {
   id: string;
@@ -14,6 +15,9 @@ export interface MediaResource {
 }
 
 const HLS_EXTENSIONS = new Set(['m3u8', 'm3u']);
+// 后缀是线索，不是结论。`.ts` 故意不在这里：它既可能是 MPEG-TS 分片，也可能是开发服务器
+// 直接吐出来的 TypeScript 源码（`main.ts`、`router.ts`……），只看后缀会把整个 src 目录
+// 列成可下载资源。这类同名的后缀只能靠 Content-Type 佐证（video/* 、audio/*）。
 const MEDIA_EXTENSIONS = new Set([
   'mp4',
   'mkv',
@@ -22,7 +26,6 @@ const MEDIA_EXTENSIONS = new Set([
   'avi',
   'mov',
   'wmv',
-  'ts',
   'm4s',
   'mp3',
   'm4a',
@@ -47,7 +50,7 @@ export function isMediaResponse(
   url: string,
   contentTypeHeader?: string,
 ): { isMedia: boolean; isHls: boolean; mime: string } {
-  const mime = (contentTypeHeader || '').split(';')[0]?.toLowerCase().trim() || '';
+  const mime = normalizeMime(contentTypeHeader);
   const ext = extractExtension(url);
 
   // 1. Check for HLS
@@ -68,7 +71,10 @@ export function isMediaResponse(
   }
 
   // 3. Check for general video/audio URL extension
-  if (MEDIA_EXTENSIONS.has(ext)) {
+  //    后缀推定可以被 Content-Type 否认：签名过期时 CDN 会用 `.mp4` 的 URL 返回 HTML 错误页，
+  //    开发服务器会用 `.ts` 的路径返回 TypeScript 源码。只否决这一条分支——按 HLS 后缀、
+  //    按 HLS MIME、按 video/* 、audio/* 命中时都已经有正面证据，不受影响。
+  if (MEDIA_EXTENSIONS.has(ext) && !isDocumentOrScriptMime(contentTypeHeader)) {
     return { isMedia: true, isHls: false, mime: mime || `video/${ext}` };
   }
 

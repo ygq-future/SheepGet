@@ -1,4 +1,5 @@
 import type { TakeoverConfigSync } from './types';
+import { isDocumentOrScriptMime } from './mimetypes';
 import { isKeyPressed } from './shortcuts';
 
 export function extractExtension(filenameOrUrl: string): string {
@@ -95,6 +96,7 @@ export interface TakeoverDecision {
     | 'force_shortcut_active'
     | 'site_excluded'
     | 'extension_matched'
+    | 'document_mime'
     | 'extension_not_matched';
 }
 
@@ -104,6 +106,7 @@ export function decideTakeover(
   pageUrl: string | undefined,
   config: TakeoverConfigSync,
   keyMask: number,
+  mimeType?: string,
 ): TakeoverDecision {
   // 1. Pause shortcut bypasses everything
   if (config.pauseShortcut && isKeyPressed(keyMask, config.pauseShortcut)) {
@@ -122,9 +125,17 @@ export function decideTakeover(
 
   // 4. Check extension match
   const target = filenameSuggestion || url;
-  if (isExtensionMatched(target, config.extensions)) {
-    return { takeover: true, reason: 'extension_matched' };
+  if (!isExtensionMatched(target, config.extensions)) {
+    return { takeover: false, reason: 'extension_not_matched' };
   }
 
-  return { takeover: false, reason: 'extension_not_matched' };
+  // 5. 后缀命中，但响应头说这只是页面/脚本本身（`main.ts` 是 TypeScript 源码、签名过期后
+  //    CDN 用 `.mp4` 的 URL 返回 HTML 错误页）——这不是用户要下载的文件。
+  //    它只否决「按后缀猜出来的」接管：强制快捷键（第 2 步）是用户的明确意图，站点排除在
+  //    第 3 步，两者都保持更高优先级；拿不到 MIME 时不猜也不否决，回落到按后缀判定。
+  if (isDocumentOrScriptMime(mimeType)) {
+    return { takeover: false, reason: 'document_mime' };
+  }
+
+  return { takeover: true, reason: 'extension_matched' };
 }
