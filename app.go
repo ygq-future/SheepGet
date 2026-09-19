@@ -199,6 +199,9 @@ func (a *App) Shutdown() {
 	if a.loopbackServer != nil {
 		_ = a.loopbackServer.Stop()
 	}
+	if exitFile := os.Getenv("SHEEP_GET_DEV_EXIT_FILE"); exitFile != "" {
+		_ = os.WriteFile(exitFile, []byte("exit"), 0600)
+	}
 }
 
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
