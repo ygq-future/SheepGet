@@ -78,6 +78,7 @@ func safeTransferCrossDevice(srcPath, dstPath string) error {
 		return fmt.Errorf("rename to target destination failed: %w", err)
 	}
 
+	_ = srcFile.Close()
 	_ = os.Remove(srcPath)
 	return nil
 }
