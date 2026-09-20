@@ -147,6 +147,23 @@ export function isOverwriteAction(action: duplicateModels.Action | undefined): b
   );
 }
 
+/**
+ * 校验是否需要因本地磁盘同名文件冲突而阻断提交。
+ * 当用户已明确选择覆盖（ActionContinue/ActionRedownload）、序号副本（ActionCopy），
+ * 或在单文件冲突弹窗中明确勾选了覆盖（overwriteConflict）时，不予阻断。
+ */
+export function shouldBlockForDiskConflict(
+  fileConflict: boolean,
+  overwriteConflict: boolean,
+  action?: duplicateModels.Action,
+): boolean {
+  if (!fileConflict) return false;
+  if (overwriteConflict) return false;
+  if (isOverwriteAction(action)) return false;
+  if (action === duplicateModels.Action.ActionCopy) return false;
+  return true;
+}
+
 /** 用户手动选过分类就用选中的，否则用后端给出的命中分类。 */
 export function effectiveCategoryIdOf(draft: FileInfoDraft): string {
   return draft.categoryEdited && draft.selectedCategoryId

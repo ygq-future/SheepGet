@@ -23,8 +23,12 @@ import (
 )
 
 const (
-	MinChunkSize    = 256 * 1024 // 256KB
-	UserAgentChrome = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+	MinChunkSize           = 256 * 1024      // 256KB
+	MinSplittableChunkSize = 128 * 1024      // 128KB: 动态拆分时剩余区间的最小物理底线（对半拆分后每片至少 64KB）
+	DefaultMinSplitETA     = 3 * time.Second // 预计在此时间内可自然完成的块不进行拆分
+	SplitWarmupDuration    = 1 * time.Second // 新块开始下载后的预热观察期
+	SplitStallThreshold    = 2 * time.Second // 超过此时间无数据到达视为卡滞（Stall）
+	UserAgentChrome        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 )
 
 var (
@@ -52,6 +56,24 @@ type HTTPDownloader struct {
 	defaultConcurrency int
 	proxyMode          string
 	customProxyAddr    string
+	minSplitETA        time.Duration
+}
+
+// SetMinSplitETA updates the minimum ETA threshold for dynamic chunk splitting.
+func (d *HTTPDownloader) SetMinSplitETA(dur time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.minSplitETA = dur
+}
+
+// GetMinSplitETA returns the configured minimum ETA threshold for dynamic chunk splitting.
+func (d *HTTPDownloader) GetMinSplitETA() time.Duration {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.minSplitETA <= 0 {
+		return DefaultMinSplitETA
+	}
+	return d.minSplitETA
 }
 
 // SetTempDirectory updates the default temporary directory for in-progress part files.
@@ -211,6 +233,7 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 		client:       client,
 		customClient: customClient,
 		proxyMode:    "system",
+		minSplitETA:  DefaultMinSplitETA,
 	}
 }
 
@@ -571,6 +594,7 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
 
 	now := time.Now()
 	var bestIdx = -1
+	var maxETA time.Duration = 0
 	var maxRemaining int64 = 0
 
 	var activeSpeeds []int64
@@ -599,6 +623,11 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
 		}
 	}
 
+	minETA := DefaultMinSplitETA
+	if coord.downloader != nil {
+		minETA = coord.downloader.GetMinSplitETA()
+	}
+
 	for i := range coord.t.Chunks {
 		c := &coord.t.Chunks[i]
 		if c.Completed {
@@ -622,17 +651,35 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
 		currPos := c.Start + c.Downloaded
 		remaining := c.End - currPos + 1
 
-		// Must have at least 2 * MinChunkSize remaining to justify splitting
-		if remaining < MinChunkSize*2 {
+		// Must have at least MinSplittableChunkSize remaining to justify splitting safely
+		if remaining < MinSplittableChunkSize {
 			continue
 		}
 
-		if remaining > maxRemaining {
+		var eta time.Duration
+		if trk.speed > 0 {
+			etaSeconds := float64(remaining) / float64(trk.speed)
+			eta = time.Duration(etaSeconds * float64(time.Second))
+			// If the active worker is expected to finish within minETA, do not disturb it!
+			if eta <= minETA {
+				continue
+			}
+		} else {
+			// No measured speed yet: give warmup time for newly launched chunk workers
+			timeSinceUpdate := now.Sub(trk.lastUpdate)
+			if timeSinceUpdate < SplitWarmupDuration {
+				continue
+			}
+			// If stalled beyond threshold, consider it a severely blocked chunk
+			eta = 24 * time.Hour
+		}
+
+		if eta > maxETA || (eta == maxETA && remaining > maxRemaining) {
+			maxETA = eta
 			maxRemaining = remaining
 			bestIdx = i
 		}
 	}
-
 	if bestIdx == -1 {
 		return -1
 	}

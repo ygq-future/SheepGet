@@ -52,10 +52,10 @@ import { extractExtension } from '../lib/category';
 import {
   canKeepCategoryPathOf,
   effectiveCategoryIdOf,
-  isOverwriteAction,
   overwriteOptionOf,
   resolveAction,
   reuseFields,
+  shouldBlockForDiskConflict,
   type FileInfoDraft,
 } from '../lib/fileInfoDraft';
 
@@ -257,8 +257,11 @@ export function FileInfoView() {
             patch({ filename: item.filename, originalFilename: item.filename });
           }
         }
+        const isDestinationOccupied =
+          item.duplicateDecision?.case === duplicateModels.Case.CaseDestinationOccupied ||
+          current.duplicateDecision?.case === duplicateModels.Case.CaseDestinationOccupied;
         if (item.fileConflict !== undefined) {
-          patch({ fileConflict: item.fileConflict });
+          patch({ fileConflict: isDestinationOccupied ? false : item.fileConflict });
         }
         if (item.suggestedFilename) {
           patch({ suggestedFilename: item.suggestedFilename });
@@ -521,8 +524,8 @@ export function FileInfoView() {
         return;
       }
 
-      // Disk conflict check: only block if not an explicit overwrite!
-      if (fileConflict && !overwriteConflict && !isOverwriteAction(action)) {
+      // Disk conflict check: only block if not an explicit overwrite or copy action!
+      if (shouldBlockForDiskConflict(fileConflict, overwriteConflict, action)) {
         patch({ error: '目标目录存在同名文件，请确认是否覆盖或使用建议名称' });
         return;
       }
@@ -860,6 +863,7 @@ export function FileInfoView() {
                         onClick={() => {
                           patch({
                             selectedAction: overwriteOption,
+                            fileConflict: false,
                             error: null,
                             ...(originalFilename ? { filename: originalFilename } : {}),
                           });
@@ -877,14 +881,24 @@ export function FileInfoView() {
                       <button
                         type="button"
                         onClick={() => {
-                          patch({ selectedAction: duplicateModels.Action.ActionCopy, error: null });
+                          patch({
+                            selectedAction: duplicateModels.Action.ActionCopy,
+                            fileConflict: false,
+                            error: null,
+                          });
                           const owner = useFileInfoDraftStore.getState().activeItemId;
                           void (async () => {
                             const baseName = originalFilename || activeItem?.filename || filename;
                             if (directory && baseName) {
                               const conf = await CheckURLFilesExist(url, directory, baseName);
                               if (conf.suggestedFilename) {
-                                patch({ filename: conf.suggestedFilename }, owner);
+                                patch(
+                                  {
+                                    filename: conf.suggestedFilename,
+                                    fileConflict: false,
+                                  },
+                                  owner,
+                                );
                               }
                             }
                           })();

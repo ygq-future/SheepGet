@@ -10,6 +10,7 @@ import {
   overwriteOptionOf,
   resolveAction,
   reuseFields,
+  shouldBlockForDiskConflict,
 } from './lib/fileInfoDraft';
 import { useFileInfoDraftStore } from './stores/fileInfoDraft';
 
@@ -321,5 +322,36 @@ describe('文件信息草稿 store', () => {
     useFileInfoDraftStore.getState().patch({ filename: 'typed.mp4' });
     expect(useFileInfoDraftStore.getState().draft.filename).toBe('typed.mp4');
     expect(useFileInfoDraftStore.getState().drafts).toEqual({});
+  });
+});
+
+describe('shouldBlockForDiskConflict', () => {
+  it('无磁盘文件冲突时不阻断', () => {
+    expect(shouldBlockForDiskConflict(false, false)).toBe(false);
+  });
+
+  it('有冲突且用户在同名弹窗中明确勾选覆盖时不阻断', () => {
+    expect(shouldBlockForDiskConflict(true, true)).toBe(false);
+  });
+
+  it('有冲突且用户选择了覆盖动作（Continue/Redownload）时不阻断', () => {
+    expect(shouldBlockForDiskConflict(true, false, duplicateModels.Action.ActionContinue)).toBe(
+      false,
+    );
+    expect(shouldBlockForDiskConflict(true, false, duplicateModels.Action.ActionRedownload)).toBe(
+      false,
+    );
+  });
+
+  it('有冲突且用户明确选择了序号副本动作（ActionCopy）时绝不阻断', () => {
+    expect(shouldBlockForDiskConflict(true, false, duplicateModels.Action.ActionCopy)).toBe(false);
+  });
+
+  it('有冲突且未选择任何覆盖或副本策略时予以阻断', () => {
+    expect(shouldBlockForDiskConflict(true, false)).toBe(true);
+    expect(shouldBlockForDiskConflict(true, false, undefined)).toBe(true);
+    expect(
+      shouldBlockForDiskConflict(true, false, duplicateModels.Action.ActionShowCompleted),
+    ).toBe(true);
   });
 });
