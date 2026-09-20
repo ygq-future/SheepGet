@@ -1085,3 +1085,33 @@ func TestApp_HandleHandover(t *testing.T) {
 		t.Errorf("expected accepted handover, got %+v", resp)
 	}
 }
+
+func TestApp_ProgressWindowAlwaysOnTop(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	if app.IsProgressWindowAlwaysOnTop() {
+		t.Errorf("expected always on top to default to false")
+	}
+
+	// Toggle to true
+	state := app.ToggleProgressWindowAlwaysOnTop()
+	if !state || !app.IsProgressWindowAlwaysOnTop() {
+		t.Errorf("expected always on top to toggle to true")
+	}
+
+	// Toggle back to false
+	state = app.ToggleProgressWindowAlwaysOnTop()
+	if state || app.IsProgressWindowAlwaysOnTop() {
+		t.Errorf("expected always on top to toggle to false")
+	}
+}
+
+func TestApp_SelectDirectory_AppNotInitialized(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+
+	// app.getApp() returns nil in test environment
+	_, err := app.SelectDirectory(tmpDir)
+	if err == nil || !strings.Contains(err.Error(), "application not initialized") {
+		t.Errorf("expected application not initialized error, got: %v", err)
+	}
+}

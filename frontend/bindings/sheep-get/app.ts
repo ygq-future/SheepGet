@@ -166,6 +166,13 @@ export function IsLaunchAtStartup(): $CancellablePromise<boolean> {
 }
 
 /**
+ * IsProgressWindowAlwaysOnTop reports whether the progress window is set to always on top.
+ */
+export function IsProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> {
+    return $Call.ByID(351100157);
+}
+
+/**
  * ListTasks lists all tasks
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
@@ -328,8 +335,8 @@ export function ReuseExistingFile(existingTaskID: string, targetDir: string, tar
     });
 }
 
-export function SelectDirectory(): $CancellablePromise<string> {
-    return $Call.ByID(1735672136);
+export function SelectDirectory(defaultDir: string): $CancellablePromise<string> {
+    return $Call.ByID(1735672136, defaultDir);
 }
 
 /**
@@ -417,6 +424,13 @@ export function SwitchFileInfoActive(index: number): $CancellablePromise<window$
     return $Call.ByID(2168286885, index).then(($result: any) => {
         return $$createType6($result);
     });
+}
+
+/**
+ * ToggleProgressWindowAlwaysOnTop toggles whether the progress window is always on top.
+ */
+export function ToggleProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> {
+    return $Call.ByID(692290461);
 }
 
 /**

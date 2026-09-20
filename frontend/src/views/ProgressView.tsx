@@ -10,6 +10,7 @@ import {
   ExternalLink,
   X,
   Minus,
+  Pin,
   Play,
   Pause,
   RotateCcw,
@@ -30,6 +31,8 @@ import {
   MinimiseProgressWindow,
   HideProgressWindow,
   SetProgressWindowHeight,
+  ToggleProgressWindowAlwaysOnTop,
+  IsProgressWindowAlwaysOnTop,
 } from '../../bindings/sheep-get/app';
 import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
@@ -106,6 +109,33 @@ export function ProgressView() {
     return params.get('focus');
   });
 
+  const [alwaysOnTop, setAlwaysOnTop] = useState<boolean>(false);
+
+  useEffect(() => {
+    let ignore = false;
+    void (async () => {
+      try {
+        const top = await IsProgressWindowAlwaysOnTop();
+        if (!ignore) {
+          setAlwaysOnTop(top);
+        }
+      } catch (err) {
+        console.error('Failed to get always on top state:', err);
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  const handleToggleAlwaysOnTop = async () => {
+    try {
+      const next = await ToggleProgressWindowAlwaysOnTop();
+      setAlwaysOnTop(next);
+    } catch (err) {
+      console.error('Failed to toggle always on top:', err);
+    }
+  };
   const contentRef = useRef<HTMLDivElement>(null);
 
   const keepCompletedInfo = settings?.download?.keepCompletedInfo ?? true;
@@ -393,6 +423,19 @@ export function ProgressView() {
           className="flex items-center gap-1"
           style={{ ['--wails-draggable' as string]: 'no-drag' }}
         >
+          <button
+            type="button"
+            onClick={() => void handleToggleAlwaysOnTop()}
+            title={alwaysOnTop ? '取消置顶' : '窗口置顶'}
+            aria-label={alwaysOnTop ? '取消置顶' : '窗口置顶'}
+            className={`flex h-5 w-5 items-center justify-center rounded transition-colors ${
+              alwaysOnTop
+                ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
+                : 'text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <Pin className={`h-3 w-3 ${alwaysOnTop ? 'fill-current' : ''}`} />
+          </button>
           <button
             type="button"
             onClick={() => void MinimiseProgressWindow()}

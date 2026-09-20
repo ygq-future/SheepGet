@@ -20,6 +20,7 @@ import (
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
+	"strings"
 	"time"
 )
 
@@ -41,16 +42,17 @@ type DestinationInfo struct {
 
 // App struct
 type App struct {
-	app                *application.App
-	ctx                context.Context
-	manager            *engine.Manager
-	store              task.TaskStore
-	storage            *storage.Storage
-	settings           *config.SettingsService
-	windowQueue        *window.QueueController
-	progressPositioned bool
-	clipboardWatcher   *clipboard.Watcher
-	loopbackServer     *server.Server
+	app                 *application.App
+	ctx                 context.Context
+	manager             *engine.Manager
+	store               task.TaskStore
+	storage             *storage.Storage
+	settings            *config.SettingsService
+	windowQueue         *window.QueueController
+	progressPositioned  bool
+	progressAlwaysOnTop bool
+	clipboardWatcher    *clipboard.Watcher
+	loopbackServer      *server.Server
 }
 
 type wailsWindowView struct {
@@ -681,14 +683,28 @@ func (a *App) ResetAndDownloadWithNewURL(taskID, newURL string, headers map[stri
 	return a.manager.ResetAndDownloadWithNewURL(a.ctx, taskID, newURL, headers)
 }
 
-func (a *App) SelectDirectory() (string, error) {
+func (a *App) SelectDirectory(defaultDir string) (string, error) {
 	app := a.getApp()
 	if app == nil {
 		return "", fmt.Errorf("application not initialized")
 	}
+
+	targetDir := strings.TrimSpace(defaultDir)
+	if targetDir != "" {
+		cleaned := filepath.Clean(targetDir)
+		if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
+			targetDir = cleaned
+		} else {
+			targetDir = ""
+		}
+	}
+	if targetDir == "" {
+		targetDir = getDefaultDownloadDir()
+	}
+
 	return app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
 		Title:                "选择保存目录",
-		Directory:            getDefaultDownloadDir(),
+		Directory:            targetDir,
 		CanChooseDirectories: true,
 		CanChooseFiles:       false,
 	}).PromptForSingleSelection()
@@ -1006,6 +1022,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 			MinHeight:      progressWindowMinH,
 			MaxHeight:      progressWindowMaxH,
 			Frameless:      true,
+			AlwaysOnTop:    a.progressAlwaysOnTop,
 			BackgroundType: application.BackgroundTypeTransparent,
 			URL:            fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
 		})
@@ -1038,4 +1055,20 @@ func (a *App) HideProgressWindow() {
 			app.Event.Emit(appevents.ProgressClearViewed)
 		}
 	}
+}
+
+// ToggleProgressWindowAlwaysOnTop toggles whether the progress window is always on top.
+func (a *App) ToggleProgressWindowAlwaysOnTop() bool {
+	a.progressAlwaysOnTop = !a.progressAlwaysOnTop
+	if app := a.getApp(); app != nil {
+		if win, ok := app.Window.GetByName(winNameProgress); ok {
+			win.SetAlwaysOnTop(a.progressAlwaysOnTop)
+		}
+	}
+	return a.progressAlwaysOnTop
+}
+
+// IsProgressWindowAlwaysOnTop reports whether the progress window is set to always on top.
+func (a *App) IsProgressWindowAlwaysOnTop() bool {
+	return a.progressAlwaysOnTop
 }

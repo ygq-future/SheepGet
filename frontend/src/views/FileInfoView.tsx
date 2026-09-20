@@ -459,7 +459,7 @@ export function FileInfoView() {
   const handleSelectDir = async () => {
     try {
       const owner = useFileInfoDraftStore.getState().activeItemId;
-      const selected = await SelectDirectory();
+      const selected = await SelectDirectory(directory);
       if (selected) {
         patch({ directory: selected, dirEdited: true }, owner);
         if (filename) {

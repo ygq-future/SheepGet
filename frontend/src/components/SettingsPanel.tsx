@@ -612,7 +612,7 @@ export function SettingsPanel() {
 
   const handleSelectDefaultDir = async () => {
     try {
-      const selected = await SelectDirectory();
+      const selected = await SelectDirectory(dirInput);
       if (selected) {
         setDirInput(selected);
         setLastSavedDir(selected);
@@ -723,7 +723,7 @@ export function SettingsPanel() {
 
   const handleSelectTempDir = async () => {
     try {
-      const selected = await SelectDirectory();
+      const selected = await SelectDirectory(tempDirInput);
       if (selected) {
         setTempDirInput(selected);
         setLastSavedTempDir(selected);
@@ -909,7 +909,12 @@ export function SettingsPanel() {
 
   const handleSelectCategoryDirectory = async (isCustom: boolean, index: number) => {
     try {
-      const selected = await SelectDirectory();
+      const cat = isCustom
+        ? download.customCategories?.[index]
+        : download.builtinCategories?.[index];
+      const draftVal =
+        cat?.id && cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat?.directory || '';
+      const selected = await SelectDirectory(draftVal);
       if (selected) {
         if (isCustom) {
           await handleUpdateCustomCategory(index, { directory: selected });
