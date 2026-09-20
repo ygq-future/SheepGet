@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { watchDesktopStatus } from '../../lib/liveStatus';
 import { formatBytes, formatDuration, mimeShortLabel, type MediaResource } from '../../lib/media';
-import type { DesktopStatus, HandoverResponse, MediaProbeInfo } from '../../lib/types';
+import type {
+  DesktopStatus,
+  HandoverResponse,
+  HLSVariantOption,
+  MediaProbeInfo,
+} from '../../lib/types';
 
 /** 读后台维护的链路状态；force 为真时要求先重新验证再回答。 */
 function requestStatus(force: boolean): Promise<DesktopStatus | null> {
@@ -31,6 +36,8 @@ export default function App() {
     Record<string, 'idle' | 'sending' | 'success' | 'failed'>
   >({});
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [hlsVariants, setHlsVariants] = useState<Record<string, HLSVariantOption[]>>({});
+  const [selectedVariants, setSelectedVariants] = useState<Record<string, string>>({});
   /** 每条资源探测到的展示信息（时长与大小），按资源 id 存。 */
   const [probeInfo, setProbeInfo] = useState<Record<string, MediaProbeInfo>>({});
   /** 已经发起过探测的资源：探测失败也不重试，避免面板开着时反复打桌面端。 */
@@ -78,6 +85,30 @@ export default function App() {
       );
     }
   }, [online, resources]);
+  useEffect(() => {
+    if (!online) return;
+    for (const res of resources) {
+      if (res.isHls && !hlsVariants[res.id]) {
+        chrome.runtime.sendMessage(
+          { type: 'GET_HLS_VARIANTS', url: res.url, pageUrl: res.pageUrl },
+          (resp: { variants?: HLSVariantOption[] } | undefined) => {
+            const rawVariants = resp?.variants || [];
+            if (rawVariants.length > 0) {
+              const variants = [...rawVariants].sort(
+                (a, b) => (b.bandwidth || 0) - (a.bandwidth || 0),
+              );
+              setHlsVariants((prev) => ({ ...prev, [res.id]: variants }));
+              setSelectedVariants((prev) => {
+                if (prev[res.id]) return prev;
+                const first = variants[0];
+                return first ? { ...prev, [res.id]: first.uri } : prev;
+              });
+            }
+          },
+        );
+      }
+    }
+  }, [online, resources, hlsVariants]);
 
   /**
    * 连接状态一律问后台，不问本地存下来的会话：存着会话不代表连得上
@@ -123,11 +154,12 @@ export default function App() {
   }
 
   async function handleDownload(res: MediaResource) {
+    const chosenVariant = res.isHls ? selectedVariants[res.id] : undefined;
     setHandoverStates((prev) => ({ ...prev, [res.id]: 'sending' }));
     setErrorMessage(null);
 
     chrome.runtime.sendMessage(
-      { type: 'HANDOVER_MEDIA', resource: res },
+      { type: 'HANDOVER_MEDIA', resource: { ...res, variantUri: chosenVariant } },
       (response: HandoverResponse | undefined) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (response?.accepted) {
@@ -440,32 +472,72 @@ export default function App() {
                 </div>
 
                 {/* Action button */}
-                <button
-                  type="button"
-                  onClick={() => handleDownload(item)}
-                  disabled={state === 'sending' || state === 'success'}
-                  style={{
-                    padding: '6px 12px',
-                    fontSize: '11px',
-                    fontWeight: 500,
-                    borderRadius: '4px',
-                    cursor: state === 'sending' || state === 'success' ? 'default' : 'pointer',
-                    border: 'none',
-                    backgroundColor:
-                      state === 'success' ? '#059669' : state === 'failed' ? '#dc2626' : '#10b981',
-                    color: '#ffffff',
-                    transition: 'background-color 0.15s ease',
-                    flexShrink: 0,
-                  }}
-                >
-                  {state === 'sending'
-                    ? '移交中...'
-                    : state === 'success'
-                      ? '已移交'
-                      : state === 'failed'
-                        ? '重试'
-                        : '下载'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                  {item.isHls && (hlsVariants[item.id]?.length ?? 0) > 1 && (
+                    <select
+                      value={selectedVariants[item.id] || hlsVariants[item.id]?.[0]?.uri || ''}
+                      onChange={(e) => {
+                        setSelectedVariants((prev) => ({ ...prev, [item.id]: e.target.value }));
+                      }}
+                      style={{
+                        padding: '5px 6px',
+                        fontSize: '11px',
+                        borderRadius: '4px',
+                        border: '1px solid #334155',
+                        backgroundColor: '#1e293b',
+                        color: '#f8fafc',
+                        outline: 'none',
+                        cursor: 'pointer',
+                        maxWidth: '140px',
+                      }}
+                    >
+                      {hlsVariants[item.id]?.map((v) => {
+                        const dur = item.probeDuration || probeInfo[item.id]?.durationSeconds || 0;
+                        const sizeSuffix =
+                          dur > 0 && v.bandwidth && v.bandwidth > 0
+                            ? ` (~${formatBytes((v.bandwidth * dur) / 8)})`
+                            : v.bandwidth && v.bandwidth > 0
+                              ? ` (${(v.bandwidth / 1e6).toFixed(1)} Mbps)`
+                              : '';
+                        return (
+                          <option key={v.uri} value={v.uri}>
+                            {(v.label || '清晰度') + sizeSuffix}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleDownload(item)}
+                    disabled={state === 'sending' || state === 'success'}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      borderRadius: '4px',
+                      cursor: state === 'sending' || state === 'success' ? 'default' : 'pointer',
+                      border: 'none',
+                      backgroundColor:
+                        state === 'success'
+                          ? '#059669'
+                          : state === 'failed'
+                            ? '#dc2626'
+                            : '#10b981',
+                      color: '#ffffff',
+                      transition: 'background-color 0.15s ease',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {state === 'sending'
+                      ? '移交中...'
+                      : state === 'success'
+                        ? '已移交'
+                        : state === 'failed'
+                          ? '重试'
+                          : '下载'}
+                  </button>
+                </div>
               </div>
             );
           })

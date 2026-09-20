@@ -341,11 +341,15 @@ func (m *Manager) ProbeMediaDuration(ctx context.Context, urlStr, filename strin
 
 // ResolveDuplicate resolves a duplicate task with strategy "continue", "redownload", "copy", or "show_completed".
 func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error) {
+	return m.ResolveDuplicateFromProbe(ctx, taskID, strategy, dir, filename, maxConn, nil)
+}
+
+// ResolveDuplicateFromProbe 支持在重新下载或副本保存时应用当次选定的探测事实（如 HLS 清晰度与大小）。
+func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *ProbeResult) (*task.Task, error) {
 	t, err := m.store.Get(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
-
 	switch strategy {
 	case "continue":
 		// 续传沿用同一位置的既有分片，因此清理也按该位置进行：同链接的失效残留记录
@@ -378,12 +382,26 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 			_ = m.Delete(ctx, taskID)
 		}
 		m.cleanStaleDuplicateRecords(ctx, taskID, t.URL, dir, filename)
+
+		totalBytes := t.TotalBytes
+		media := t.Media
+		if probe != nil {
+			if probe.TotalBytes > 0 {
+				totalBytes = probe.TotalBytes
+			}
+			if probe.HLS != nil && probe.HLS.Media != nil {
+				media = probe.HLS.Media
+				filename = HLSOutputName(t.URL, filename)
+			}
+		}
+
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
 			Filename:       filename,
 			Directory:      dir,
-			TotalBytes:     t.TotalBytes,
+			TempDir:        m.getTempDir(),
+			TotalBytes:     totalBytes,
 			Downloaded:     0,
 			Status:         task.StatusQueued,
 			MaxConcurrency: maxConn,
@@ -393,6 +411,7 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
 			RequestHeaders: t.RequestHeaders.Clone(),
+			Media:          media,
 		}
 		if err := m.store.Save(ctx, newTask); err != nil {
 			return nil, err
@@ -416,12 +435,26 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 		if maxConn <= 0 {
 			maxConn = t.MaxConcurrency
 		}
+
+		totalBytes := t.TotalBytes
+		media := t.Media
+		if probe != nil {
+			if probe.TotalBytes > 0 {
+				totalBytes = probe.TotalBytes
+			}
+			if probe.HLS != nil && probe.HLS.Media != nil {
+				media = probe.HLS.Media
+				filename = HLSOutputName(t.URL, filename)
+			}
+		}
+
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
 			Filename:       filename,
 			Directory:      dir,
-			TotalBytes:     t.TotalBytes,
+			TempDir:        m.getTempDir(),
+			TotalBytes:     totalBytes,
 			Downloaded:     0,
 			Status:         task.StatusQueued,
 			MaxConcurrency: maxConn,
@@ -430,6 +463,8 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, f
 			LastModified:   t.LastModified,
 			CreatedAt:      time.Now(),
 			UpdatedAt:      time.Now(),
+			RequestHeaders: t.RequestHeaders.Clone(),
+			Media:          media,
 		}
 		if err := m.store.Save(ctx, newTask); err != nil {
 			return nil, err

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"sheep-get/internal/engine"
+	"sheep-get/internal/hls"
 	"sheep-get/internal/task"
 )
 
@@ -459,6 +460,58 @@ func TestManager_ResolveDuplicate_RedownloadCleansOldTask(t *testing.T) {
 	tasks, _ := store.List(ctx)
 	if len(tasks) != 1 {
 		t.Errorf("expected exactly 1 task in store, got %d", len(tasks))
+	}
+}
+func TestManager_ResolveDuplicate_PreservesHLSMedia(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	targetURL := "https://example.com/master.m3u8"
+	oldTask := &task.Task{
+		ID:         "hls_old",
+		URL:        targetURL,
+		Filename:   "video.mp4",
+		Directory:  tmpDir,
+		Status:     task.StatusCompleted,
+		TotalBytes: 50 * 1024 * 1024,
+		Media: &hls.Source{
+			PlaylistURL: targetURL,
+			Variant:     hls.Variant{URI: "https://example.com/480.m3u8", Height: 480},
+		},
+	}
+	_ = store.Save(ctx, oldTask)
+
+	// Redownload with a new probe (720p)
+	newProbe := &engine.ProbeResult{
+		URL:        targetURL,
+		TotalBytes: 100 * 1024 * 1024,
+		HLS: &engine.HLSProbe{
+			IsHLS: true,
+			Media: &hls.Source{
+				PlaylistURL: targetURL,
+				Variant:     hls.Variant{URI: "https://example.com/720.m3u8", Height: 720},
+			},
+		},
+	}
+
+	newTask, err := mgr.ResolveDuplicateFromProbe(ctx, oldTask.ID, "redownload", tmpDir, "video.mp4", 2, newProbe)
+	if err != nil {
+		t.Fatalf("ResolveDuplicateFromProbe failed: %v", err)
+	}
+	if !newTask.IsHLS() {
+		t.Fatalf("expected newTask.IsHLS() to be true, got false")
+	}
+	if newTask.Media == nil || newTask.Media.Variant.Height != 720 {
+		t.Fatalf("expected 720p variant in newTask.Media, got %+v", newTask.Media)
+	}
+	if newTask.TotalBytes != 100*1024*1024 {
+		t.Fatalf("expected 100MB TotalBytes, got %d", newTask.TotalBytes)
 	}
 }
 func writeFile(t *testing.T, path string) {

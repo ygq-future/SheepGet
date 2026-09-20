@@ -64,6 +64,7 @@ type DownloadEngine interface {
 	ConfirmPreDownload(ctx context.Context, taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error)
 	CancelPreDownload(ctx context.Context, taskID string) error
 	ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error)
+	ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult) (*task.Task, error)
 	NumberedCopyName(ctx context.Context, dir, filename string) (string, error)
 	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
 }
@@ -321,7 +322,11 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	if filename == "" && req.URL != "" {
 		filename = engine.DefaultFilename
 	}
-
+	// 如果是 HLS 链接，输出成品始终是 MP4：在入队时就定下建议名称与后缀，
+	// 避免在探测完成前的数秒内按 .m3u8 判定导致分类/目录发生跳变。
+	if req.VariantURI != "" || strings.HasSuffix(strings.ToLower(req.URL), ".m3u8") || strings.HasSuffix(strings.ToLower(filename), ".m3u8") {
+		filename = engine.HLSOutputName(req.URL, filename)
+	}
 	dir := req.Directory
 	categoryID := ""
 	// 目录是这份请求自己给的、还是按分类裁出来的，决定探测补齐真名后要不要跟着重算落点。
@@ -467,7 +472,13 @@ func (qc *QueueController) asyncProbeItem(job probeJob) {
 	if start == nil {
 		return
 	}
+	qc.startPreDownload(start)
+}
 
+func (qc *QueueController) startPreDownload(start *preDownloadStart) {
+	if start == nil {
+		return
+	}
 	// 启动预下载同样会联网（StartPreDownloadWithHeaders 内部要探测 URL），因此和上面的探测
 	// 一样必须在锁外：锁被它握住的这段时间，队列的每个操作都要排队。
 	preTask, preErr := qc.engine.StartPreDownloadWithHeaders(context.Background(), start.url, start.dir, start.filename, start.maxConn, start.headers)
@@ -570,8 +581,8 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	}
 
 	var start *preDownloadStart
-	if preDownload && !targetItem.FileConflict && targetItem.DuplicateTask == nil && targetItem.PreDownloadTaskID == "" && !targetItem.preDownloadStarting {
-		// 只在这里占位，真正启动放到锁外。占位让提交知道「预下载正在启动」：那期间
+	canPreDownload := preDownload && !targetItem.FileConflict && targetItem.DuplicateTask == nil && targetItem.PreDownloadTaskID == "" && !targetItem.preDownloadStarting
+	if canPreDownload && (targetItem.probe == nil || targetItem.probe.HLS == nil || targetItem.probe.HLS.Media != nil) {
 		// PreDownloadTaskID 还是空的，直接提交会在同一链接上建出第二份任务。
 		targetItem.preDownloadStarting = true
 		targetItem.preDownloadStartedCh = make(chan struct{})
@@ -668,8 +679,27 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 	item.probe = job.probe
 	item.probeErr = nil
 	applyHLSFacts(item, job.probe)
+
+	var start *preDownloadStart
+	if item.PreDownload && !item.FileConflict && item.DuplicateTask == nil && item.PreDownloadTaskID == "" && !item.preDownloadStarting {
+		item.preDownloadStarting = true
+		item.preDownloadStartedCh = make(chan struct{})
+		start = &preDownloadStart{
+			item:     item,
+			url:      job.url,
+			dir:      item.Directory,
+			filename: item.Filename,
+			maxConn:  item.MaxConn,
+			headers:  job.headers,
+		}
+	}
+
 	itemCopy := *item
 	actions.emit(events.FileInfoUpdated, &itemCopy)
+
+	if start != nil {
+		go qc.startPreDownload(start)
+	}
 	return nil
 }
 
@@ -905,7 +935,7 @@ func (qc *QueueController) runSubmit(ctx context.Context, plan *submitPlan) (*ta
 			// 局面需要用户先决定怎么处理，界面不能在没有选择的情况下提交。
 			return nil, ErrDuplicateChoiceRequired
 		}
-		return qc.engine.ResolveDuplicate(ctx, plan.duplicateTask.ID, string(action), plan.directory, plan.filename, plan.maxConn)
+		return qc.engine.ResolveDuplicateFromProbe(ctx, plan.duplicateTask.ID, string(action), plan.directory, plan.filename, plan.maxConn, plan.probe)
 	case plan.preTaskID != "":
 		return qc.engine.ConfirmPreDownload(ctx, plan.preTaskID, plan.directory, plan.filename, plan.maxConn)
 	case plan.probe != nil:

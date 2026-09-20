@@ -194,6 +194,11 @@ func (e *blockingEngine) ResolveDuplicate(_ context.Context, taskID, _, _, _ str
 	return &task.Task{ID: taskID}, nil
 }
 
+func (e *blockingEngine) ResolveDuplicateFromProbe(_ context.Context, taskID, _, _, _ string, _ int, _ *engine.ProbeResult) (*task.Task, error) {
+	e.enter("ResolveDuplicate")
+	return &task.Task{ID: taskID}, nil
+}
+
 func (e *blockingEngine) NumberedCopyName(_ context.Context, _, filename string) (string, error) {
 	e.enter("NumberedCopyName")
 	return filename, nil

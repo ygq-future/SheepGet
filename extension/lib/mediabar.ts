@@ -1,7 +1,7 @@
-import type { MediaResource } from './media';
+import { formatBytes, type MediaResource } from './media';
 import type { HandoverResponse, HLSVariantOption } from './types';
 
-export const MEDIA_BAR_INNER_PADDING = 8;
+export const MEDIA_BAR_MARGIN = 10;
 export const MEDIA_BAR_VIEWPORT_PADDING = 8;
 export const MEDIA_BAR_MIN_VIDEO_WIDTH = 100;
 export const MEDIA_BAR_MIN_VIDEO_HEIGHT = 60;
@@ -26,23 +26,28 @@ export interface BarPosition {
   top: number;
 }
 
-// 悬浮条浮在播放器画面内部的右上角（IDM 式）：右、上各留一小段边距，整个悬浮条都
-// 落在画面范围内，页面滚动或布局变化时始终贴着当前可见区域的右上角。播放器被滚出
-// 视口一部分时按「可见部分」定位；播放器完全离屏或可见部分小到放不下时不显示。
+// 悬浮条停靠在对应播放器右上角外侧：右边缘与播放器对齐，整体位于画面上方，
+// 因此不遮挡任何画面内容。上方放不下（播放器贴着视口顶、或被滚动到顶部）时退到播放器
+// 下方，同样在画面之外；只有当播放器占满视口、上下都没有位置时才落回视口内。
+// 播放器完全离开视口或小到放不下悬浮条时不显示。
 export function computeBarPosition(
   videoRect: RectLike,
   viewport: SizeLike,
   bar: SizeLike,
 ): BarPosition {
-  // 与视口求交得到可见区域：定位与尺寸判断都只看它。
-  const visLeft = Math.max(videoRect.left, 0);
-  const visTop = Math.max(videoRect.top, 0);
-  const visRight = Math.min(videoRect.right, viewport.width);
-  const visBottom = Math.min(videoRect.bottom, viewport.height);
   if (
-    visRight - visLeft < MEDIA_BAR_MIN_VIDEO_WIDTH ||
-    visBottom - visTop < MEDIA_BAR_MIN_VIDEO_HEIGHT
+    videoRect.width < MEDIA_BAR_MIN_VIDEO_WIDTH ||
+    videoRect.height < MEDIA_BAR_MIN_VIDEO_HEIGHT
   ) {
+    return { visible: false, left: 0, top: 0 };
+  }
+
+  const offscreen =
+    videoRect.bottom <= 0 ||
+    videoRect.right <= 0 ||
+    videoRect.top >= viewport.height ||
+    videoRect.left >= viewport.width;
+  if (offscreen) {
     return { visible: false, left: 0, top: 0 };
   }
 
@@ -50,19 +55,13 @@ export function computeBarPosition(
     MEDIA_BAR_VIEWPORT_PADDING,
     viewport.width - bar.width - MEDIA_BAR_VIEWPORT_PADDING,
   );
-  const left = Math.min(
-    Math.max(visRight - bar.width - MEDIA_BAR_INNER_PADDING, MEDIA_BAR_VIEWPORT_PADDING),
-    maxLeft,
-  );
+  const left = Math.min(Math.max(videoRect.right - bar.width, MEDIA_BAR_VIEWPORT_PADDING), maxLeft);
 
-  const maxTop = Math.max(
-    MEDIA_BAR_VIEWPORT_PADDING,
-    viewport.height - bar.height - MEDIA_BAR_VIEWPORT_PADDING,
-  );
-  const top = Math.min(
-    Math.max(visTop + MEDIA_BAR_INNER_PADDING, MEDIA_BAR_VIEWPORT_PADDING),
-    maxTop,
-  );
+  const minTop = MEDIA_BAR_VIEWPORT_PADDING;
+  const maxTop = Math.max(minTop, viewport.height - bar.height - MEDIA_BAR_VIEWPORT_PADDING);
+  const above = videoRect.top - MEDIA_BAR_MARGIN - bar.height;
+  const below = videoRect.bottom + MEDIA_BAR_MARGIN;
+  const top = above >= minTop ? above : below <= maxTop ? below : minTop;
 
   return { visible: true, left, top };
 }
@@ -73,8 +72,13 @@ interface TrackedPlayer {
   shadowRoot: ShadowRoot;
   dismissed: boolean;
   resource?: MediaResource;
+  /** 预拉取到的清晰度列表 */
+  variants?: HLSVariantOption[];
+  loadingVariants?: boolean;
   /** 悬浮条菜单里选定的清晰度地址；交接时随资源一起带上。 */
   variantUri?: string;
+  statusTimer?: ReturnType<typeof setTimeout>;
+  menuCloseTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class MediaBarManager {
@@ -123,9 +127,9 @@ export class MediaBarManager {
   }
 
   stop() {
-    this.mutationObserver?.disconnect();
     this.intersectionObserver.disconnect();
     this.resizeObserver.disconnect();
+    this.mutationObserver?.disconnect();
     document.removeEventListener('scroll', this.handleViewportChange, { capture: true });
     window.removeEventListener('resize', this.handleViewportChange);
     document.removeEventListener('fullscreenchange', this.handleViewportChange);
@@ -135,6 +139,8 @@ export class MediaBarManager {
     }
 
     for (const tracked of this.players.values()) {
+      if (tracked.statusTimer) clearTimeout(tracked.statusTimer);
+      if (tracked.menuCloseTimer) clearTimeout(tracked.menuCloseTimer);
       tracked.container.remove();
     }
     this.players.clear();
@@ -144,8 +150,15 @@ export class MediaBarManager {
     this.availableResources = resources;
     // Re-associate players with newly available resources
     for (const tracked of this.players.values()) {
+      const prevResource = tracked.resource;
       this.associateResource(tracked);
-      this.renderBar(tracked);
+      // 只有在关联资源真正发生改变（例如此前未关联，现在新探测到了资源；或者切换了视频源）时才重新渲染。
+      // 绝不能在资源未变时反复调用 renderBar 重建 DOM，否则会造成闪烁并销毁正在展示的清晰度下拉菜单。
+      if (tracked.resource !== prevResource) {
+        if (!tracked.shadowRoot.querySelector('.variant-menu')) {
+          this.renderBar(tracked);
+        }
+      }
     }
   }
 
@@ -176,6 +189,8 @@ export class MediaBarManager {
       if (!video.isConnected) {
         this.intersectionObserver.unobserve(video);
         this.resizeObserver.unobserve(video);
+        if (tracked.statusTimer) clearTimeout(tracked.statusTimer);
+        if (tracked.menuCloseTimer) clearTimeout(tracked.menuCloseTimer);
         tracked.container.remove();
         this.players.delete(video);
       }
@@ -212,6 +227,7 @@ export class MediaBarManager {
   }
 
   private associateResource(tracked: TrackedPlayer) {
+    if (tracked.resource) return;
     const video = tracked.video;
     const currentSrc = video.currentSrc || video.src;
 
@@ -220,39 +236,56 @@ export class MediaBarManager {
       const match = this.availableResources.find((r) => r.url === currentSrc);
       if (match) {
         tracked.resource = match;
+        if (match.isHls) this.prefetchVariants(tracked);
         return;
       }
     }
 
-    // 2. If video has sources
-    const sources = Array.from(video.querySelectorAll('source'));
-    for (const s of sources) {
-      if (s.src) {
-        const match = this.availableResources.find((r) => r.url === s.src);
-        if (match) {
-          tracked.resource = match;
-          return;
-        }
+    // 2. Blob match (MSE / HLS player instance attached to blob: URL)
+    if (currentSrc && currentSrc.startsWith('blob:')) {
+      const hlsResource = this.availableResources.find((r) => r.isHls);
+      if (hlsResource) {
+        tracked.resource = hlsResource;
+        this.prefetchVariants(tracked);
+        return;
+      }
+      const single = this.availableResources[0];
+      if (single) {
+        tracked.resource = single;
+        if (single.isHls) this.prefetchVariants(tracked);
+        return;
       }
     }
 
-    // 3. Fallback: if there is only 1 resource or first resource, associate it
-    if (this.availableResources.length > 0 && !tracked.resource) {
-      // HLS/MSE 播放器的 currentSrc 是 blob:，永远无法与清单 URL 直接匹配。
-      // 兜底时优先 HLS 清单——同一个页面里直链 mp4 和 m3u8 并存时，正在播放的
-      // 更可能是清单，而不是某个还没被点开的 mp4。
-      tracked.resource = this.availableResources.find((r) => r.isHls) ?? this.availableResources[0];
+    // 3. Fallback: single resource
+    const single = this.availableResources[0];
+    if (this.availableResources.length === 1 && single) {
+      tracked.resource = single;
+      if (single.isHls) this.prefetchVariants(tracked);
     }
+  }
+
+  private prefetchVariants(tracked: TrackedPlayer) {
+    const resource = tracked.resource;
+    if (!resource || !resource.isHls || tracked.variants || tracked.loadingVariants) return;
+    tracked.loadingVariants = true;
+    chrome.runtime.sendMessage(
+      { type: 'GET_HLS_VARIANTS', url: resource.url, pageUrl: resource.pageUrl },
+      (resp: { variants?: HLSVariantOption[] } | undefined) => {
+        tracked.loadingVariants = false;
+        tracked.variants = resp?.variants || [];
+      },
+    );
   }
 
   private update(tracked: TrackedPlayer) {
     if (tracked.dismissed) {
-      tracked.container.style.display = 'none';
+      if (tracked.container.style.display !== 'none') {
+        tracked.container.style.display = 'none';
+      }
       return;
     }
 
-    // 先让宿主可见，才量得到悬浮条的真实尺寸（宽度决定右对齐位置，高度决定落在播放器上方的 y）
-    tracked.container.style.display = 'block';
     const bar = tracked.shadowRoot.getElementById('bar');
     const barRect = bar?.getBoundingClientRect();
     const position = computeBarPosition(
@@ -262,8 +295,14 @@ export class MediaBarManager {
     );
 
     if (!position.visible) {
-      tracked.container.style.display = 'none';
+      if (tracked.container.style.display !== 'none') {
+        tracked.container.style.display = 'none';
+      }
       return;
+    }
+
+    if (tracked.container.style.display !== 'block') {
+      tracked.container.style.display = 'block';
     }
 
     tracked.container.style.left = `${position.left}px`;
@@ -271,21 +310,39 @@ export class MediaBarManager {
     tracked.container.style.right = 'auto';
     tracked.container.style.bottom = 'auto';
   }
-
   private showStatus(tracked: TrackedPlayer, text: string, color: string, restoreMs = 2500) {
     const dlBtn = tracked.shadowRoot.getElementById('dl-btn');
     if (!dlBtn) return;
+    if (tracked.statusTimer) {
+      clearTimeout(tracked.statusTimer);
+      tracked.statusTimer = undefined;
+    }
     dlBtn.innerHTML = `<span class="status-msg" style="color:${color}">${text}</span>`;
-    setTimeout(() => {
-      this.renderBar(tracked);
+    tracked.statusTimer = setTimeout(() => {
+      if (!tracked.shadowRoot.querySelector('.variant-menu')) {
+        this.renderBar(tracked);
+      }
+      tracked.statusTimer = undefined;
     }, restoreMs);
   }
 
   private renderBar(tracked: TrackedPlayer) {
     const shadow = tracked.shadowRoot;
     const resource = tracked.resource;
-    const badgeText = resource?.isHls ? 'HLS' : '视频';
-
+    const getFormatBadge = (res?: MediaResource): string => {
+      if (!res) return 'VIDEO';
+      if (res.isHls) return 'HLS';
+      const ext = res.filename?.split('.').pop()?.toUpperCase();
+      if (ext && ext.length <= 4 && /^[A-Z0-9]+$/.test(ext)) {
+        return ext;
+      }
+      const mime = res.mimeType?.split('/').pop()?.toUpperCase();
+      if (mime && mime.length <= 4 && /^[A-Z0-9]+$/.test(mime)) {
+        return mime;
+      }
+      return 'MP4';
+    };
+    const badgeText = getFormatBadge(resource);
     shadow.innerHTML = `
       <style>
         .bar {
@@ -328,13 +385,20 @@ export class MediaBarManager {
           background: rgba(255, 255, 255, 0.1);
         }
         .badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          height: 16px;
+          box-sizing: border-box;
           background: ${resource?.isHls ? '#a855f7' : '#10b981'};
           color: #ffffff;
           font-size: 10px;
-          font-weight: 600;
-          padding: 1px 4px;
+          font-weight: 700;
+          line-height: 1;
+          padding: 0 4px;
           border-radius: 3px;
           letter-spacing: 0.02em;
+          text-transform: uppercase;
         }
         .btn-close {
           display: inline-flex;
@@ -373,6 +437,7 @@ export class MediaBarManager {
 
     const dlBtn = shadow.getElementById('dl-btn');
     const closeBtn = shadow.getElementById('close-btn');
+    const barEl = shadow.getElementById('bar');
 
     closeBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -380,27 +445,71 @@ export class MediaBarManager {
       tracked.container.style.display = 'none';
     });
 
-    dlBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (tracked.resource) {
-        this.beginDownload(tracked);
+    const handleMouseEnter = () => {
+      if (tracked.menuCloseTimer) {
+        clearTimeout(tracked.menuCloseTimer);
+        tracked.menuCloseTimer = undefined;
+      }
+      if (!tracked.resource) {
         return;
       }
+      if (!tracked.resource.isHls) return;
 
-      // 尚未关联到资源时即时向 background 补拉本标签页的嗅探结果
-      this.showStatus(tracked, '正在探测资源…', '#94a3b8');
-      chrome.runtime.sendMessage(
-        { type: 'GET_TAB_MEDIA' },
-        (resList: MediaResource[] | undefined) => {
-          if (resList && resList.length > 0) {
-            tracked.resource = resList[0];
-            this.renderBar(tracked);
-            this.beginDownload(tracked);
-            return;
-          }
-          this.showStatus(tracked, '未探测到可下载资源', '#f87171');
-        },
-      );
+      if (tracked.variants && tracked.variants.length > 1) {
+        this.showVariantMenu(tracked, tracked.variants);
+        return;
+      }
+      if (tracked.loadingVariants) {
+        this.showLoadingMenu(tracked);
+        return;
+      }
+      if (!tracked.variants) {
+        this.showLoadingMenu(tracked);
+        tracked.loadingVariants = true;
+        chrome.runtime.sendMessage(
+          {
+            type: 'GET_HLS_VARIANTS',
+            url: tracked.resource.url,
+            pageUrl: tracked.resource.pageUrl,
+          },
+          (resp: { variants?: HLSVariantOption[] } | undefined) => {
+            tracked.loadingVariants = false;
+            tracked.variants = resp?.variants || [];
+            if (tracked.variants.length > 1) {
+              this.showVariantMenu(tracked, tracked.variants);
+            } else {
+              shadow.querySelector('.variant-menu')?.remove();
+            }
+          },
+        );
+      }
+    };
+
+    dlBtn?.addEventListener('mouseenter', handleMouseEnter);
+    barEl?.addEventListener('mouseleave', () => {
+      this.scheduleHideMenu(tracked);
+    });
+
+    dlBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!tracked.resource) {
+        // 尚未关联到资源时即时向 background 补拉本标签页的嗅探结果
+        this.showStatus(tracked, '正在探测资源…', '#94a3b8');
+        chrome.runtime.sendMessage(
+          { type: 'GET_TAB_MEDIA' },
+          (resList: MediaResource[] | undefined) => {
+            if (resList && resList.length > 0) {
+              tracked.resource = resList[0];
+              this.renderBar(tracked);
+              this.beginDownload(tracked);
+              return;
+            }
+            this.showStatus(tracked, '未探测到可下载资源', '#f87171');
+          },
+        );
+        return;
+      }
+      this.beginDownload(tracked);
     });
 
     // 悬浮条自身宽度会随状态文案变化，渲染后立即重算锚点
@@ -420,19 +529,71 @@ export class MediaBarManager {
       return;
     }
 
-    this.showStatus(tracked, '正在读取清晰度…', '#94a3b8');
+    if (tracked.variants && tracked.variants.length > 1) {
+      this.showVariantMenu(tracked, tracked.variants);
+      return;
+    }
+
+    if (tracked.variants && tracked.variants.length <= 1) {
+      this.triggerDownload(tracked);
+      return;
+    }
+
+    this.showLoadingMenu(tracked);
+    tracked.loadingVariants = true;
     chrome.runtime.sendMessage(
       { type: 'GET_HLS_VARIANTS', url: resource.url, pageUrl: resource.pageUrl },
       (resp: { variants?: HLSVariantOption[] } | undefined) => {
-        const variants = resp?.variants || [];
-        if (variants.length > 1) {
-          this.showVariantMenu(tracked, variants);
+        tracked.loadingVariants = false;
+        tracked.variants = resp?.variants || [];
+        if (tracked.variants.length > 1) {
+          this.showVariantMenu(tracked, tracked.variants);
           return;
         }
-        // 只有一个清晰度（或读不到）时不构成选择，直接交接，由桌面端解析。
+        tracked.shadowRoot.querySelector('.variant-menu')?.remove();
         this.triggerDownload(tracked);
       },
     );
+  }
+
+  private showLoadingMenu(tracked: TrackedPlayer) {
+    const shadow = tracked.shadowRoot;
+    if (shadow.querySelector('.variant-menu')) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'variant-menu';
+    menu.style.cssText =
+      'position:absolute;top:100%;left:0;right:0;width:100%;box-sizing:border-box;' +
+      'margin-top:4px;background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.14);' +
+      'border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:8px 10px;z-index:1;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'backdrop-filter:blur(8px);';
+
+    const text = document.createElement('span');
+    text.textContent = '正在读取清晰度…';
+    text.style.cssText = 'font-size:11px;color:#94a3b8;white-space:nowrap;';
+    menu.appendChild(text);
+
+    menu.addEventListener('mouseenter', () => {
+      if (tracked.menuCloseTimer) {
+        clearTimeout(tracked.menuCloseTimer);
+        tracked.menuCloseTimer = undefined;
+      }
+    });
+    menu.addEventListener('mouseleave', () => {
+      this.scheduleHideMenu(tracked);
+    });
+
+    const host = shadow.getElementById('bar');
+    host?.appendChild(menu);
+  }
+
+  private scheduleHideMenu(tracked: TrackedPlayer) {
+    if (tracked.menuCloseTimer) clearTimeout(tracked.menuCloseTimer);
+    tracked.menuCloseTimer = setTimeout(() => {
+      tracked.shadowRoot.querySelector('.variant-menu')?.remove();
+      tracked.menuCloseTimer = undefined;
+    }, 200);
   }
 
   private showVariantMenu(tracked: TrackedPlayer, variants: HLSVariantOption[]) {
@@ -440,22 +601,31 @@ export class MediaBarManager {
     // 菜单追加在悬浮条之后，随它一起定位；选定或点空白后移除。
     shadow.querySelector('.variant-menu')?.remove();
 
+    const video = tracked.video;
+    const duration =
+      (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0) ||
+      (tracked.resource?.probeDuration ?? 0);
+
+    const sortedVariants = [...variants].sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
+
     const menu = document.createElement('div');
     menu.className = 'variant-menu';
     menu.style.cssText =
-      'position:absolute;top:100%;left:0;margin-top:4px;min-width:140px;' +
-      'background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.12);' +
-      'border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.45);padding:4px;z-index:1;' +
-      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+      'position:absolute;top:100%;left:0;right:0;width:100%;box-sizing:border-box;' +
+      'margin-top:4px;background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.14);' +
+      'border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:4px;z-index:1;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'backdrop-filter:blur(8px);';
 
-    for (const v of variants) {
+    for (const v of sortedVariants) {
       const item = document.createElement('button');
+      item.type = 'button';
       item.style.cssText =
-        'display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;' +
-        'background:transparent;border:none;color:#f8fafc;font-size:12px;padding:6px 8px;' +
-        'border-radius:4px;cursor:pointer;text-align:left;';
+        'display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;' +
+        'background:transparent;border:none;color:#f8fafc;font-size:12px;padding:6px 10px;' +
+        'border-radius:4px;cursor:pointer;text-align:left;transition:background 0.12s;';
       item.addEventListener('mouseenter', () => {
-        item.style.background = 'rgba(255,255,255,0.1)';
+        item.style.background = 'rgba(255,255,255,0.12)';
       });
       item.addEventListener('mouseleave', () => {
         item.style.background = 'transparent';
@@ -467,12 +637,19 @@ export class MediaBarManager {
 
       if (v.bandwidth && v.bandwidth > 0) {
         const bw = document.createElement('span');
-        bw.textContent = `${(v.bandwidth / 1e6).toFixed(1)} Mbps`;
-        bw.style.cssText = 'font-size:10px;color:#94a3b8;';
+        if (duration > 0) {
+          const estBytes = (v.bandwidth * duration) / 8;
+          bw.textContent = `~${formatBytes(estBytes)}`;
+          bw.title = `预估大小: ~${formatBytes(estBytes)} (码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps)`;
+        } else {
+          bw.textContent = `${(v.bandwidth / 1e6).toFixed(1)} Mbps`;
+          bw.title = `码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps`;
+        }
+        bw.style.cssText = 'font-size:10px;color:#94a3b8;flex-shrink:0;';
         item.appendChild(bw);
       }
-
-      item.addEventListener('click', () => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
         menu.remove();
         tracked.variantUri = v.uri;
         this.triggerDownload(tracked);
@@ -480,17 +657,30 @@ export class MediaBarManager {
       menu.appendChild(item);
     }
 
+    menu.addEventListener('mouseenter', () => {
+      if (tracked.menuCloseTimer) {
+        clearTimeout(tracked.menuCloseTimer);
+        tracked.menuCloseTimer = undefined;
+      }
+    });
+    menu.addEventListener('mouseleave', () => {
+      this.scheduleHideMenu(tracked);
+    });
+
     const host = shadow.getElementById('bar');
     host?.appendChild(menu);
 
-    // 点击菜单外关闭。
-    const close = (ev: MouseEvent) => {
-      if (!menu.contains(ev.target as Node)) {
+    // 点击菜单与悬浮条外部时关闭。使用 pointerdown + composedPath 穿透 Shadow DOM
+    const close = (ev: Event) => {
+      const path = ev.composedPath();
+      if (!path.includes(menu) && !path.includes(tracked.container)) {
         menu.remove();
-        document.removeEventListener('mousedown', close);
+        document.removeEventListener('pointerdown', close, true);
       }
     };
-    setTimeout(() => document.addEventListener('mousedown', close), 0);
+    setTimeout(() => {
+      document.addEventListener('pointerdown', close, true);
+    }, 0);
   }
 
   private triggerDownload(tracked: TrackedPlayer) {

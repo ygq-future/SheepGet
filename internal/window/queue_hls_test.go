@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
@@ -22,9 +23,10 @@ type hlsProbeEngine struct {
 	// resolveErr 让测试模拟「选中的版本解析失败」。
 	resolveErr error
 	// resolvedURI 记录最后一次被要求解析的清晰度地址，供断言选的是哪一个。
-	resolvedURI string
-	// createdProbe 记录 AddTaskFromProbe 收到的那份探测，供断言选定清晰度有没有落到任务上。
-	createdProbe *engine.ProbeResult
+	resolvedURI        string
+	createdProbe       *engine.ProbeResult
+	preDownloadStarted bool
+	duplicateTask      *task.Task
 }
 
 func (e *hlsProbeEngine) ProbeURL(context.Context, string, map[string]string) (*engine.ProbeResult, error) {
@@ -37,7 +39,7 @@ func (e *hlsProbeEngine) ResolveHLSVariant(_ context.Context, _, variantURI stri
 }
 
 func (e *hlsProbeEngine) FindDuplicateTask(context.Context, string) (*task.Task, error) {
-	return nil, nil
+	return e.duplicateTask, nil
 }
 
 func (e *hlsProbeEngine) AddTask(context.Context, string, string, string, int) (*task.Task, error) {
@@ -58,7 +60,8 @@ func (e *hlsProbeEngine) StartPreDownload(context.Context, string, string, strin
 }
 
 func (e *hlsProbeEngine) StartPreDownloadWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
-	return nil, nil
+	e.preDownloadStarted = true
+	return &task.Task{ID: "task_pre"}, nil
 }
 
 func (e *hlsProbeEngine) ConfirmPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
@@ -71,6 +74,11 @@ func (e *hlsProbeEngine) CancelPreDownload(context.Context, string) error {
 
 func (e *hlsProbeEngine) ResolveDuplicate(context.Context, string, string, string, string, int) (*task.Task, error) {
 	return nil, nil
+}
+
+func (e *hlsProbeEngine) ResolveDuplicateFromProbe(_ context.Context, _ string, _ string, _ string, _ string, _ int, probe *engine.ProbeResult) (*task.Task, error) {
+	e.createdProbe = probe
+	return &task.Task{ID: "task_duplicate_resolved"}, nil
 }
 
 func (e *hlsProbeEngine) NumberedCopyName(context.Context, string, string) (string, error) {
@@ -189,6 +197,88 @@ func TestQueueController_SelectHLSVariant_SubmitCarriesSelectedSource(t *testing
 	}
 }
 
+func TestQueueController_SelectHLSVariant_DuplicateRedownloadCarriesProbe(t *testing.T) {
+	eng := &hlsProbeEngine{
+		probe: twoVariantProbe(),
+		resolve: &hls.Source{
+			PlaylistURL: "https://example.com/master.m3u8",
+			Variant:     hls.Variant{URI: "https://example.com/720.m3u8", Height: 720, Bandwidth: 2000000},
+			Duration:    125.0,
+			TotalBytes:  32 * 1024 * 1024,
+		},
+		duplicateTask: &task.Task{
+			ID:        "dup_1",
+			URL:       "https://example.com/master.m3u8",
+			Status:    task.StatusCompleted,
+			Directory: "/downloads/Files",
+			Filename:  "master.mp4",
+		},
+	}
+	winView := &mockWindowView{}
+	qc := newQueueController(eng, &testSettingsProvider{settings: defaultSettingsForTest(t)}, winView, inlineOps)
+
+	resp, err := qc.Enqueue(context.Background(), DownloadRequest{URL: "https://example.com/master.m3u8"})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	if err := qc.SelectHLSVariant(context.Background(), resp.RequestID, "https://example.com/master.m3u8", "https://example.com/720.m3u8"); err != nil {
+		t.Fatalf("SelectHLSVariant failed: %v", err)
+	}
+
+	item, err := qc.GetActive()
+	if err != nil {
+		t.Fatalf("GetActive failed: %v", err)
+	}
+
+	_, err = qc.Submit(context.Background(), FileInfoSubmission{
+		RequestID: resp.RequestID,
+		URL:       item.URL,
+		Directory: item.Directory,
+		Filename:  item.Filename,
+		MaxConn:   item.MaxConn,
+		Action:    "redownload",
+	})
+	if err != nil {
+		t.Fatalf("Submit redownload failed: %v", err)
+	}
+
+	if eng.createdProbe == nil {
+		t.Fatalf("expected duplicate redownload to carry probe")
+	}
+	if eng.createdProbe.HLS == nil || eng.createdProbe.HLS.Media == nil {
+		t.Fatalf("expected duplicate redownload probe to carry HLS media")
+	}
+	if got := eng.createdProbe.HLS.Media.Variant.URI; got != "https://example.com/720.m3u8" {
+		t.Errorf("expected 720 variant, got %q", got)
+	}
+}
+
+func TestQueueController_EnqueueHLS_ImmediatelyAssignsVideoCategory(t *testing.T) {
+	eng := &hlsProbeEngine{}
+	winView := &mockWindowView{}
+	qc := newQueueController(eng, &testSettingsProvider{settings: defaultSettingsForTest(t)}, winView, inlineOps)
+
+	resp, err := qc.Enqueue(context.Background(), DownloadRequest{URL: "https://example.com/video/stream.m3u8"})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	item, err := qc.GetActive()
+	if err != nil {
+		t.Fatalf("GetActive failed: %v", err)
+	}
+	if item.ID != resp.RequestID {
+		t.Fatalf("expected item %s, got %s", resp.RequestID, item.ID)
+	}
+	if item.Filename != "stream.mp4" {
+		t.Errorf("expected initial filename to be stream.mp4, got %s", item.Filename)
+	}
+	if item.CategoryID != "builtin-video" {
+		t.Errorf("expected category to be builtin-video on frame 1, got %s", item.CategoryID)
+	}
+}
+
 func TestQueueController_SelectHLSVariant_RejectsNonPlaylist(t *testing.T) {
 	eng := &hlsProbeEngine{
 		probe: &engine.ProbeResult{URL: "https://example.com/file.mp4", Filename: "file.mp4", TotalBytes: 10},
@@ -251,4 +341,43 @@ func defaultSettingsForTest(t *testing.T) config.Settings {
 	settings.Download.PreDownload = false
 	settings.Download.DefaultConnectionsPerTask = 4
 	return settings
+}
+
+func TestQueueController_SelectHLSVariant_StartsPreDownloadWhenEnabled(t *testing.T) {
+	eng := &hlsProbeEngine{
+		probe: twoVariantProbe(),
+		resolve: &hls.Source{
+			PlaylistURL: "https://example.com/master.m3u8",
+			Variant:     hls.Variant{URI: "https://example.com/1080.m3u8", Height: 1080, Bandwidth: 4000000},
+			Duration:    125.0,
+			TotalBytes:  64 * 1024 * 1024,
+		},
+	}
+	winView := &mockWindowView{}
+	qc := newQueueController(eng, &testSettingsProvider{settings: defaultSettingsForTest(t)}, winView, inlineOps)
+
+	pre := true
+	resp, err := qc.Enqueue(context.Background(), DownloadRequest{URL: "https://example.com/master.m3u8", PreDownload: &pre})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	if eng.preDownloadStarted {
+		t.Fatal("未选定清晰度前不应该启动提前下载")
+	}
+
+	if err := qc.SelectHLSVariant(context.Background(), resp.RequestID, "https://example.com/master.m3u8", "https://example.com/1080.m3u8"); err != nil {
+		t.Fatalf("SelectHLSVariant failed: %v", err)
+	}
+
+	// 等待异步启动落地
+	deadline := time.After(2 * time.Second)
+	for !eng.preDownloadStarted {
+		select {
+		case <-deadline:
+			t.Fatal("选定清晰度后应该触发提前下载，但在 2s 内未被调用")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }

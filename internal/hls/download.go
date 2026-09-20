@@ -174,6 +174,11 @@ func (f *Fetcher) GetText(ctx context.Context, rawURL string) ([]byte, error) {
 // 断点续传按分片粒度实现：分片先写 .part 再改名，因此「目标文件存在」等价于
 // 「这个分片已完整落盘」。暂停后继续、处理失败重试、重启后继续都只补缺失的分片。
 func (f *Fetcher) Download(ctx context.Context, pl *MediaPlaylist, dir string, concurrency int, onProgress ProgressFunc) (*Inputs, error) {
+	return f.DownloadWithPrefix(ctx, pl, dir, "", concurrency, onProgress)
+}
+
+// DownloadWithPrefix 支持带文件名前缀下载分片（如音视频分离时使用 "video" / "audio" 前缀区分落盘文件）。
+func (f *Fetcher) DownloadWithPrefix(ctx context.Context, pl *MediaPlaylist, dir string, prefix string, concurrency int, onProgress ProgressFunc) (*Inputs, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("无法创建分片临时目录: %w", err)
 	}
@@ -184,7 +189,7 @@ func (f *Fetcher) Download(ctx context.Context, pl *MediaPlaylist, dir string, c
 		concurrency = len(pl.Segments)
 	}
 
-	inputs, err := f.planInputs(ctx, pl, dir)
+	inputs, err := f.planInputs(ctx, pl, dir, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +264,7 @@ func (f *Fetcher) Download(ctx context.Context, pl *MediaPlaylist, dir string, c
 
 // planInputs 定下每个分片在磁盘上的落点，并按需下载初始化片段。
 // 分片文件名带序号，与清单顺序一一对应，续传因此不必额外记录已完成列表。
-func (f *Fetcher) planInputs(ctx context.Context, pl *MediaPlaylist, dir string) (*Inputs, error) {
+func (f *Fetcher) planInputs(ctx context.Context, pl *MediaPlaylist, dir string, prefix string) (*Inputs, error) {
 	inputs := &Inputs{}
 
 	var initSection *InitSection
@@ -278,11 +283,11 @@ func (f *Fetcher) planInputs(ctx context.Context, pl *MediaPlaylist, dir string)
 	}
 
 	for i, seg := range pl.Segments {
-		inputs.Segments = append(inputs.Segments, segmentName(i, seg.URI))
+		inputs.Segments = append(inputs.Segments, segmentName(prefix, i, seg.URI))
 	}
 
 	if initSection != nil {
-		name := "init" + segmentExt(initSection.URI)
+		name := initName(prefix, initSection.URI)
 		initPath := filepath.Join(dir, name)
 		if _, err := os.Stat(initPath); err != nil {
 			if _, err := f.fetchSegment(ctx, segmentFromInit(initSection), initPath); err != nil {
@@ -302,8 +307,18 @@ func segmentFromInit(init *InitSection) Segment {
 	}
 }
 
-func segmentName(index int, rawURL string) string {
+func segmentName(prefix string, index int, rawURL string) string {
+	if prefix != "" {
+		return fmt.Sprintf("%s_seg_%05d%s", prefix, index, segmentExt(rawURL))
+	}
 	return fmt.Sprintf("seg_%05d%s", index, segmentExt(rawURL))
+}
+
+func initName(prefix, rawURL string) string {
+	if prefix != "" {
+		return fmt.Sprintf("%s_init%s", prefix, segmentExt(rawURL))
+	}
+	return "init" + segmentExt(rawURL)
 }
 
 // segmentExt 从分片地址取后缀，只用于让落盘名可读；真正的容器类型由 Media Processor

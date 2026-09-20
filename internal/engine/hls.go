@@ -255,14 +255,31 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, onProgress P
 	segmentsDone := 0
 	offset := 0
 	inputs := &hls.Inputs{}
-	for _, pl := range []*hls.MediaPlaylist{sel.VideoPlaylist, sel.AudioPlaylist} {
-		if pl == nil {
-			continue
+	type streamTarget struct {
+		prefix   string
+		playlist *hls.MediaPlaylist
+	}
+	var streams []streamTarget
+	hasBoth := sel.VideoPlaylist != nil && sel.AudioPlaylist != nil
+	if sel.VideoPlaylist != nil {
+		prefix := ""
+		if hasBoth {
+			prefix = "video"
 		}
+		streams = append(streams, streamTarget{prefix: prefix, playlist: sel.VideoPlaylist})
+	}
+	if sel.AudioPlaylist != nil {
+		prefix := ""
+		if hasBoth {
+			prefix = "audio"
+		}
+		streams = append(streams, streamTarget{prefix: prefix, playlist: sel.AudioPlaylist})
+	}
+	for _, stream := range streams {
+		pl := stream.playlist
 		base := offset
 		offset += len(pl.Segments)
-		part, dlErr := f.Download(ctx, pl, dir, concurrency, func(downloaded, _ int64, completed, _ int, done []bool) {
-			// 位图内容只做 false→true 的单调翻转，写入与界面/存储的读取之间
+		part, dlErr := f.DownloadWithPrefix(ctx, pl, dir, stream.prefix, concurrency, func(downloaded, _ int64, completed, _ int, done []bool) {
 			// 最多个把一帧的差异，不会出现非法状态；切片头本身不再替换。
 			copy(segmentDone[base:base+len(done)], done)
 			t.SegmentsTotal = totalSegments

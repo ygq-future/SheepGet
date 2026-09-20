@@ -1,10 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  computeBarPosition,
-  MEDIA_BAR_INNER_PADDING,
-  MEDIA_BAR_VIEWPORT_PADDING,
-} from './mediabar';
+import { computeBarPosition, MEDIA_BAR_MARGIN, MEDIA_BAR_VIEWPORT_PADDING } from './mediabar';
 
 interface Box {
   top: number;
@@ -23,41 +19,34 @@ function box(over: Partial<Box> = {}): Box {
 }
 
 describe('mediabar positioning logic', () => {
-  it('floats the bar inside the top-right corner of the player', () => {
+  it('anchors the bar above the player, right-aligned to its right edge', () => {
     const pos = computeBarPosition(box(), VIEWPORT, BAR);
 
     assert.equal(pos.visible, true);
-    // 右缘贴播放器右缘、上缘贴播放器顶缘，各留一小段内侧边距
-    assert.equal(pos.left, 800 - BAR.width - MEDIA_BAR_INNER_PADDING);
-    assert.equal(pos.top, 100 + MEDIA_BAR_INNER_PADDING);
-    // 整条悬浮条都落在播放器画面范围内
-    assert.ok(pos.left >= 200, 'bar must stay inside the player horizontally');
-    assert.ok(pos.top >= 100, 'bar must stay inside the player vertically');
+    // 右对齐：悬浮条右边缘与播放器右边缘对齐
+    assert.equal(pos.left, 800 - BAR.width);
+    // 在播放器上方，整条都在画面之外
+    assert.equal(pos.top, 100 - BAR.height - MEDIA_BAR_MARGIN);
+    assert.ok(pos.top + BAR.height <= 100, 'bar must not cover the player');
   });
 
-  it('sticks to the visible top when the player is scrolled above the viewport', () => {
-    const pos = computeBarPosition(box({ top: -50, bottom: 350 }), VIEWPORT, BAR);
+  it('drops below the player when there is no room above, still not covering it', () => {
+    const player = box({ top: 4, bottom: 404 });
+    const pos = computeBarPosition(player, VIEWPORT, BAR);
 
     assert.equal(pos.visible, true);
-    // 播放器顶部在视口外：按可见部分（视口顶）的右上角定位
-    assert.equal(pos.top, MEDIA_BAR_VIEWPORT_PADDING);
-    assert.equal(pos.left, 800 - BAR.width - MEDIA_BAR_INNER_PADDING);
+    assert.equal(pos.left, 800 - BAR.width);
+    assert.equal(pos.top, 404 + MEDIA_BAR_MARGIN);
+    assert.ok(pos.top >= player.bottom, 'bar must not cover the player');
   });
 
-  it('keeps the bar inside the viewport when the player overflows to the right', () => {
-    const pos = computeBarPosition(box({ left: 0, right: 1200, width: 1200 }), VIEWPORT, BAR);
-
-    assert.equal(pos.visible, true);
-    assert.equal(pos.left, VIEWPORT.width - BAR.width - MEDIA_BAR_VIEWPORT_PADDING);
-    assert.equal(pos.top, 100 + MEDIA_BAR_INNER_PADDING);
-  });
-
-  it('anchors to the viewport corner when the player fills the whole viewport', () => {
+  it('falls back inside the viewport when the player leaves no room either side', () => {
+    // 占满整个视口的播放器：上下都没有外侧位置可放
     const pos = computeBarPosition(box({ top: -120, bottom: 880, height: 1000 }), VIEWPORT, BAR);
 
     assert.equal(pos.visible, true);
-    assert.equal(pos.top, MEDIA_BAR_INNER_PADDING);
-    assert.equal(pos.left, 800 - BAR.width - MEDIA_BAR_INNER_PADDING);
+    assert.equal(pos.top, MEDIA_BAR_VIEWPORT_PADDING);
+    assert.equal(pos.left, 800 - BAR.width);
   });
 
   it('hides the bar when the player is too small to host it', () => {
@@ -68,7 +57,7 @@ describe('mediabar positioning logic', () => {
     );
   });
 
-  it('hides the bar when no part of the player is visible', () => {
+  it('hides the bar when the player scrolled out of the viewport', () => {
     assert.equal(
       computeBarPosition(box({ top: -500, bottom: -100 }), VIEWPORT, BAR).visible,
       false,
@@ -76,13 +65,27 @@ describe('mediabar positioning logic', () => {
     assert.equal(computeBarPosition(box({ top: 900, bottom: 1300 }), VIEWPORT, BAR).visible, false);
   });
 
-  it('keeps the bar on the viewport edge when the player is scrolled away to the left', () => {
+  it('keeps the bar inside the viewport when the player overflows to the right', () => {
+    const pos = computeBarPosition(box({ left: 0, right: 1200, width: 1200 }), VIEWPORT, BAR);
+
+    assert.equal(pos.visible, true);
+    assert.equal(pos.left, VIEWPORT.width - BAR.width - MEDIA_BAR_VIEWPORT_PADDING);
+    assert.equal(pos.top, 100 - BAR.height - MEDIA_BAR_MARGIN);
+  });
+
+  it('clamps the top edge when the player is scrolled above the viewport', () => {
+    const pos = computeBarPosition(box({ top: -50, bottom: 350 }), VIEWPORT, BAR);
+
+    assert.equal(pos.visible, true);
+    assert.equal(pos.top, 350 + MEDIA_BAR_MARGIN);
+  });
+
+  it('never leaves the viewport on the left when the player is scrolled away', () => {
     const pos = computeBarPosition(box({ left: -200, right: 100, width: 300 }), VIEWPORT, BAR);
 
     assert.equal(pos.visible, true);
-    // 可见部分只剩 100px：左缘兜底到视口 padding，不让悬浮条滑出屏幕
     assert.equal(pos.left, MEDIA_BAR_VIEWPORT_PADDING);
-    assert.equal(pos.top, 100 + MEDIA_BAR_INNER_PADDING);
+    assert.equal(pos.top, 100 - BAR.height - MEDIA_BAR_MARGIN);
   });
 
   it('keeps a bar wider than the visible player on the left edge', () => {

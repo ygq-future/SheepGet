@@ -174,7 +174,7 @@ func DefaultBuiltinCategories(defaultDownloadDir string) []CategoryConfig {
 			ID:         "builtin-video",
 			Name:       "视频",
 			Directory:  filepath.Join(base, "Videos"),
-			Extensions: []string{"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts"},
+			Extensions: []string{"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts", "m3u8"},
 			IsBuiltin:  true,
 		},
 		{

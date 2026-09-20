@@ -96,9 +96,6 @@ export function FileInfoView() {
   const filenameSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // 清晰度选择是「选定后固定」的一次动作：选定期间禁用再次点选，避免同一项上并发两次解析。
-  const [selectingVariant, setSelectingVariant] = useState(false);
-
   // 时长是异步读出来的：先转加载动画，读到了就显示，读不到就不再显示——它是附加信息，
   // 不参与任何下载决策，因此绝不阻塞别的操作，也绝不编一个数值出来。
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -391,10 +388,18 @@ export function FileInfoView() {
           resumable: result.resumable,
           duplicateTask: result.duplicateTask || null,
           variants: hlsOptions.length > 0 ? hlsOptions : undefined,
-          qualityLabel: undefined,
+          qualityLabel: hlsOptions.length > 0 ? hlsOptions[0].label : undefined,
           mediaDuration: result.hls?.media?.duration ?? 0,
         };
       });
+      // 手输多清晰度 HLS 时，默认定在首选最高清晰度并固定，进入对话框后不再重复选择。
+      const hlsOptions = result.hls?.options ?? [];
+      if (hlsOptions.length > 0) {
+        const owner = useFileInfoDraftStore.getState().activeItemId;
+        if (owner) {
+          void SelectHLSVariant(owner, trimmed, hlsOptions[0].uri);
+        }
+      }
       // 手输链接没有登记时那次探测，这里拿到的就是它的真名与大小，时长按它们读。
       void refreshDuration(trimmed, chosenName, result.totalBytes);
     } catch (err: unknown) {
@@ -416,9 +421,6 @@ export function FileInfoView() {
   const destinationOccupied =
     duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied;
 
-  // 多清晰度的清单必须选定后固定。variants 只有一项时不构成选择；qualityLabel 非空表示已选定。
-  const variants = activeItem?.variants || [];
-  const needsVariantSelection = variants.length > 1 && !activeItem?.qualityLabel;
   const hlsDuration = activeItem?.mediaDuration ?? 0;
   const categoryOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
@@ -477,21 +479,6 @@ export function FileInfoView() {
   };
 
   // 选定清晰度后固定：调用后端把这一版的事实（大小、时长）取回来，后端会再推一条
-  // FileInfoUpdated 更新 activeItem，界面据此显示「已选清晰度」并放开提交。
-  const handleSelectVariant = async (variantURI: string) => {
-    const owner = useFileInfoDraftStore.getState().activeItemId;
-    const current = useFileInfoDraftStore.getState().draft;
-    if (!owner || !variantURI || !current.url) return;
-    setSelectingVariant(true);
-    try {
-      await SelectHLSVariant(owner, current.url.trim(), variantURI);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      patch({ error: `清晰度选择失败: ${msg}` }, owner);
-    } finally {
-      setSelectingVariant(false);
-    }
-  };
 
   const handleConfirm = useCallback(
     async (actionOverride?: duplicateModels.Action, e?: SyntheticEvent) => {
@@ -766,40 +753,6 @@ export function FileInfoView() {
                 </p>
               )}
             </div>
-
-            {/* 清晰度选择：多清晰度的清单必须先选定一个，选定后固定，不再变化。 */}
-            {needsVariantSelection && (
-              <div className="space-y-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-[var(--text-secondary)]">
-                    选择清晰度
-                  </span>
-                  {selectingVariant && (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--accent)]" />
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {variants.map((v) => (
-                    <button
-                      key={v.uri}
-                      type="button"
-                      disabled={selectingVariant}
-                      onClick={() => void handleSelectVariant(v.uri)}
-                      className="flex flex-col items-start gap-0.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/60 px-2.5 py-2 text-left transition-all hover:border-[var(--accent)] hover:bg-[var(--bg-surface-hover)] disabled:pointer-events-none disabled:opacity-50"
-                    >
-                      <span className="text-[11px] font-medium text-[var(--text-primary)]">
-                        {v.label || '清晰度'}
-                      </span>
-                      {(v.bandwidth ?? 0) > 0 && (
-                        <span className="text-[10px] text-[var(--text-muted)]">
-                          {((v.bandwidth ?? 0) / 1e6).toFixed(1)} Mbps
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* Compact Resource Meta Line */}
             <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
@@ -1236,7 +1189,7 @@ export function FileInfoView() {
         <Button
           size="sm"
           variant="primary"
-          disabled={loading || probing || selectingVariant || needsVariantSelection}
+          disabled={loading || probing}
           onClick={() => void handleConfirm()}
         >
           {loading ? (
@@ -1245,7 +1198,7 @@ export function FileInfoView() {
               <span>提交中...</span>
             </>
           ) : (
-            <span>{needsVariantSelection ? '请先选择清晰度' : '开始下载 (Enter)'}</span>
+            <span>开始下载 (Enter)</span>
           )}
         </Button>
       </footer>

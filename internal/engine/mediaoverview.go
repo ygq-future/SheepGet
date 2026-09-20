@@ -57,7 +57,13 @@ func (m *Manager) probeHLSOverview(ctx context.Context, playlistURL string, cred
 		return nil, err
 	}
 	if len(res.Variants) > 1 {
-		return &MediaOverview{Variants: len(res.Variants)}, nil
+		ov := &MediaOverview{Variants: len(res.Variants)}
+		// 多清晰度点播清单没有「唯一的大小」，但同一部视频各清晰度版本的时长是一致的。
+		// 轻量解析首个变体以获得时长，供扩展面板在下载前展示并计算各清晰度预估大小。
+		if sel, err := hls.Resolve(ctx, f, playlistURL, res.Variants[0], hls.PickAudioURI(res.Media, res.Variants[0].AudioGroupID)); err == nil && sel != nil && sel.Source != nil {
+			ov.DurationSeconds = sel.Source.Duration
+		}
+		return ov, nil
 	}
 
 	variant := res.Variants[0]

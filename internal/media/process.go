@@ -147,8 +147,8 @@ type accumulator struct {
 	store  *sampleStore
 	kind   containerKind
 	tracks []*track
-	// initTracks 是 fMP4 初始化片段声明的轨道，按轨道 ID 索引。
-	initTracks map[int]*track
+	// initFiles 保存已解析的初始化片段，支持多路独立初始化片段（音视频分离 fMP4）。
+	initFiles []fmp4InitFile
 }
 
 func (a *accumulator) addInit(path string) error {

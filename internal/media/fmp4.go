@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	mp4codecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
 )
+
+type fmp4InitFile struct {
+	path   string
+	prefix string
+	tracks map[int]*track
+}
 
 // readFMP4Init 解析初始化片段，得到轨道的时间基与编解码参数。
 // fMP4 的媒体分片里只有样本，没有这些声明，因此初始化片段是必需输入。
@@ -27,9 +34,7 @@ func (a *accumulator) readFMP4Init(path string) error {
 	}
 
 	seen := map[trackKind]bool{}
-	if a.initTracks == nil {
-		a.initTracks = make(map[int]*track)
-	}
+	tracksMap := make(map[int]*track)
 	for _, it := range init.Tracks {
 		kind, name, err := fmp4CodecKind(it.Codec)
 		if err != nil {
@@ -50,7 +55,34 @@ func (a *accumulator) readFMP4Init(path string) error {
 		t.timeScale = it.TimeScale
 		t.mp4Codec = it.Codec
 		t.durationsFromContainer = true
-		a.initTracks[it.ID] = t
+		tracksMap[it.ID] = t
+	}
+
+	base := filepath.Base(path)
+	prefix := ""
+	if idx := strings.Index(base, "init"); idx > 0 {
+		prefix = base[:idx]
+	}
+	a.initFiles = append(a.initFiles, fmp4InitFile{
+		path:   path,
+		prefix: prefix,
+		tracks: tracksMap,
+	})
+	return nil
+}
+
+func (a *accumulator) findInitForPart(partPath string) *fmp4InitFile {
+	if len(a.initFiles) == 1 {
+		return &a.initFiles[0]
+	}
+	base := filepath.Base(partPath)
+	for i := range a.initFiles {
+		if a.initFiles[i].prefix != "" && strings.HasPrefix(base, a.initFiles[i].prefix) {
+			return &a.initFiles[i]
+		}
+	}
+	if len(a.initFiles) > 0 {
+		return &a.initFiles[0]
 	}
 	return nil
 }
@@ -58,7 +90,7 @@ func (a *accumulator) readFMP4Init(path string) error {
 // readFMP4Part 解析一个 fMP4 媒体分片。样本负载原样取出：fMP4 里的样本本来就是
 // 长度前缀格式，与成品需要的完全一致，因此这里没有任何转码或重排。
 func (a *accumulator) readFMP4Part(path string) error {
-	if a.initTracks == nil {
+	if len(a.initFiles) == 0 {
 		return unsupportedf("%s 是 fMP4 分片，但缺少初始化片段（EXT-X-MAP）", filepath.Base(path))
 	}
 	data, err := os.ReadFile(path)
@@ -74,9 +106,14 @@ func (a *accumulator) readFMP4Part(path string) error {
 		return unsupportedf("%s 里没有媒体数据", filepath.Base(path))
 	}
 
+	initFile := a.findInitForPart(path)
+	if initFile == nil {
+		return unsupportedf("%s 没有找到对应的初始化片段", filepath.Base(path))
+	}
+
 	for _, part := range parts {
 		for _, pt := range part.Tracks {
-			t := a.initTracks[pt.ID]
+			t := initFile.tracks[pt.ID]
 			if t == nil {
 				return unsupportedf("%s 引用了初始化片段里没有声明的轨道 %d", filepath.Base(path), pt.ID)
 			}

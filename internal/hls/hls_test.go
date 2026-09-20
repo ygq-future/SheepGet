@@ -379,6 +379,36 @@ func TestDownloadFetchesEverySegment(t *testing.T) {
 		}
 	}
 }
+func TestDownloadWithPrefix_IsolatesSegmentNames(t *testing.T) {
+	origin := newFakeOrigin(t)
+	videoPL := parseBody(t, origin.url("/video.m3u8"), origin.mediaPlaylist("v0.ts", "v1.ts"))
+	audioPL := parseBody(t, origin.url("/audio.m3u8"), origin.mediaPlaylist("a0.ts", "a1.ts"))
+
+	dir := t.TempDir()
+	fetcher := newTestFetcher()
+
+	vInputs, err := fetcher.DownloadWithPrefix(context.Background(), videoPL, dir, "video", 2, nil)
+	if err != nil {
+		t.Fatalf("视频下载失败: %v", err)
+	}
+	aInputs, err := fetcher.DownloadWithPrefix(context.Background(), audioPL, dir, "audio", 2, nil)
+	if err != nil {
+		t.Fatalf("音频下载失败: %v", err)
+	}
+
+	if len(vInputs.Segments) != 2 || len(aInputs.Segments) != 2 {
+		t.Fatalf("分片数量不符合预期: video=%+v, audio=%+v", vInputs, aInputs)
+	}
+	if vInputs.Segments[0] != "video_seg_00000.ts" || aInputs.Segments[0] != "audio_seg_00000.ts" {
+		t.Fatalf("分片命名未隔离: video=%s, audio=%s", vInputs.Segments[0], aInputs.Segments[0])
+	}
+
+	for _, name := range append(vInputs.Segments, aInputs.Segments...) {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("分片文件 %s 缺失: %v", name, err)
+		}
+	}
+}
 
 func TestDownloadResumesAndRetries(t *testing.T) {
 	origin := newFakeOrigin(t)
