@@ -153,3 +153,165 @@ describe('mediabar dismiss-all logic', () => {
     assert.equal(manager.shouldShowDismissAllOption(), false);
   });
 });
+
+describe('mediabar resource visibility gating', () => {
+  function createTestFixtures() {
+    const container = {
+      style: { display: 'none', left: '', top: '', right: '', bottom: '' },
+    } as unknown as HTMLDivElement;
+
+    const shadowRoot = {
+      getElementById: () => ({
+        getBoundingClientRect: () => ({ width: 100, height: 30 }),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        innerHTML: '',
+      }),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    } as unknown as ShadowRoot;
+
+    return { container, shadowRoot };
+  }
+
+  it('keeps bar hidden when player has no resource, and shows when resource associates', () => {
+    const originalWindow = globalThis.window;
+    const originalRaf = globalThis.requestAnimationFrame;
+    const originalCaf = globalThis.cancelAnimationFrame;
+    const originalChrome = (globalThis as unknown as { chrome?: unknown }).chrome;
+
+    globalThis.window = {
+      innerWidth: 1920,
+      innerHeight: 1080,
+    } as unknown as Window & typeof globalThis;
+    globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    };
+    globalThis.cancelAnimationFrame = () => {};
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: { sendMessage: () => {} },
+    };
+
+    try {
+      const manager = new MediaBarManager();
+      const { container, shadowRoot } = createTestFixtures();
+
+      const video = {
+        isConnected: true,
+        currentSrc: 'https://example.com/video.mp4',
+        getBoundingClientRect: () => ({
+          left: 50,
+          top: 100,
+          right: 450,
+          bottom: 350,
+          width: 400,
+          height: 250,
+        }),
+      } as unknown as HTMLVideoElement;
+
+      manager.registerTestPlayer(video, { container, shadowRoot });
+
+      // 1. Initial state: no resources in tab, bar must remain display: none
+      manager.setResources([]);
+      assert.equal(container.style.display, 'none');
+
+      // 2. Resource arrives and matches video URL
+      manager.setResources([
+        {
+          id: 'res_1',
+          url: 'https://example.com/video.mp4',
+          tabId: 1,
+          filename: 'video.mp4',
+          mimeType: 'video/mp4',
+          isHls: false,
+          foundAt: Date.now(),
+        },
+      ]);
+      assert.equal(container.style.display, 'block');
+
+      // 3. Resources cleared on navigation -> bar hides again
+      manager.setResources([]);
+      assert.equal(container.style.display, 'none');
+    } finally {
+      globalThis.window = originalWindow;
+      globalThis.requestAnimationFrame = originalRaf;
+      globalThis.cancelAnimationFrame = originalCaf;
+      (globalThis as unknown as { chrome: unknown }).chrome = originalChrome;
+    }
+  });
+
+  it('associates dynamically attached HLS MSE blob streams when resources arrive', () => {
+    const originalWindow = globalThis.window;
+    const originalRaf = globalThis.requestAnimationFrame;
+    const originalCaf = globalThis.cancelAnimationFrame;
+    const originalChrome = (globalThis as unknown as { chrome?: unknown }).chrome;
+
+    globalThis.window = {
+      innerWidth: 1920,
+      innerHeight: 1080,
+    } as unknown as Window & typeof globalThis;
+    globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    };
+    globalThis.cancelAnimationFrame = () => {};
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: { sendMessage: () => {} },
+    };
+
+    try {
+      const manager = new MediaBarManager();
+      const { container, shadowRoot } = createTestFixtures();
+
+      // 1. Initially no resources sniffed yet while video tag is inserted
+      const video = {
+        isConnected: true,
+        currentSrc: '',
+        src: '',
+        readyState: 0,
+        paused: true,
+        currentTime: 0,
+        getBoundingClientRect: () => ({
+          left: 50,
+          top: 100,
+          right: 450,
+          bottom: 350,
+          width: 400,
+          height: 250,
+        }),
+      } as unknown as HTMLVideoElement;
+
+      manager.registerTestPlayer(video, { container, shadowRoot });
+      manager.setResources([]);
+      assert.equal(container.style.display, 'none');
+
+      // 2. Video initializes with MediaSource blob URL
+      Object.defineProperty(video, 'currentSrc', {
+        value: 'blob:https://example.com/mse-uuid-1234',
+        writable: true,
+      });
+
+      // 3. Tab sniffs the m3u8 stream and pushes resources to mediabar
+      manager.setResources([
+        {
+          id: 'res_hls',
+          url: 'https://cdn.example.com/live/index.m3u8',
+          tabId: 1,
+          filename: 'stream.mp4',
+          mimeType: 'application/vnd.apple.mpegurl',
+          isHls: true,
+          foundAt: Date.now(),
+        },
+      ]);
+
+      // Now associated with the HLS resource and becomes visible!
+      assert.equal(container.style.display, 'block');
+    } finally {
+      globalThis.window = originalWindow;
+      globalThis.requestAnimationFrame = originalRaf;
+      globalThis.cancelAnimationFrame = originalCaf;
+      (globalThis as unknown as { chrome: unknown }).chrome = originalChrome;
+    }
+  });
+});

@@ -84,6 +84,7 @@ interface TrackedPlayer {
   statusTimer?: ReturnType<typeof setTimeout>;
   menuCloseTimer?: ReturnType<typeof setTimeout>;
   closeAllMenuTimer?: ReturnType<typeof setTimeout>;
+  videoCleanup?: () => void;
 }
 
 export class MediaBarManager {
@@ -148,9 +149,8 @@ export class MediaBarManager {
       this.frame = 0;
     }
 
-    for (const tracked of this.players.values()) {
-      this.cleanupTrackedMenus(tracked);
-      tracked.container.remove();
+    for (const [video, tracked] of this.players.entries()) {
+      this.teardownPlayer(video, tracked);
     }
     this.players.clear();
   }
@@ -169,6 +169,7 @@ export class MediaBarManager {
         }
       }
     }
+    this.scheduleUpdate();
   }
 
   isAllDismissed(): boolean {
@@ -197,18 +198,18 @@ export class MediaBarManager {
       if (tracked.container?.style) {
         tracked.container.style.display = 'none';
       }
-      this.cleanupTrackedMenus(tracked);
+      this.teardownPlayer(video, tracked);
     }
   }
 
   dismissAll() {
     this.allDismissed = true;
-    for (const tracked of this.players.values()) {
+    for (const [video, tracked] of this.players.entries()) {
       tracked.dismissed = true;
       if (tracked.container?.style) {
         tracked.container.style.display = 'none';
       }
-      this.cleanupTrackedMenus(tracked);
+      this.teardownPlayer(video, tracked);
     }
   }
 
@@ -235,6 +236,14 @@ export class MediaBarManager {
         bar.style.borderBottomRightRadius = '14px';
       }
     }
+  }
+
+  private teardownPlayer(video: HTMLVideoElement, tracked: TrackedPlayer) {
+    this.intersectionObserver?.unobserve(video);
+    this.resizeObserver?.unobserve(video);
+    tracked.videoCleanup?.();
+    this.cleanupTrackedMenus(tracked);
+    tracked.container?.remove?.();
   }
 
   registerTestPlayer(video: HTMLVideoElement, tracked?: Partial<TrackedPlayer>) {
@@ -273,10 +282,7 @@ export class MediaBarManager {
     // Clean up removed videos
     for (const [video, tracked] of this.players.entries()) {
       if (!video.isConnected) {
-        this.intersectionObserver?.unobserve(video);
-        this.resizeObserver?.unobserve(video);
-        this.cleanupTrackedMenus(tracked);
-        tracked.container.remove();
+        this.teardownPlayer(video, tracked);
         this.players.delete(video);
       }
     }
@@ -308,13 +314,37 @@ export class MediaBarManager {
     this.renderBar(tracked);
 
     this.intersectionObserver?.observe(video);
+
+    const onVideoEvent = () => {
+      const prevResource = tracked.resource;
+      this.associateResource(tracked);
+      if (tracked.resource !== prevResource) {
+        this.renderBar(tracked);
+      }
+      this.scheduleUpdate();
+    };
+
+    video.addEventListener('loadedmetadata', onVideoEvent);
+    video.addEventListener('playing', onVideoEvent);
+    video.addEventListener('play', onVideoEvent);
+    video.addEventListener('canplay', onVideoEvent);
+
+    tracked.videoCleanup = () => {
+      video.removeEventListener('loadedmetadata', onVideoEvent);
+      video.removeEventListener('playing', onVideoEvent);
+      video.removeEventListener('play', onVideoEvent);
+      video.removeEventListener('canplay', onVideoEvent);
+    };
     this.resizeObserver?.observe(video);
   }
 
   private associateResource(tracked: TrackedPlayer) {
-    if (tracked.resource) return;
+    if (tracked.resource && this.availableResources.some((r) => r.url === tracked.resource?.url)) {
+      return;
+    }
+    tracked.resource = undefined;
     const video = tracked.video;
-    const currentSrc = video.currentSrc || video.src;
+    const currentSrc = video.currentSrc || video.src || '';
 
     // 1. Direct src match
     if (currentSrc && !currentSrc.startsWith('blob:')) {
@@ -327,7 +357,7 @@ export class MediaBarManager {
     }
 
     // 2. Blob match (MSE / HLS player instance attached to blob: URL)
-    if (currentSrc && currentSrc.startsWith('blob:')) {
+    if (currentSrc.startsWith('blob:')) {
       const hlsResource = this.availableResources.find((r) => r.isHls);
       if (hlsResource) {
         tracked.resource = hlsResource;
@@ -365,6 +395,21 @@ export class MediaBarManager {
 
   private update(tracked: TrackedPlayer) {
     if (this.allDismissed || tracked.dismissed) {
+      if (tracked.container.style.display !== 'none') {
+        tracked.container.style.display = 'none';
+      }
+      return;
+    }
+
+    if (!tracked.resource) {
+      const prev = tracked.resource;
+      this.associateResource(tracked);
+      if (tracked.resource !== prev) {
+        this.renderBar(tracked);
+      }
+    }
+
+    if (!tracked.resource) {
       if (tracked.container.style.display !== 'none') {
         tracked.container.style.display = 'none';
       }
@@ -611,18 +656,15 @@ export class MediaBarManager {
     dlBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!tracked.resource) {
-        // 尚未关联到资源时即时向 background 补拉本标签页的嗅探结果
-        this.showStatus(tracked, '正在探测资源…', '#94a3b8');
         chrome.runtime.sendMessage(
           { type: 'GET_TAB_MEDIA' },
           (resList: MediaResource[] | undefined) => {
             if (resList && resList.length > 0) {
-              tracked.resource = resList[0];
-              this.renderBar(tracked);
-              this.beginDownload(tracked);
-              return;
+              this.setResources(resList);
+              if (tracked.resource) {
+                this.beginDownload(tracked);
+              }
             }
-            this.showStatus(tracked, '未探测到可下载资源', '#f87171');
           },
         );
         return;
