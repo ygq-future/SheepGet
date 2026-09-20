@@ -1,13 +1,8 @@
 import { create } from 'zustand';
-import { CheckURLFilesExist } from '../../bindings/sheep-get/app';
+
 import type * as configModels from '../../bindings/sheep-get/internal/config/models';
 import type * as windowModels from '../../bindings/sheep-get/internal/window/models';
-import {
-  draftFromItem,
-  emptyFileInfoDraft,
-  reuseFields,
-  type FileInfoDraft,
-} from '../lib/fileInfoDraft';
+import { draftFromItem, emptyFileInfoDraft, type FileInfoDraft } from '../lib/fileInfoDraft';
 
 /**
  * 文件信息窗口的表单草稿：每个队列项一份，切换项时整体换掉。
@@ -25,7 +20,7 @@ interface FileInfoDraftState {
   probing: boolean;
   loading: boolean;
 
-  open: (item: windowModels.FileInfoItem, settings: configModels.Settings | null) => Promise<void>;
+  open: (item: windowModels.FileInfoItem, settings: configModels.Settings | null) => void;
   /**
    * owner 用于异步回填：窗口在等待期间切到了别的项时，这次结果直接丢弃，不写进新项的草稿。
    * 同步改动不传，直接写当前项。
@@ -44,23 +39,16 @@ export const useFileInfoDraftStore = create<FileInfoDraftState>((set, get) => ({
   probing: false,
   loading: false,
 
-  open: async (item, settings) => {
+  open: (item, settings) => {
     const existing = get().drafts[item.id];
     const draft = existing ?? draftFromItem(item, settings);
     set({
       draft,
       drafts: { ...get().drafts, [item.id]: draft },
       activeItemId: item.id,
-      probing: false,
+      probing: Boolean(item.probing),
       loading: false,
     });
-    if (existing) return;
-
-    // 可复用文件属于另一条独立规则（其他目录已有同一份成品），仍由后端查询后给出。
-    if (item.duplicateTask && draft.directory && draft.filename) {
-      const conf = await CheckURLFilesExist(item.url || '', draft.directory, draft.filename);
-      get().patch(reuseFields(conf), item.id);
-    }
   },
 
   patch: (partial, owner) => {

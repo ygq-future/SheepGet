@@ -44,8 +44,11 @@ type Chunk struct {
 
 // Task represents a download task in SheepGet.
 type Task struct {
-	ID             string       `json:"id"`
-	URL            string       `json:"url"`
+	ID  string `json:"id"`
+	URL string `json:"url"`
+	// PageURL 是该下载任务的来源网页地址（如浏览器扩展捕获时所在的源页面）。
+	// 当下载链接失效或用户需要时，可直接在浏览器中重新打开该源网页。
+	PageURL        string       `json:"pageUrl,omitempty"`
 	Filename       string       `json:"filename"`
 	Directory      string       `json:"directory"`
 	TempDir        string       `json:"tempDir,omitempty"`

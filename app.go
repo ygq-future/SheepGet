@@ -786,13 +786,18 @@ func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*s
 		headers["Referer"] = req.PageContext.Referrer
 	}
 
+	pageURL := req.PageContext.PageURL
+	if pageURL == "" {
+		pageURL = req.PageContext.Referrer
+	}
+
 	dlReq := window.DownloadRequest{
 		URL:        req.URL,
 		Filename:   req.FilenameSuggestion,
 		Headers:    headers,
 		VariantURI: req.VariantURI,
+		PageURL:    pageURL,
 	}
-
 	resp, err := a.TriggerDownload(dlReq)
 	if err != nil {
 		return &server.HandoverResponse{Accepted: false, Reason: err.Error()}, nil

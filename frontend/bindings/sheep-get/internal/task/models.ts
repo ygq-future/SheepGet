@@ -95,6 +95,7 @@ export enum Status {
 export class Task {
     "id": string;
     "url": string;
+    "pageUrl"?: string;
     "filename": string;
     "directory": string;
     "tempDir"?: string;

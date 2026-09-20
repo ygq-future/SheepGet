@@ -1084,6 +1084,28 @@ func TestApp_HandleHandover(t *testing.T) {
 	if !resp.Accepted || resp.QueueItemID == "" {
 		t.Errorf("expected accepted handover, got %+v", resp)
 	}
+
+	activeItem, err := app.GetActiveFileInfo()
+	if err != nil || activeItem == nil {
+		t.Fatalf("failed to get active file info item: %v", err)
+	}
+	if activeItem.PageURL != "https://normal.com/download.html" {
+		t.Errorf("expected activeItem.PageURL = %q, got %q", "https://normal.com/download.html", activeItem.PageURL)
+	}
+
+	createdTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: activeItem.ID,
+		URL:       activeItem.URL,
+		Filename:  "myarchive.zip",
+		Directory: activeItem.Directory,
+		MaxConn:   4,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	if createdTask.PageURL != "https://normal.com/download.html" {
+		t.Errorf("expected createdTask.PageURL = %q, got %q", "https://normal.com/download.html", createdTask.PageURL)
+	}
 }
 
 func TestApp_ProgressWindowAlwaysOnTop(t *testing.T) {

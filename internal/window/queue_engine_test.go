@@ -214,6 +214,11 @@ func (e *blockingEngine) ResolveHLSVariant(_ context.Context, _, _ string, _ map
 	return nil, errors.New("not configured in test")
 }
 
+func (e *blockingEngine) SetTaskPageURL(_ context.Context, _ string, _ string) error {
+	e.enter("SetTaskPageURL")
+	return nil
+}
+
 func setupQueueWithEngine(t *testing.T, eng DownloadEngine, view WindowView, runOps windowOps) (*QueueController, string) {
 	t.Helper()
 	tmpDir := t.TempDir()

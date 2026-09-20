@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -198,6 +200,50 @@ func HLSOutputName(rawURL, filename string) string {
 		stem = "media"
 	}
 	return stem + MediaOutputExt
+}
+
+var resolutionTagRe = regexp.MustCompile(`(?i)[_.-]?\d+p$`)
+
+func extractResolutionTag(v hls.Variant) string {
+	if v.Height > 0 {
+		return fmt.Sprintf("%dp", v.Height)
+	}
+	name := strings.TrimSpace(strings.ToLower(v.Name))
+	if name == "" {
+		return ""
+	}
+	if strings.HasSuffix(name, "p") {
+		numPart := strings.TrimSuffix(name, "p")
+		if _, err := strconv.Atoi(numPart); err == nil {
+			return name
+		}
+	}
+	if _, err := strconv.Atoi(name); err == nil {
+		return name + "p"
+	}
+	return ""
+}
+
+// HLSVariantFilename 为多清晰度 HLS 视频生成带选定分辨率（如 420p、1080p）的建议文件名。
+// 若原文件名已包含其他分辨率标签，则替换为新选定的分辨率，避免重复堆叠。
+func HLSVariantFilename(baseFilename string, v hls.Variant) string {
+	name := strings.TrimSpace(baseFilename)
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	if stem == "" {
+		stem = "media"
+	}
+
+	tag := extractResolutionTag(v)
+	if tag == "" {
+		return stem + MediaOutputExt
+	}
+
+	cleanedStem := resolutionTagRe.ReplaceAllString(stem, "")
+	if cleanedStem == "" {
+		cleanedStem = "media"
+	}
+
+	return fmt.Sprintf("%s_%s%s", cleanedStem, tag, MediaOutputExt)
 }
 
 // segmentDir 是 HLS 任务分片的落点目录。它由 GetPartPath 派生，于是清理、换临时目录这些

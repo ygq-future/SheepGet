@@ -1,7 +1,7 @@
 import { type MouseEvent } from 'react';
-import { Copy, Activity, ExternalLink, FolderOpen, Trash2 } from 'lucide-react';
+import { Copy, Activity, ExternalLink, FolderOpen, Trash2, Globe } from 'lucide-react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
-import { Clipboard } from '@wailsio/runtime';
+import { Browser, Clipboard } from '@wailsio/runtime';
 import { showToast } from './ui/Toast';
 
 export interface TaskActionsProps {
@@ -37,6 +37,18 @@ export function TaskActions({
         console.error('Failed to copy URL:', err);
         showToast('复制链接失败', 'error');
       }
+    }
+  };
+
+  const handleOpenPage = async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (!t.pageUrl) return;
+    try {
+      await Browser.OpenURL(t.pageUrl);
+      showToast('已在浏览器中打开源网页');
+    } catch (err) {
+      console.error('Failed to open webpage:', err);
+      showToast('无法打开源网页', 'error');
     }
   };
 
@@ -87,6 +99,20 @@ export function TaskActions({
       >
         <Copy className="h-3.5 w-3.5" />
       </button>
+
+      {/* Open source webpage */}
+      {Boolean(t.pageUrl) && (
+        <button
+          type="button"
+          onClick={(e) => {
+            void handleOpenPage(e);
+          }}
+          className="rounded-md p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--accent-muted)] hover:text-[var(--accent)]"
+          title={`打开下载源站 (${t.pageUrl})`}
+        >
+          <Globe className="h-3.5 w-3.5" />
+        </button>
+      )}
 
       {/* Show in progress window */}
       {onShowProgress && (

@@ -89,6 +89,10 @@ func (e *hlsProbeEngine) ReuseExistingFile(context.Context, string, string, stri
 	return nil, nil
 }
 
+func (e *hlsProbeEngine) SetTaskPageURL(context.Context, string, string) error {
+	return nil
+}
+
 // twoVariantProbe 构造一份有两个清晰度的 HLS 探测结果，供选择类测试复用。
 func twoVariantProbe() *engine.ProbeResult {
 	return &engine.ProbeResult{
@@ -379,5 +383,78 @@ func TestQueueController_SelectHLSVariant_StartsPreDownloadWhenEnabled(t *testin
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+func TestQueueController_SelectHLSVariant_UpdatesFilenameWithResolution(t *testing.T) {
+	resolveMap := map[string]*hls.Source{
+		"https://example.com/420.m3u8": {
+			PlaylistURL: "https://example.com/master.m3u8",
+			Variant:     hls.Variant{URI: "https://example.com/420.m3u8", Height: 420, Bandwidth: 1000000},
+			TotalBytes:  30 * 1024 * 1024,
+		},
+		"https://example.com/1080.m3u8": {
+			PlaylistURL: "https://example.com/master.m3u8",
+			Variant:     hls.Variant{URI: "https://example.com/1080.m3u8", Height: 1080, Bandwidth: 4000000},
+			TotalBytes:  80 * 1024 * 1024,
+		},
+	}
+
+	eng := &hlsProbeEngine{
+		probe: &engine.ProbeResult{
+			URL:        "https://example.com/master.m3u8",
+			Filename:   "video.m3u8",
+			TotalBytes: -1,
+			HLS: &engine.HLSProbe{
+				IsHLS:       true,
+				PlaylistURL: "https://example.com/master.m3u8",
+				Variants: []hls.Variant{
+					{URI: "https://example.com/420.m3u8", Height: 420, Bandwidth: 1000000},
+					{URI: "https://example.com/1080.m3u8", Height: 1080, Bandwidth: 4000000},
+				},
+			},
+		},
+	}
+	// 动态返回对应的清晰度
+	resolveFunc := func(uri string) *hls.Source {
+		return resolveMap[uri]
+	}
+	_ = resolveFunc
+
+	winView := &mockWindowView{}
+	qc := newQueueController(eng, &testSettingsProvider{settings: defaultSettingsForTest(t)}, winView, inlineOps)
+
+	resp, err := qc.Enqueue(context.Background(), DownloadRequest{
+		URL:      "https://example.com/master.m3u8",
+		Filename: "video.m3u8",
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	// 1. Select 420p
+	eng.resolve = resolveMap["https://example.com/420.m3u8"]
+	if err := qc.SelectHLSVariant(context.Background(), resp.RequestID, "https://example.com/master.m3u8", "https://example.com/420.m3u8"); err != nil {
+		t.Fatalf("SelectHLSVariant 420p failed: %v", err)
+	}
+	item, err := qc.GetActive()
+	if err != nil {
+		t.Fatalf("GetActive failed: %v", err)
+	}
+	if item.Filename != "video_420p.mp4" {
+		t.Errorf("expected Filename = %q, got %q", "video_420p.mp4", item.Filename)
+	}
+
+	// 2. Switch to 1080p -> should swap 420p with 1080p
+	eng.resolve = resolveMap["https://example.com/1080.m3u8"]
+	if err := qc.SelectHLSVariant(context.Background(), resp.RequestID, "https://example.com/master.m3u8", "https://example.com/1080.m3u8"); err != nil {
+		t.Fatalf("SelectHLSVariant 1080p failed: %v", err)
+	}
+	item, err = qc.GetActive()
+	if err != nil {
+		t.Fatalf("GetActive failed: %v", err)
+	}
+	if item.Filename != "video_1080p.mp4" {
+		t.Errorf("expected Filename = %q, got %q", "video_1080p.mp4", item.Filename)
 	}
 }

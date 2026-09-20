@@ -187,7 +187,7 @@ export function FileInfoView() {
   };
 
   const initItem = useCallback(
-    async (item: windowModels.FileInfoItem) => {
+    (item: windowModels.FileInfoItem) => {
       invalidateInFlight();
       resetDuration();
       setActiveItem((prev) => ({
@@ -195,10 +195,11 @@ export function FileInfoView() {
         queueIndex: item.queueIndex || prev?.queueIndex || 1,
         queueTotal: item.queueTotal || prev?.queueTotal || 1,
       }));
-      await openDraft(item, useSettingsStore.getState().settings);
+      setProbing(Boolean(item.probing));
+      openDraft(item, useSettingsStore.getState().settings);
       void refreshDuration(item.url, item.filename, item.totalBytes);
     },
-    [openDraft, invalidateInFlight, resetDuration, refreshDuration],
+    [openDraft, invalidateInFlight, resetDuration, refreshDuration, setProbing],
   );
 
   useEffect(() => {
@@ -209,7 +210,7 @@ export function FileInfoView() {
       try {
         const item = await GetActiveFileInfo();
         if (item) {
-          await initItem(item);
+          initItem(item);
         }
       } catch (err) {
         console.error('Failed to get active file info:', err);
@@ -418,7 +419,7 @@ export function FileInfoView() {
 
   const currentSettings = useSettingsStore((s) => s.settings);
   const effectiveCategoryId = effectiveCategoryIdOf(draft);
-
+  const isProbing = probing || Boolean(activeItem?.probing);
   const overwriteOption = overwriteOptionOf(duplicateDecision);
   const isOverwriteSelected = overwriteOption !== undefined && selectedAction === overwriteOption;
   const destinationOccupied =
@@ -486,6 +487,7 @@ export function FileInfoView() {
   const handleConfirm = useCallback(
     async (actionOverride?: duplicateModels.Action, e?: SyntheticEvent) => {
       if (e) e.preventDefault();
+      if (isProbing || loading) return;
       // 提交以草稿的最新值为准，不依赖渲染时捕获的那一份。
       const current = useFileInfoDraftStore.getState().draft;
       const {
@@ -584,7 +586,7 @@ export function FileInfoView() {
         setLoading(false);
       }
     },
-    [activeItem, discardDraft, loadSettings, patch, setLoading, resetDuration],
+    [activeItem, discardDraft, loadSettings, patch, setLoading, resetDuration, isProbing, loading],
   );
   const handleCancel = useCallback(async () => {
     // 先记下这一项的 ID：取消成功后队列会推进到下一项，那时再读就取到别人了。
@@ -612,13 +614,14 @@ export function FileInfoView() {
         void handleCancel();
       } else if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
         if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+        if (isProbing || loading) return;
         e.preventDefault();
         void handleConfirm();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleConfirm, handleCancel]);
+  }, [handleConfirm, handleCancel, isProbing, loading]);
 
   // Resize window dynamically to wrap content perfectly
   useEffect(() => {
@@ -761,21 +764,33 @@ export function FileInfoView() {
             <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
               <span className="flex items-center gap-1.5">
                 {/* 已选清晰度：选定后固定显示，不随其他元信息变化。 */}
-                {activeItem?.qualityLabel && (
+                {activeItem?.qualityLabel ? (
                   <span>
                     清晰度:{' '}
                     <span className="font-medium text-[var(--text-secondary)]">
                       {activeItem.qualityLabel}
                     </span>
                   </span>
-                )}
+                ) : isProbing ? (
+                  <span className="inline-flex items-center gap-1">
+                    <span>清晰度:</span>
+                    <Loader2 className="h-3 w-3 animate-spin text-[var(--accent)]" />
+                  </span>
+                ) : null}
                 <span>
                   预估大小:{' '}
-                  <span className="font-medium text-[var(--text-secondary)]">
-                    {activeItem && activeItem.totalBytes > 0
-                      ? formatBytes(activeItem.totalBytes)
-                      : '未知大小'}
-                  </span>
+                  {isProbing ? (
+                    <span className="inline-flex items-center gap-1 font-medium text-[var(--text-secondary)]">
+                      <Loader2 className="h-3 w-3 animate-spin text-[var(--accent)]" />
+                      <span>正在获取大小...</span>
+                    </span>
+                  ) : (
+                    <span className="font-medium text-[var(--text-secondary)]">
+                      {activeItem && activeItem.totalBytes > 0
+                        ? formatBytes(activeItem.totalBytes)
+                        : '未知大小'}
+                    </span>
+                  )}
                 </span>
                 {/* HLS 清单声明的时长在下载前就已知，直接展示；否则走异步探测。 */}
                 {hlsDuration > 0 ? (
@@ -841,6 +856,7 @@ export function FileInfoView() {
                     <div className="grid grid-cols-3 gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/70 p-1 select-none">
                       <button
                         type="button"
+                        disabled={isProbing}
                         onClick={() => {
                           patch({ selectedAction: duplicateModels.Action.ActionShowCompleted });
                           if (activeItem.duplicateTask?.id) {
@@ -848,7 +864,7 @@ export function FileInfoView() {
                           }
                           // Keep window open as requested by user
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
+                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                           selectedAction === duplicateModels.Action.ActionShowCompleted
                             ? 'bg-[var(--bg-surface)] text-[var(--text-primary)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -860,6 +876,7 @@ export function FileInfoView() {
 
                       <button
                         type="button"
+                        disabled={isProbing}
                         onClick={() => {
                           patch({
                             selectedAction: overwriteOption,
@@ -868,7 +885,7 @@ export function FileInfoView() {
                             ...(originalFilename ? { filename: originalFilename } : {}),
                           });
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
+                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                           isOverwriteSelected
                             ? 'bg-[var(--bg-surface)] text-[var(--accent)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -880,6 +897,7 @@ export function FileInfoView() {
 
                       <button
                         type="button"
+                        disabled={isProbing}
                         onClick={() => {
                           patch({
                             selectedAction: duplicateModels.Action.ActionCopy,
@@ -903,7 +921,7 @@ export function FileInfoView() {
                             }
                           })();
                         }}
-                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all ${
+                        className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                           selectedAction === duplicateModels.Action.ActionCopy
                             ? 'bg-[var(--bg-surface)] text-[var(--accent)] shadow-xs ring-1 ring-black/5 dark:ring-white/10'
                             : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -952,8 +970,8 @@ export function FileInfoView() {
                             </p>
                             <div className="flex items-center gap-2 pt-1">
                               <Button
-                                size="sm"
                                 variant="primary"
+                                disabled={isProbing}
                                 className="h-6 gap-1 px-2 text-[11px]"
                                 onClick={() =>
                                   void handleConfirm(duplicateModels.Action.ActionReuse)
@@ -988,6 +1006,7 @@ export function FileInfoView() {
                   <Button
                     size="sm"
                     variant="secondary"
+                    disabled={isProbing}
                     onClick={() => patch({ overwriteConflict: true })}
                     className={`h-6 px-2 text-[10px] ${
                       overwriteConflict
@@ -1001,6 +1020,7 @@ export function FileInfoView() {
                     <Button
                       size="sm"
                       variant="secondary"
+                      disabled={isProbing}
                       onClick={() => {
                         patch({
                           filename: suggestedFilename,
@@ -1203,13 +1223,18 @@ export function FileInfoView() {
         <Button
           size="sm"
           variant="primary"
-          disabled={loading || probing}
+          disabled={loading || isProbing}
           onClick={() => void handleConfirm()}
         >
           {loading ? (
             <>
               <Loader2 className="h-3 w-3 animate-spin" />
               <span>提交中...</span>
+            </>
+          ) : isProbing ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>正在探测...</span>
             </>
           ) : (
             <span>开始下载 (Enter)</span>

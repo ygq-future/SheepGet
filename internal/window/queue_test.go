@@ -3,15 +3,17 @@ package window
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
-	"testing"
-
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
+	"sync"
+	"testing"
+	"time"
 )
 
 type mockWindowView struct {
@@ -1041,4 +1043,99 @@ func TestQueueController_SubmitRejectsSubmissionForAnotherItem(t *testing.T) {
 	if len(tasks) != 0 {
 		t.Errorf("tasks = %d, want 0：被拒绝的提交不得创建任务", len(tasks))
 	}
+}
+
+func TestQueueController_PageURL_PreservedOnSubmit(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	const targetURL = "https://example.com/asset.zip"
+	const sourcePageURL = "https://example.com/download-page.html"
+
+	resp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       targetURL,
+		PageURL:   sourcePageURL,
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	active, err := qc.GetActive()
+	if err != nil || active == nil {
+		t.Fatalf("failed to get active item: %v", err)
+	}
+	if active.PageURL != sourcePageURL {
+		t.Errorf("active.PageURL = %q, want %q", active.PageURL, sourcePageURL)
+	}
+
+	createdTask, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID: resp.RequestID,
+		URL:       targetURL,
+		Filename:  "asset.zip",
+		Directory: tmpDir,
+		MaxConn:   4,
+	})
+	if err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+	if createdTask == nil {
+		t.Fatal("expected non-nil created task")
+	}
+	if createdTask.PageURL != sourcePageURL {
+		t.Errorf("createdTask.PageURL = %q, want %q", createdTask.PageURL, sourcePageURL)
+	}
+
+	savedTask, err := store.Get(ctx, createdTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get task from store: %v", err)
+	}
+	if savedTask.PageURL != sourcePageURL {
+		t.Errorf("savedTask.PageURL = %q, want %q", savedTask.PageURL, sourcePageURL)
+	}
+
+}
+
+func TestQueueController_Probing_StateTransition(t *testing.T) {
+	ctx := context.Background()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	qc, _, _, _, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	resp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       ts.URL + "/file.zip",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	// 初始入队时探测在途，Probing 应当为 true
+	active, err := qc.GetActive()
+	if err != nil || active == nil {
+		t.Fatalf("failed to get active item: %v", err)
+	}
+	if !active.Probing {
+		t.Errorf("expected active.Probing to be true initially upon enqueue")
+	}
+
+	// 等待探测完成信号
+	deadline := time.After(2 * time.Second)
+	for {
+		item, err := qc.GetActive()
+		if err == nil && item != nil && !item.Probing {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for active.Probing to become false")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	_ = resp
 }

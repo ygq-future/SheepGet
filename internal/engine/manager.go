@@ -1063,6 +1063,9 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 	// 后缀都要落在成品上，不能留下一个名字与内容不符的文件。
 	if probe.HLS != nil {
 		filename = HLSOutputName(urlStr, filename)
+		if len(probe.HLS.Variants) > 1 && probe.HLS.Media != nil {
+			filename = HLSVariantFilename(filename, probe.HLS.Media.Variant)
+		}
 	}
 	if maxConn <= 0 {
 		maxConn = m.config.DefaultConnectionsPerTask
@@ -1496,4 +1499,14 @@ func (m *Manager) Close() {
 	m.activeTasks = make(map[string]context.CancelFunc)
 	m.mu.Unlock()
 	m.wg.Wait()
+}
+
+// SetTaskPageURL updates and persists the PageURL for the specified task.
+func (m *Manager) SetTaskPageURL(ctx context.Context, taskID, pageURL string) error {
+	t, err := m.store.Get(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	t.PageURL = pageURL
+	return m.store.Save(ctx, t)
 }

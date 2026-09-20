@@ -67,6 +67,7 @@ type DownloadEngine interface {
 	ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult) (*task.Task, error)
 	NumberedCopyName(ctx context.Context, dir, filename string) (string, error)
 	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
+	SetTaskPageURL(ctx context.Context, taskID, pageURL string) error
 }
 
 // SettingsProvider provides active application configuration.
@@ -85,6 +86,7 @@ type DownloadRequest struct {
 	// VariantURI 是浏览器扩展在悬浮条上已经选好的清晰度（清单里的一个 EXT-X-STREAM-INF 地址）。
 	// 有它时这一项不必再问一次清晰度：多清晰度的选择已经发生在进入本窗口之前。
 	VariantURI string `json:"variantUri,omitempty"`
+	PageURL    string `json:"pageUrl,omitempty"`
 }
 
 // DownloadResponse is the result of enqueuing or dispatching a download request.
@@ -117,8 +119,8 @@ type FileInfoItem struct {
 	QueueIndex        int                `json:"queueIndex"`
 	QueueTotal        int                `json:"queueTotal"`
 	Headers           map[string]string  `json:"headers,omitempty"`
-
-	// 下面三项描述这条链接的 HLS 事实，界面据此先选清晰度、再展示选定后的大小与时长。
+	PageURL           string             `json:"pageUrl,omitempty"`
+	Probing           bool               `json:"probing"`
 	// Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。
 	Variants []hls.VariantOption `json:"variants,omitempty"`
 	// QualityLabel 是已选清晰度的展示名，为空表示还没选定（或这条链接不是清单）。
@@ -389,6 +391,8 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		DuplicateTask:     dupTask,
 		DuplicateDecision: decision,
 		Headers:           req.Headers,
+		PageURL:           req.PageURL,
+		Probing:           req.URL != "",
 	}
 	// 有链接就一定会探测：探测的完成信号在这里就先挂上，提交才知道该等谁。
 	if req.URL != "" {
@@ -484,6 +488,9 @@ func (qc *QueueController) startPreDownload(start *preDownloadStart) {
 	preTask, preErr := qc.engine.StartPreDownloadWithHeaders(context.Background(), start.url, start.dir, start.filename, start.maxConn, start.headers)
 	if preErr != nil {
 		preTask = nil
+	} else if preTask != nil && start.item.PageURL != "" {
+		preTask.PageURL = start.item.PageURL
+		_ = qc.engine.SetTaskPageURL(context.Background(), preTask.ID, start.item.PageURL)
 	}
 	if qc.finishPreDownloadStart(start, preTask) && preTask != nil {
 		// 启动期间这一项被取消了：把刚启动的任务收掉，否则它会一直跑在后台，
@@ -522,6 +529,7 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	// 之类的原因都不该让提交一直等一个不会再有结果的信号。
 	targetItem.probe = probe
 	targetItem.probeErr = probeErr
+	targetItem.Probing = false
 	if ch := targetItem.probeDone; ch != nil {
 		close(ch)
 		targetItem.probeDone = nil
@@ -540,6 +548,15 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 			// 真名补齐后必须按它重算命中分类与保存目录：登记时只能拿 URL 猜名字，而真实后缀
 			// 常常只存在于响应头（例如 GitHub 资产链接的路径里只有一个 GUID，没有后缀）。
 			// 分类规则只在后端裁决一次，这里复用同一处实现；用户自己指定过目录时不改动它。
+			if dirFromCategory {
+				cat, resolvedDir := qc.settings.Get().Download.ResolveDestination(targetItem.Filename)
+				targetItem.CategoryID = cat.ID
+				targetItem.Directory = resolvedDir
+				dir = resolvedDir
+			}
+		}
+		if probe.HLS != nil && len(probe.HLS.Variants) > 1 && probe.HLS.Media != nil {
+			targetItem.Filename = engine.HLSVariantFilename(targetItem.Filename, probe.HLS.Media.Variant)
 			if dirFromCategory {
 				cat, resolvedDir := qc.settings.Get().Download.ResolveDestination(targetItem.Filename)
 				targetItem.CategoryID = cat.ID
@@ -678,8 +695,18 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 	}
 	item.probe = job.probe
 	item.probeErr = nil
+	item.Probing = false
 	applyHLSFacts(item, job.probe)
 
+	if job.probe != nil && job.probe.HLS != nil && len(job.probe.HLS.Variants) > 1 {
+		item.Filename = engine.HLSVariantFilename(item.Filename, src.Variant)
+		conflict, suggested := engine.CheckFileConflict(item.Directory, item.Filename)
+		if copyName, err := qc.engine.NumberedCopyName(context.Background(), item.Directory, item.Filename); err == nil && copyName != "" {
+			suggested = copyName
+		}
+		item.SuggestedFilename = suggested
+		item.FileConflict = conflict
+	}
 	var start *preDownloadStart
 	if item.PreDownload && !item.FileConflict && item.DuplicateTask == nil && item.PreDownloadTaskID == "" && !item.preDownloadStarting {
 		item.preDownloadStarting = true
@@ -800,7 +827,10 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 	if err != nil {
 		return nil, err
 	}
-
+	if resTask != nil && plan.item.PageURL != "" {
+		resTask.PageURL = plan.item.PageURL
+		_ = qc.engine.SetTaskPageURL(ctx, resTask.ID, plan.item.PageURL)
+	}
 	// 按 ID 摘除：提交期间用户可能已经切到别的项上，按位置删会删错人。
 	if idx := qc.indexOfLocked(plan.item.ID); idx >= 0 {
 		qc.items = append(qc.items[:idx], qc.items[idx+1:]...)

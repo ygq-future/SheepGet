@@ -243,19 +243,19 @@ describe('文件信息草稿 store', () => {
   const first = makeItem({ id: 'item-1', url: 'https://host/a.mp4', filename: 'a.mp4' });
   const second = makeItem({ id: 'item-2', url: 'https://host/b.mp4', filename: 'b.mp4' });
 
-  it('切换队列项时错误提示不串到别的项', async () => {
+  it('切换队列项时错误提示不串到别的项', () => {
     const store = useFileInfoDraftStore.getState();
-    await store.open(first, null);
+    store.open(first, null);
     useFileInfoDraftStore.getState().patch({ error: '资源探测失败: boom' });
 
-    await useFileInfoDraftStore.getState().open(second, null);
+    useFileInfoDraftStore.getState().open(second, null);
     expect(useFileInfoDraftStore.getState().draft.error).toBeNull();
     expect(useFileInfoDraftStore.getState().draft.filename).toBe('b.mp4');
   });
 
-  it('切回已经访问过的项会恢复那一项自己的提示与编辑', async () => {
+  it('切回已经访问过的项会恢复那一项自己的提示与编辑', () => {
     const store = useFileInfoDraftStore.getState();
-    await store.open(first, null);
+    store.open(first, null);
     useFileInfoDraftStore.getState().patch({
       url: 'https://host/typo.mp4',
       filename: 'typed.mp4',
@@ -264,8 +264,8 @@ describe('文件信息草稿 store', () => {
       rememberCategory: true,
     });
 
-    await useFileInfoDraftStore.getState().open(second, null);
-    await useFileInfoDraftStore.getState().open(first, null);
+    useFileInfoDraftStore.getState().open(second, null);
+    useFileInfoDraftStore.getState().open(first, null);
 
     const restored = useFileInfoDraftStore.getState().draft;
     expect(restored.url).toBe('https://host/typo.mp4');
@@ -274,50 +274,58 @@ describe('文件信息草稿 store', () => {
     expect(restored.originalFilename).toBe('a.mp4');
     expect(restored.rememberCategory).toBe(true);
   });
-
-  it('切换项时清零在途指示，不把上一项的探测或提交状态带过来', async () => {
+  it('切换项时清零在途指示，不把上一项的探测或提交状态带过来', () => {
     const store = useFileInfoDraftStore.getState();
-    await store.open(first, null);
+    store.open(first, null);
     useFileInfoDraftStore.getState().setProbing(true);
     useFileInfoDraftStore.getState().setLoading(true);
 
-    await useFileInfoDraftStore.getState().open(second, null);
+    useFileInfoDraftStore.getState().open(second, null);
     expect(useFileInfoDraftStore.getState().probing).toBe(false);
     expect(useFileInfoDraftStore.getState().loading).toBe(false);
   });
 
-  it('提交或取消后丢弃的草稿不会在再次打开时复活', async () => {
+  it('打开项时继承项上的 probing 状态', () => {
+    const probingItem = makeItem({ id: 'item-probing', probing: true });
+    useFileInfoDraftStore.getState().open(probingItem, null);
+    expect(useFileInfoDraftStore.getState().probing).toBe(true);
+
+    const doneItem = makeItem({ id: 'item-done', probing: false });
+    useFileInfoDraftStore.getState().open(doneItem, null);
+    expect(useFileInfoDraftStore.getState().probing).toBe(false);
+  });
+
+  it('提交或取消后丢弃的草稿不会在再次打开时复活', () => {
     const store = useFileInfoDraftStore.getState();
-    await store.open(first, null);
+    store.open(first, null);
     useFileInfoDraftStore.getState().patch({ filename: 'typed.mp4' });
 
     useFileInfoDraftStore.getState().discard(first.id);
     expect(useFileInfoDraftStore.getState().draft.filename).toBe('typed.mp4');
 
-    await useFileInfoDraftStore.getState().open(second, null);
-    await useFileInfoDraftStore.getState().open(first, null);
+    useFileInfoDraftStore.getState().open(second, null);
+    useFileInfoDraftStore.getState().open(first, null);
     expect(useFileInfoDraftStore.getState().draft.filename).toBe('a.mp4');
   });
 
-  it('异步回填仍停在发起项时照常写入', async () => {
+  it('异步回填仍停在发起项时照常写入', () => {
     const store = useFileInfoDraftStore.getState();
-    await store.open(first, null);
+    store.open(first, null);
     const owner = useFileInfoDraftStore.getState().activeItemId;
 
     useFileInfoDraftStore.getState().patch({ fileConflict: true }, owner);
     expect(useFileInfoDraftStore.getState().draft.fileConflict).toBe(true);
   });
 
-  it('异步回填在等待期间切走时丢弃，不写进新项', async () => {
+  it('异步回填在等待期间切走时丢弃，不写进新项', () => {
     const store = useFileInfoDraftStore.getState();
-    await store.open(first, null);
+    store.open(first, null);
     const owner = useFileInfoDraftStore.getState().activeItemId;
 
-    await useFileInfoDraftStore.getState().open(second, null);
+    useFileInfoDraftStore.getState().open(second, null);
     useFileInfoDraftStore.getState().patch({ fileConflict: true }, owner);
     expect(useFileInfoDraftStore.getState().draft.fileConflict).toBe(false);
   });
-
   it('没有活动项时改动只更新显示，不写进任何一项的快照', () => {
     useFileInfoDraftStore.getState().patch({ filename: 'typed.mp4' });
     expect(useFileInfoDraftStore.getState().draft.filename).toBe('typed.mp4');

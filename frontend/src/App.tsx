@@ -15,7 +15,6 @@ import { unwrapEventData } from './lib/utils';
 import { Event } from './lib/events';
 import { DownloadRequest } from '../bindings/sheep-get/internal/window/models';
 import { TaskItem } from './components/TaskItem';
-import { UpdateLinkModal } from './components/UpdateLinkModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import {
   Plus,
@@ -61,7 +60,6 @@ export function App() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [baseSelectedIds, setBaseSelectedIds] = useState<Set<string>>(new Set());
-  const [updatingLinkTask, setUpdatingLinkTask] = useState<task.Task | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('sheep_sidebar_collapsed') === 'true';
@@ -79,14 +77,6 @@ export function App() {
   }, [sidebarCollapsed]);
 
   const { loadSettings } = useSettingsStore();
-  const refreshTasks = async () => {
-    try {
-      const list = await ListTasks();
-      setTasks(sortTasks(nonNullTasks(list)));
-    } catch (err) {
-      console.error('Failed to load tasks:', err);
-    }
-  };
 
   useEffect(() => {
     void loadSettings();
@@ -632,18 +622,6 @@ export function App() {
           )}
         </main>
       </div>
-
-      <UpdateLinkModal
-        key={updatingLinkTask?.id ?? 'none'}
-        open={Boolean(updatingLinkTask)}
-        onOpenChange={(open) => {
-          if (!open) setUpdatingLinkTask(null);
-        }}
-        task={updatingLinkTask}
-        onUpdated={() => {
-          void refreshTasks();
-        }}
-      />
 
       {/* Single Delete Confirm */}
       <DeleteConfirmModal

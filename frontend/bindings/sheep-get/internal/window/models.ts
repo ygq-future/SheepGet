@@ -31,7 +31,7 @@ export class DownloadRequest {
      * 有它时这一项不必再问一次清晰度：多清晰度的选择已经发生在进入本窗口之前。
      */
     "variantUri"?: string;
-
+    "pageUrl"?: string;
     /** Creates a new DownloadRequest instance. */
     constructor($$source: Partial<DownloadRequest> = {}) {
         if (!("url" in $$source)) {
@@ -115,7 +115,8 @@ export class FileInfoItem {
     "queueIndex": number;
     "queueTotal": number;
     "headers"?: { [_ in string]?: string };
-
+    "pageUrl"?: string;
+    "probing"?: boolean;
     /**
      * 下面三项描述这条链接的 HLS 事实，界面据此先选清晰度、再展示选定后的大小与时长。
      * Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。

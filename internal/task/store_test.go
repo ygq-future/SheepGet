@@ -132,3 +132,43 @@ func TestFileTaskStore_RequestCredentialsPersistenceAndMasking(t *testing.T) {
 		t.Errorf("expected raw authorization %q, got %q", rawHeaders["Authorization"], reloadedRaw["Authorization"])
 	}
 }
+
+func TestFileTaskStore_PageURLPersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeFile := filepath.Join(tmpDir, "tasks.json")
+
+	store, err := task.NewFileTaskStore(storeFile)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	ctx := context.Background()
+	const testPageURL = "https://example.com/videos/detail?id=12345"
+	t1 := &task.Task{
+		ID:         "task-page-url",
+		URL:        "https://cdn.example.com/video.mp4",
+		PageURL:    testPageURL,
+		Filename:   "video.mp4",
+		Directory:  tmpDir,
+		TotalBytes: 2048,
+		Status:     task.StatusPaused,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+
+	if err := store.Save(ctx, t1); err != nil {
+		t.Fatalf("failed to save task: %v", err)
+	}
+
+	store2, err := task.NewFileTaskStore(storeFile)
+	if err != nil {
+		t.Fatalf("failed to reload store: %v", err)
+	}
+	reloaded, err := store2.Get(ctx, "task-page-url")
+	if err != nil {
+		t.Fatalf("failed to get reloaded task: %v", err)
+	}
+	if reloaded.PageURL != testPageURL {
+		t.Errorf("expected PageURL %q, got %q", testPageURL, reloaded.PageURL)
+	}
+}
