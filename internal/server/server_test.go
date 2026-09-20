@@ -13,7 +13,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"sheep-get/internal/config"
 )
 
 type mockDownloadHandler struct {
@@ -39,11 +38,11 @@ func (m *mockDownloadHandler) HandleMediaProbe(_ context.Context, _ *MediaProbeR
 }
 
 type mockConfigProvider struct {
-	cfg config.TakeoverConfig
+	syncData TakeoverConfigSync
 }
 
-func (m *mockConfigProvider) GetTakeoverConfig() config.TakeoverConfig {
-	return m.cfg
+func (m *mockConfigProvider) GetTakeoverSync() TakeoverConfigSync {
+	return m.syncData
 }
 
 func TestServer_LifecycleAndEndpoints(t *testing.T) {
@@ -57,7 +56,7 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 		},
 	}
 	cfgProvider := &mockConfigProvider{
-		cfg: config.TakeoverConfig{
+		syncData: TakeoverConfigSync{
 			Extensions:    []string{"zip", "rar"},
 			ExcludedSites: []string{"example.com"},
 			PauseShortcut: "Delete",
@@ -180,7 +179,7 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	// Trigger broadcast
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		srv.BroadcastTakeoverConfig(config.TakeoverConfig{
+		srv.BroadcastTakeoverConfig(TakeoverConfigSync{
 			Extensions:    []string{"7z"},
 			ExcludedSites: []string{"bad.com"},
 			PauseShortcut: "Alt",

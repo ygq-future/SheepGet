@@ -209,10 +209,10 @@ func (w *Watcher) CheckOnce() {
 	// Always update lastText so we do not repeatedly process the same clipboard text
 	w.lastText = text
 	triggerFn := w.trigger
-	takeoverExts := st.Takeover.Extensions
+	downloadExts := st.Download.AllExtensions()
 	w.mu.Unlock()
 
-	if matchedURL, matched := MatchDownloadURL(text, takeoverExts); matched {
+	if matchedURL, matched := MatchDownloadURL(text, downloadExts); matched {
 		triggerFn(matchedURL)
 	}
 }

@@ -69,12 +69,10 @@ describe('settings models and defaults', () => {
     expect(proxy.customAddr).toBe('http://127.0.0.1:7890');
 
     const takeover = new configModels.TakeoverConfig({
-      extensions: ['zip', 'rar', 'mp4'],
       excludedSites: ['github.com', 'example.org'],
       pauseShortcut: 'Alt',
       forceShortcut: 'Ctrl',
     });
-    expect(takeover.extensions).toEqual(['zip', 'rar', 'mp4']);
     expect(takeover.excludedSites).toEqual(['github.com', 'example.org']);
     expect(takeover.pauseShortcut).toBe('Alt');
     expect(takeover.forceShortcut).toBe('Ctrl');
@@ -92,7 +90,6 @@ describe('settings models and defaults', () => {
     });
     expect(root.general.launchAtStartup).toBe(true);
     expect(root.proxy.mode).toBe(configModels.ProxyMode.ProxyModeCustom);
-    expect(root.takeover.extensions).toContain('zip');
     expect(root.clipboard.enabled).toBe(true);
   });
 });

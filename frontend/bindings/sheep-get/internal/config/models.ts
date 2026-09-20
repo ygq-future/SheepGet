@@ -339,16 +339,12 @@ export class Settings {
  * TakeoverConfig specifies automatic browser takeover rules, independent of file categories.
  */
 export class TakeoverConfig {
-    "extensions": string[];
     "excludedSites": string[];
     "pauseShortcut": string;
     "forceShortcut": string;
 
     /** Creates a new TakeoverConfig instance. */
     constructor($$source: Partial<TakeoverConfig> = {}) {
-        if (!("extensions" in $$source)) {
-            this["extensions"] = [];
-        }
         if (!("excludedSites" in $$source)) {
             this["excludedSites"] = [];
         }
@@ -367,13 +363,9 @@ export class TakeoverConfig {
      */
     static createFrom($$source: any = {}): TakeoverConfig {
         const $$createField0_0 = $$createType0;
-        const $$createField1_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("extensions" in $$parsedSource) {
-            $$parsedSource["extensions"] = $$createField0_0($$parsedSource["extensions"]);
-        }
         if ("excludedSites" in $$parsedSource) {
-            $$parsedSource["excludedSites"] = $$createField1_0($$parsedSource["excludedSites"]);
+            $$parsedSource["excludedSites"] = $$createField0_0($$parsedSource["excludedSites"]);
         }
         return new TakeoverConfig($$parsedSource as Partial<TakeoverConfig>);
     }

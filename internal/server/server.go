@@ -20,7 +20,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"sheep-get/internal/atomicfile"
-	"sheep-get/internal/config"
 )
 
 // DownloadHandler is implemented by the desktop app to accept handover requests.
@@ -32,9 +31,9 @@ type DownloadHandler interface {
 	HandleMediaProbe(ctx context.Context, req *MediaProbeRequest) (*MediaProbeResponse, error)
 }
 
-// ConfigProvider is implemented by the settings service to provide current takeover config.
+// ConfigProvider is implemented by the settings service to provide current takeover config sync data.
 type ConfigProvider interface {
-	GetTakeoverConfig() config.TakeoverConfig
+	GetTakeoverSync() TakeoverConfigSync
 }
 
 // Server provides the local loopback HTTP and WebSocket interface for browser extensions.
@@ -162,17 +161,10 @@ func (s *Server) ConfigVersion() int64 {
 }
 
 // BroadcastTakeoverConfig increments the configuration version and broadcasts it to connected clients.
-func (s *Server) BroadcastTakeoverConfig(cfg config.TakeoverConfig) {
+func (s *Server) BroadcastTakeoverConfig(syncData TakeoverConfigSync) {
 	newVersion := time.Now().Unix()
 	s.configVersion.Store(newVersion)
-
-	syncData := TakeoverConfigSync{
-		Version:       newVersion,
-		Extensions:    cfg.Extensions,
-		ExcludedSites: cfg.ExcludedSites,
-		PauseShortcut: cfg.PauseShortcut,
-		ForceShortcut: cfg.ForceShortcut,
-	}
+	syncData.Version = newVersion
 
 	msg := EventMessage{
 		Event: "takeover_config_updated",
@@ -222,18 +214,11 @@ func (s *Server) handleTakeoverConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cfg config.TakeoverConfig
+	var syncData TakeoverConfigSync
 	if s.configProvider != nil {
-		cfg = s.configProvider.GetTakeoverConfig()
+		syncData = s.configProvider.GetTakeoverSync()
 	}
-
-	syncData := TakeoverConfigSync{
-		Version:       ver,
-		Extensions:    cfg.Extensions,
-		ExcludedSites: cfg.ExcludedSites,
-		PauseShortcut: cfg.PauseShortcut,
-		ForceShortcut: cfg.ForceShortcut,
-	}
+	syncData.Version = ver
 
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(syncData)

@@ -140,9 +140,8 @@ func isValidProxyAddr(addr string) bool {
 	return proxySchemes[strings.ToLower(parsed.Scheme)]
 }
 
-// TakeoverConfig specifies automatic browser takeover rules, independent of file categories.
+// TakeoverConfig specifies automatic browser takeover rules such as excluded sites and shortcuts.
 type TakeoverConfig struct {
-	Extensions    []string `json:"extensions"`
 	ExcludedSites []string `json:"excludedSites"`
 	PauseShortcut string   `json:"pauseShortcut"`
 	ForceShortcut string   `json:"forceShortcut"`
@@ -227,20 +226,6 @@ func NormalizeExtensions(exts []string) []string {
 		}
 	}
 	return result
-}
-
-// BuiltinCategoryExtensions returns the union of the extensions of the given categories,
-// normalized and de-duplicated in category order.
-//
-// 接管范围只有这一个来源：接管清单的默认值与每次加载时的并入都取自它。两份各自维护的列表
-// 必然漂移，而「内置分类里有、接管里没有」的类型在浏览器里既不会被接管、也没有任何地方
-// 解释为什么。内置分类以后新增类型会自动进入接管范围。
-func BuiltinCategoryExtensions(categories []CategoryConfig) []string {
-	var exts []string
-	for _, cat := range categories {
-		exts = append(exts, cat.Extensions...)
-	}
-	return NormalizeExtensions(exts)
 }
 
 // NormalizeSite cleans a domain/hostname pattern, stripping scheme, port, and trailing paths while preserving wildcards.
@@ -357,7 +342,6 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			CustomAddr: "",
 		},
 		Takeover: TakeoverConfig{
-			Extensions:    BuiltinCategoryExtensions(builtinCategories),
 			ExcludedSites: []string{},
 			PauseShortcut: "Delete",
 			ForceShortcut: "Insert",
@@ -504,11 +488,6 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 	}
 
 	// Validate Takeover
-	// 接管清单与内置分类是同一条规则的两面：内置分类里有的类型必须能接管。每次加载与更新都把
-	// 内置分类当前的扩展名并进来，于是「分类页新增了类型」会自动进入接管范围；用户自己加进
-	// 接管的后缀保留（只增不减）。代价是从接管里删掉某个内置类型会在保存时回来——要停用它，
-	// 应该从内置分类里移除（接管页的说明写明了这一点）。
-	s.Takeover.Extensions = NormalizeExtensions(append(BuiltinCategoryExtensions(s.Download.BuiltinCategories), s.Takeover.Extensions...))
 	if s.Takeover.ExcludedSites == nil {
 		s.Takeover.ExcludedSites = []string{}
 	} else {
@@ -527,6 +506,19 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 	// Boolean fields are retained as-is
 
 	return s
+}
+
+// AllExtensions returns the union of the extensions across all categories
+// (both builtin and custom), normalized and de-duplicated.
+func (d DownloadConfig) AllExtensions() []string {
+	var exts []string
+	for _, cat := range d.BuiltinCategories {
+		exts = append(exts, cat.Extensions...)
+	}
+	for _, cat := range d.CustomCategories {
+		exts = append(exts, cat.Extensions...)
+	}
+	return NormalizeExtensions(exts)
 }
 
 // ResolveCategory returns the matched CategoryConfig and whether a matching rule was found.

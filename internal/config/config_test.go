@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,8 +51,8 @@ func TestDefaultSettings(t *testing.T) {
 	if s.Proxy.CustomAddr != "" {
 		t.Errorf("expected empty CustomAddr, got %s", s.Proxy.CustomAddr)
 	}
-	if len(s.Takeover.Extensions) == 0 {
-		t.Errorf("expected non-empty default takeover extensions")
+	if len(s.Download.AllExtensions()) == 0 {
+		t.Errorf("expected non-empty default download extensions")
 	}
 	if s.Takeover.PauseShortcut != "Delete" {
 		t.Errorf("expected default pause shortcut Delete, got %s", s.Takeover.PauseShortcut)
@@ -136,8 +135,8 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	if validated.Proxy.Mode != ProxyModeSystem {
 		t.Errorf("expected fallback to ProxyModeSystem, got %s", validated.Proxy.Mode)
 	}
-	if len(validated.Takeover.Extensions) == 0 {
-		t.Errorf("expected fallback to default takeover extensions")
+	if len(validated.Download.AllExtensions()) == 0 {
+		t.Errorf("expected fallback to default download extensions")
 	}
 	if validated.Takeover.PauseShortcut != "Delete" {
 		t.Errorf("expected fallback to Delete, got %s", validated.Takeover.PauseShortcut)
@@ -734,44 +733,48 @@ func TestSettingsService_ReentrantDeadlock(t *testing.T) {
 	}
 }
 
-// 接管清单必须覆盖内置分类：内置分类里有的类型如果在接管清单里没有，这些类型在浏览器里
-// 既不会被接管，也没有任何地方解释为什么；用户看到的是一份「比内置类型少很多」的清单。
-func TestTakeoverExtensionsCoverBuiltinCategories(t *testing.T) {
+// 下载类型集合必须完整覆盖内置分类与自定义分类的所有扩展名，小写去重，无前导点号。
+func TestDownloadConfig_AllExtensions(t *testing.T) {
 	settings := DefaultSettings("/downloads", "/temp")
+	initialExts := settings.Download.AllExtensions()
+	if len(initialExts) == 0 {
+		t.Fatalf("expected non-empty initial extensions")
+	}
 
-	assertCovered := func(t *testing.T, s Settings) {
-		t.Helper()
-		have := make(map[string]bool, len(s.Takeover.Extensions))
-		for _, ext := range s.Takeover.Extensions {
-			have[ext] = true
-		}
-		for _, cat := range s.Download.BuiltinCategories {
-			for _, ext := range cat.Extensions {
-				if !have[strings.ToLower(ext)] {
-					t.Errorf("接管清单缺少内置分类 %q 的 .%s", cat.Name, ext)
-				}
+	// 必须包含内置分类所有的扩展名
+	have := make(map[string]bool, len(initialExts))
+	for _, ext := range initialExts {
+		have[ext] = true
+	}
+	for _, cat := range settings.Download.BuiltinCategories {
+		for _, ext := range cat.Extensions {
+			if !have[strings.ToLower(ext)] {
+				t.Errorf("AllExtensions缺少内置分类 %q 的 .%s", cat.Name, ext)
 			}
 		}
 	}
 
-	assertCovered(t, settings)
+	// 加入自定义分类后，自定义分类的类型自动包含在内
+	settings.Download.CustomCategories = append(settings.Download.CustomCategories, CategoryConfig{
+		ID:         "custom-ebooks",
+		Name:       "电子书",
+		Directory:  "/downloads/Books",
+		Extensions: []string{".MOBI", "epub", "pdf"}, // 包含大写、带点以及与已有类型重复的 pdf
+	})
 
-	// 老用户配置里存着上一版的接管清单：加载时必须把内置分类现有的类型并进来。
-	stored := settings
-	stored.Takeover.Extensions = []string{"torrent", "MSI"}
-	validated := stored.ValidateAndFallback("/downloads", "/temp")
-	assertCovered(t, validated)
-	for _, keep := range []string{"torrent", "msi"} {
-		if !slices.Contains(validated.Takeover.Extensions, keep) {
-			t.Errorf("并集把用户原有的 %s 弄丢了", keep)
-		}
+	updatedExts := settings.Download.AllExtensions()
+	updatedHave := make(map[string]bool, len(updatedExts))
+	for _, ext := range updatedExts {
+		updatedHave[ext] = true
 	}
 
-	// 「恢复默认」在界面上的动作是清空后保存：结果就是内置分类的并集。
-	stored.Takeover.Extensions = nil
-	reset := stored.ValidateAndFallback("/downloads", "/temp")
-	assertCovered(t, reset)
-	if want := BuiltinCategoryExtensions(reset.Download.BuiltinCategories); !slices.Equal(reset.Takeover.Extensions, want) {
-		t.Errorf("恢复默认 = %v, want 内置分类并集 %v", reset.Takeover.Extensions, want)
+	if !updatedHave["mobi"] {
+		t.Errorf("expected mobi to be included and lowercased")
+	}
+	if !updatedHave["epub"] {
+		t.Errorf("expected epub to be included")
+	}
+	if updatedHave[".mobi"] {
+		t.Errorf("expected leading dot to be stripped from .mobi")
 	}
 }

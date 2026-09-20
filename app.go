@@ -232,7 +232,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		}
 	}
 	if a.loopbackServer != nil && s != nil {
-		a.loopbackServer.BroadcastTakeoverConfig(s.Takeover)
+		a.loopbackServer.BroadcastTakeoverConfig(takeoverSyncFromSettings(s))
 	}
 	if a.clipboardWatcher != nil {
 		a.clipboardWatcher.OnSettingsUpdated(s)
@@ -750,15 +750,28 @@ func (a *loopbackServerAdapter) HandleMediaProbe(ctx context.Context, req *serve
 	return a.app.handleMediaProbe(ctx, req)
 }
 
-func (a *loopbackServerAdapter) GetTakeoverConfig() config.TakeoverConfig {
-	return a.app.getTakeoverConfig()
+func (a *loopbackServerAdapter) GetTakeoverSync() server.TakeoverConfigSync {
+	return a.app.getTakeoverSync()
 }
 
-func (a *App) getTakeoverConfig() config.TakeoverConfig {
-	if a.settings != nil {
-		return a.settings.Get().Takeover
+func takeoverSyncFromSettings(st *config.Settings) server.TakeoverConfigSync {
+	if st == nil {
+		return server.TakeoverConfigSync{}
 	}
-	return config.TakeoverConfig{}
+	return server.TakeoverConfigSync{
+		Extensions:    st.Download.AllExtensions(),
+		ExcludedSites: st.Takeover.ExcludedSites,
+		PauseShortcut: st.Takeover.PauseShortcut,
+		ForceShortcut: st.Takeover.ForceShortcut,
+	}
+}
+
+func (a *App) getTakeoverSync() server.TakeoverConfigSync {
+	if a.settings == nil {
+		return server.TakeoverConfigSync{}
+	}
+	st := a.settings.Get()
+	return takeoverSyncFromSettings(&st)
 }
 
 func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*server.HandoverResponse, error) {

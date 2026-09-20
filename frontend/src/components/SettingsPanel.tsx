@@ -25,9 +25,7 @@ import {
   GripVertical,
   X,
   Sliders,
-  Globe,
   Wifi,
-  RotateCcw,
   Info,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
@@ -43,6 +41,14 @@ const PRESET_ACCENTS = [
   { name: '烈焰红', hex: '#f43f5e' },
   { name: '活力橙', hex: '#f97316' },
   { name: '琥珀金', hex: '#f59e0b' },
+];
+
+const SHORTCUT_KEY_OPTIONS = [
+  { value: 'Delete', label: 'Delete 键' },
+  { value: 'Insert', label: 'Insert 键' },
+  { value: 'Alt', label: 'Alt 键' },
+  { value: 'Ctrl', label: 'Ctrl 键' },
+  { value: 'Shift', label: 'Shift 键' },
 ];
 
 interface CustomCategoryItemProps {
@@ -267,7 +273,7 @@ function CustomCategoryItem({
 export function SettingsPanel() {
   const { settings, storageInfo, updateSettings } = useSettingsStore();
   const [activeTab, setActiveTab] = useState<
-    'general' | 'appearance' | 'download' | 'categories' | 'takeover' | 'network'
+    'general' | 'appearance' | 'download' | 'categories' | 'network'
   >('general');
   const [customColor, setCustomColor] = useState('');
   const appearance = settings?.appearance || new configModels.AppearanceConfig();
@@ -277,8 +283,6 @@ export function SettingsPanel() {
   const takeover = settings?.takeover || new configModels.TakeoverConfig();
   const clipboardConfig = settings?.clipboard || new configModels.ClipboardConfig();
 
-  const [isAddingTakeoverExt, setIsAddingTakeoverExt] = useState(false);
-  const [newTakeoverExtVal, setNewTakeoverExtVal] = useState('');
   const [isAddingExcludedSite, setIsAddingExcludedSite] = useState(false);
   const [newExcludedSiteVal, setNewExcludedSiteVal] = useState('');
 
@@ -462,30 +466,6 @@ export function SettingsPanel() {
       showToast(`保存代理地址失败: ${String(err)}`, 'error');
     }
   };
-  const handleCommitNewTakeoverExt = async () => {
-    const clean = newTakeoverExtVal.replace(/^\./, '').trim().toLowerCase();
-    setIsAddingTakeoverExt(false);
-    setNewTakeoverExtVal('');
-    if (!clean) return;
-
-    const currentExts = takeover.extensions || [];
-    if (currentExts.includes(clean)) {
-      return;
-    }
-    const updated = [...currentExts, clean];
-    try {
-      await updateSettings({
-        takeover: new configModels.TakeoverConfig({
-          ...takeover,
-          extensions: updated,
-        }),
-      });
-      showToast(`已添加后缀 .${clean}`, 'success');
-    } catch (err) {
-      showToast(`添加后缀失败: ${String(err)}`, 'error');
-    }
-  };
-
   const handleCommitNewExcludedSite = async () => {
     let clean = newExcludedSiteVal.trim().toLowerCase();
     setIsAddingExcludedSite(false);
@@ -517,35 +497,6 @@ export function SettingsPanel() {
       showToast(`已添加排除站点 ${clean}`, 'success');
     } catch (err) {
       showToast(`添加排除站点失败: ${String(err)}`, 'error');
-    }
-  };
-
-  const handleRemoveTakeoverExt = async (ext: string) => {
-    const currentExts = takeover.extensions || [];
-    const updated = currentExts.filter((e) => e !== ext);
-    try {
-      await updateSettings({
-        takeover: new configModels.TakeoverConfig({
-          ...takeover,
-          extensions: updated,
-        }),
-      });
-    } catch (err) {
-      showToast(`移除后缀失败: ${String(err)}`, 'error');
-    }
-  };
-
-  const handleResetTakeoverExts = async () => {
-    try {
-      await updateSettings({
-        takeover: new configModels.TakeoverConfig({
-          ...takeover,
-          extensions: [],
-        }),
-      });
-      showToast('已重置为内置分类的文件类型', 'success');
-    } catch (err) {
-      showToast(`重置失败: ${String(err)}`, 'error');
     }
   };
 
@@ -1043,7 +994,6 @@ export function SettingsPanel() {
             { id: 'appearance', label: '外观', icon: Palette },
             { id: 'download', label: '下载', icon: Zap },
             { id: 'categories', label: '分类', icon: FolderTree },
-            { id: 'takeover', label: '接管', icon: Globe },
             { id: 'network', label: '代理', icon: Wifi },
           ].map(({ id, label, icon: Icon }) => (
             <button
@@ -1105,7 +1055,7 @@ export function SettingsPanel() {
                     监视剪贴板链接
                   </label>
                   <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    复制匹配接管后缀的文件下载链接时自动呼出下载确认窗口
+                    复制匹配下载分类后缀的文件下载链接时自动呼出下载确认窗口
                   </p>
                 </div>
                 <Switch
@@ -1114,6 +1064,119 @@ export function SettingsPanel() {
                     void handleClipboardChange(checked);
                   }}
                 />
+              </div>
+            </div>
+
+            {/* Excluded Sites */}
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">
+                排除页面站点
+              </label>
+              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                以下站点及其子域名中发起的下载保留在浏览器中进行，不触发自动接管
+              </p>
+
+              {/* Tag stream with inline Add button */}
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                {(takeover.excludedSites || []).map((site) => (
+                  <span
+                    key={site}
+                    className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                  >
+                    <span>{site}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleRemoveExcludedSite(site);
+                      }}
+                      className="opacity-50 hover:text-red-500 hover:opacity-100"
+                      title={`移除 ${site}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+
+                {isAddingExcludedSite ? (
+                  <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={newExcludedSiteVal}
+                      onChange={(e) => setNewExcludedSiteVal(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleCommitNewExcludedSite();
+                        } else if (e.key === 'Escape') {
+                          setIsAddingExcludedSite(false);
+                        }
+                      }}
+                      onBlur={() => void handleCommitNewExcludedSite()}
+                      placeholder="如 *.github.com"
+                      className="w-28 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                    />
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingExcludedSite(true);
+                      setNewExcludedSiteVal('');
+                    }}
+                    className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                  >
+                    <Plus className="h-3 w-3" />
+                    <span>添加</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Temporary Shortcuts */}
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
+              <label className="text-xs font-semibold text-[var(--text-primary)]">
+                接管临时控制快捷键
+              </label>
+              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                在浏览器点击链接时按住对应按键临时改变接管策略，松开立即恢复默认规则
+              </p>
+
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-[11px] font-medium text-[var(--text-secondary)]">
+                    临时暂停接管快捷键
+                  </label>
+                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+                    按住时本次下载交由浏览器处理
+                  </p>
+                  <div className="mt-1.5 max-w-[180px]">
+                    <Select
+                      value={takeover.pauseShortcut || 'Delete'}
+                      onChange={(val) => {
+                        void handlePauseShortcutChange(val);
+                      }}
+                      options={SHORTCUT_KEY_OPTIONS}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[11px] font-medium text-[var(--text-secondary)]">
+                    强制接管下载快捷键
+                  </label>
+                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+                    按住时忽略文件后缀与站点排除规则强制接管
+                  </p>
+                  <div className="mt-1.5 max-w-[180px]">
+                    <Select
+                      value={takeover.forceShortcut || 'Insert'}
+                      onChange={(val) => {
+                        void handleForceShortcutChange(val);
+                      }}
+                      options={SHORTCUT_KEY_OPTIONS}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1752,221 +1815,6 @@ export function SettingsPanel() {
                   </div>
                 );
               })}
-            </div>
-          </div>
-        )}
-
-        {/* Takeover Tab */}
-        {activeTab === 'takeover' && (
-          <div className="space-y-6">
-            {/* Automatic Takeover Extensions */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-center justify-between gap-4">
-                {/* 说明文字负责让位换行，按钮保持自身宽度不参与压缩。 */}
-                <div className="min-w-0 flex-1">
-                  <label className="text-xs font-semibold text-[var(--text-primary)]">
-                    自动接管文件类型
-                  </label>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    浏览器扩展与剪贴板监视遇到这些后缀时自动交给
-                    SheepGet；内置分类中的类型必定包含在内，
-                    保存时会自动并入（要停止接管某个类型，请从「分类」页的内置分类里移除它）
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    void handleResetTakeoverExts();
-                  }}
-                  className="h-7 shrink-0 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                >
-                  <RotateCcw className="mr-1 h-3 w-3" />
-                  恢复默认
-                </Button>
-              </div>
-
-              {/* Tag stream with inline Add button */}
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                {(takeover.extensions || []).map((ext) => (
-                  <span
-                    key={ext}
-                    className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
-                  >
-                    <span>.{ext}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleRemoveTakeoverExt(ext);
-                      }}
-                      className="opacity-50 hover:text-red-500 hover:opacity-100"
-                      title={`移除 .${ext}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-
-                {isAddingTakeoverExt ? (
-                  <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
-                    <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
-                    <input
-                      autoFocus
-                      type="text"
-                      value={newTakeoverExtVal}
-                      onChange={(e) => setNewTakeoverExtVal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          void handleCommitNewTakeoverExt();
-                        } else if (e.key === 'Escape') {
-                          setIsAddingTakeoverExt(false);
-                        }
-                      }}
-                      onBlur={() => void handleCommitNewTakeoverExt()}
-                      placeholder="后缀"
-                      className="w-16 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
-                    />
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAddingTakeoverExt(true);
-                      setNewTakeoverExtVal('');
-                    }}
-                    className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                  >
-                    <Plus className="h-3 w-3" />
-                    <span>添加</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Excluded Sites */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                排除页面站点
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                以下站点及其子域名中发起的下载保留在浏览器中进行
-              </p>
-
-              {/* Tag stream with inline Add button */}
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                {(takeover.excludedSites || []).map((site) => (
-                  <span
-                    key={site}
-                    className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
-                  >
-                    <span>{site}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleRemoveExcludedSite(site);
-                      }}
-                      className="opacity-50 hover:text-red-500 hover:opacity-100"
-                      title={`移除 ${site}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-
-                {isAddingExcludedSite ? (
-                  <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
-                    <input
-                      autoFocus
-                      type="text"
-                      value={newExcludedSiteVal}
-                      onChange={(e) => setNewExcludedSiteVal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          void handleCommitNewExcludedSite();
-                        } else if (e.key === 'Escape') {
-                          setIsAddingExcludedSite(false);
-                        }
-                      }}
-                      onBlur={() => void handleCommitNewExcludedSite()}
-                      placeholder="如 *.github.com"
-                      className="w-28 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
-                    />
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAddingExcludedSite(true);
-                      setNewExcludedSiteVal('');
-                    }}
-                    className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                  >
-                    <Plus className="h-3 w-3" />
-                    <span>添加</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Temporary Shortcuts */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                临时控制快捷键
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                在浏览器点击链接时按住对应按键临时改变接管策略，松开立即恢复默认规则
-              </p>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                    临时暂停接管快捷键
-                  </label>
-                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                    按住时本次下载交由浏览器处理
-                  </p>
-                  <div className="mt-1.5 max-w-[180px]">
-                    <Select
-                      value={takeover.pauseShortcut || 'Delete'}
-                      onChange={(val) => {
-                        void handlePauseShortcutChange(val);
-                      }}
-                      options={[
-                        { value: 'Delete', label: 'Delete 键' },
-                        { value: 'Insert', label: 'Insert 键' },
-                        { value: 'Alt', label: 'Alt 键' },
-                        { value: 'Ctrl', label: 'Ctrl 键' },
-                        { value: 'Shift', label: 'Shift 键' },
-                      ]}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                    强制接管下载快捷键
-                  </label>
-                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                    按住时忽略文件后缀与站点排除规则强制接管
-                  </p>
-                  <div className="mt-1.5 max-w-[180px]">
-                    <Select
-                      value={takeover.forceShortcut || 'Insert'}
-                      onChange={(val) => {
-                        void handleForceShortcutChange(val);
-                      }}
-                      options={[
-                        { value: 'Insert', label: 'Insert 键' },
-                        { value: 'Delete', label: 'Delete 键' },
-                        { value: 'Ctrl', label: 'Ctrl 键' },
-                        { value: 'Alt', label: 'Alt 键' },
-                        { value: 'Shift', label: 'Shift 键' },
-                      ]}
-                    />
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         )}
