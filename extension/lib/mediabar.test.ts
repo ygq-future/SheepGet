@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeBarPosition, MEDIA_BAR_MARGIN, MEDIA_BAR_VIEWPORT_PADDING } from './mediabar';
+import {
+  computeBarPosition,
+  MEDIA_BAR_MARGIN,
+  MEDIA_BAR_VIEWPORT_PADDING,
+  shouldShowDismissAll,
+  MediaBarManager,
+} from './mediabar';
 
 interface Box {
   top: number;
@@ -96,5 +102,54 @@ describe('mediabar positioning logic', () => {
 
     assert.equal(pos.visible, true);
     assert.equal(pos.left, MEDIA_BAR_VIEWPORT_PADDING);
+  });
+});
+
+describe('mediabar dismiss-all logic', () => {
+  it('only offers dismiss-all when multiple targets are active', () => {
+    assert.equal(shouldShowDismissAll(0), false);
+    assert.equal(shouldShowDismissAll(1), false);
+    assert.equal(shouldShowDismissAll(2), true);
+    assert.equal(shouldShowDismissAll(5), true);
+  });
+
+  it('tracks active player counts and clears all players on dismissAll', () => {
+    const manager = new MediaBarManager();
+    assert.equal(manager.isAllDismissed(), false);
+    assert.equal(manager.getActivePlayerCount(), 0);
+
+    // 模拟 3 个播放器对象
+    const v1 = { isConnected: true } as HTMLVideoElement;
+    const v2 = { isConnected: true } as HTMLVideoElement;
+    const v3 = { isConnected: true } as HTMLVideoElement;
+
+    // 手动注册到 manager 进行状态测试
+    manager.registerTestPlayer(v1);
+    assert.equal(manager.getActivePlayerCount(), 1);
+    assert.equal(manager.shouldShowDismissAllOption(), false);
+
+    manager.registerTestPlayer(v2);
+    assert.equal(manager.getActivePlayerCount(), 2);
+    assert.equal(manager.shouldShowDismissAllOption(), true);
+
+    manager.registerTestPlayer(v3);
+    assert.equal(manager.getActivePlayerCount(), 3);
+    assert.equal(manager.shouldShowDismissAllOption(), true);
+
+    // 单个关闭其中一个
+    manager.dismissSinglePlayer(v1);
+    assert.equal(manager.getActivePlayerCount(), 2);
+    assert.equal(manager.shouldShowDismissAllOption(), true);
+
+    // 单个再关闭一个，只剩 1 个
+    manager.dismissSinglePlayer(v2);
+    assert.equal(manager.getActivePlayerCount(), 1);
+    assert.equal(manager.shouldShowDismissAllOption(), false);
+
+    // 执行全部关闭
+    manager.dismissAll();
+    assert.equal(manager.isAllDismissed(), true);
+    assert.equal(manager.getActivePlayerCount(), 0);
+    assert.equal(manager.shouldShowDismissAllOption(), false);
   });
 });

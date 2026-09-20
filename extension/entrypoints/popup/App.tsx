@@ -185,8 +185,8 @@ export default function App() {
         width: '100%',
         minHeight: '160px',
         maxHeight: '520px',
-        backgroundColor: '#090d16',
-        color: '#e2e8f0',
+        backgroundColor: '#11141b',
+        color: '#f1f5f9',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         fontSize: '13px',
       }}
@@ -197,9 +197,9 @@ export default function App() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '12px 16px',
-          borderBottom: '1px solid #1e293b',
-          backgroundColor: '#0f172a',
+          padding: '11px 16px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+          backgroundColor: 'rgba(255, 255, 255, 0.02)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -207,8 +207,8 @@ export default function App() {
             style={{
               fontWeight: 600,
               fontSize: '14px',
-              letterSpacing: '-0.01em',
-              color: '#f8fafc',
+              letterSpacing: '-0.02em',
+              color: '#ffffff',
             }}
           >
             SheepGet
@@ -217,11 +217,12 @@ export default function App() {
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '4px',
+              gap: '5px',
               fontSize: '11px',
-              color: online ? '#10b981' : '#f59e0b',
-              backgroundColor: online ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
-              padding: '2px 6px',
+              fontWeight: 500,
+              color: online ? '#34d399' : '#fbbf24',
+              backgroundColor: online ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
+              padding: '2px 8px',
               borderRadius: '9999px',
             }}
           >
@@ -230,7 +231,8 @@ export default function App() {
                 width: '6px',
                 height: '6px',
                 borderRadius: '50%',
-                backgroundColor: online ? '#10b981' : '#f59e0b',
+                backgroundColor: online ? '#34d399' : '#fbbf24',
+                boxShadow: online ? '0 0 6px rgba(52, 211, 153, 0.6)' : 'none',
               }}
             />
             {checking ? '检查中…' : online ? '已连接' : '未连接'}
@@ -247,12 +249,14 @@ export default function App() {
               alignItems: 'center',
               gap: '4px',
               fontSize: '11px',
-              padding: '2px 8px',
-              backgroundColor: '#1e293b',
+              fontWeight: 500,
+              padding: '3px 8px',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
               color: checking ? '#64748b' : '#38bdf8',
-              border: '1px solid #334155',
-              borderRadius: '4px',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              borderRadius: '5px',
               cursor: checking ? 'default' : 'pointer',
+              transition: 'all 0.15s ease',
             }}
           >
             <svg
@@ -274,10 +278,11 @@ export default function App() {
           <span
             style={{
               fontSize: '11px',
-              color: '#64748b',
-              backgroundColor: '#1e293b',
-              padding: '2px 8px',
-              borderRadius: '4px',
+              color: '#94a3b8',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              padding: '2px 7px',
+              borderRadius: '5px',
             }}
           >
             {resources.length} 个资源
@@ -379,11 +384,12 @@ export default function App() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  padding: '10px 12px',
-                  backgroundColor: '#0f172a',
-                  borderRadius: '6px',
-                  border: '1px solid #1e293b',
+                  padding: '9px 12px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
                   gap: '12px',
+                  transition: 'background-color 0.12s, border-color 0.12s',
                 }}
               >
                 {/* Media icon & info */}
@@ -410,10 +416,11 @@ export default function App() {
                         padding: '1px 5px',
                         borderRadius: '3px',
                         backgroundColor: item.isHls
-                          ? 'rgba(168, 85, 247, 0.2)'
-                          : 'rgba(16, 185, 129, 0.2)',
+                          ? 'rgba(168, 85, 247, 0.12)'
+                          : 'rgba(16, 185, 129, 0.12)',
                         color: item.isHls ? '#c084fc' : '#34d399',
                         textTransform: 'uppercase',
+                        letterSpacing: '0.02em',
                       }}
                     >
                       {item.isHls ? 'HLS' : '直链'}
@@ -437,7 +444,7 @@ export default function App() {
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '8px',
+                      gap: '6px',
                       fontSize: '11px',
                       color: '#64748b',
                       whiteSpace: 'nowrap',
@@ -451,11 +458,11 @@ export default function App() {
                         {durationText && (
                           <span style={{ color: '#94a3b8', flexShrink: 0 }}>{durationText}</span>
                         )}
-                        {durationText && <span style={{ flexShrink: 0 }}>•</span>}
+                        {durationText && <span style={{ color: '#475569', flexShrink: 0 }}>·</span>}
                         <span style={{ flexShrink: 0 }}>{sizeText}</span>
                       </>
                     )}
-                    <span style={{ flexShrink: 0 }}>•</span>
+                    <span style={{ color: '#475569', flexShrink: 0 }}>·</span>
                     <span
                       title={item.mimeType}
                       style={{
@@ -480,15 +487,15 @@ export default function App() {
                         setSelectedVariants((prev) => ({ ...prev, [item.id]: e.target.value }));
                       }}
                       style={{
-                        padding: '5px 6px',
+                        padding: '4px 6px',
                         fontSize: '11px',
-                        borderRadius: '4px',
-                        border: '1px solid #334155',
-                        backgroundColor: '#1e293b',
+                        borderRadius: '5px',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: 'rgba(255, 255, 255, 0.05)',
                         color: '#f8fafc',
                         outline: 'none',
                         cursor: 'pointer',
-                        maxWidth: '140px',
+                        maxWidth: '130px',
                       }}
                     >
                       {hlsVariants[item.id]?.map((v) => {
@@ -500,7 +507,11 @@ export default function App() {
                               ? ` (${(v.bandwidth / 1e6).toFixed(1)} Mbps)`
                               : '';
                         return (
-                          <option key={v.uri} value={v.uri}>
+                          <option
+                            key={v.uri}
+                            value={v.uri}
+                            style={{ background: '#181b22', color: '#f8fafc' }}
+                          >
                             {(v.label || '清晰度') + sizeSuffix}
                           </option>
                         );
@@ -512,27 +523,54 @@ export default function App() {
                     onClick={() => handleDownload(item)}
                     disabled={state === 'sending' || state === 'success'}
                     style={{
-                      padding: '6px 12px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '5px 10px',
                       fontSize: '11px',
                       fontWeight: 500,
-                      borderRadius: '4px',
+                      borderRadius: '5px',
                       cursor: state === 'sending' || state === 'success' ? 'default' : 'pointer',
-                      border: 'none',
+                      border:
+                        state === 'success'
+                          ? '1px solid rgba(16, 185, 129, 0.3)'
+                          : state === 'failed'
+                            ? '1px solid rgba(239, 68, 68, 0.3)'
+                            : '1px solid rgba(16, 185, 129, 0.28)',
                       backgroundColor:
                         state === 'success'
-                          ? '#059669'
+                          ? 'rgba(16, 185, 129, 0.22)'
                           : state === 'failed'
-                            ? '#dc2626'
-                            : '#10b981',
-                      color: '#ffffff',
-                      transition: 'background-color 0.15s ease',
+                            ? 'rgba(239, 68, 68, 0.18)'
+                            : 'rgba(16, 185, 129, 0.14)',
+                      color:
+                        state === 'success'
+                          ? '#34d399'
+                          : state === 'failed'
+                            ? '#fca5a5'
+                            : '#34d399',
+                      transition: 'all 0.15s ease',
                       flexShrink: 0,
                     }}
                   >
+                    {state === 'idle' && (
+                      <svg
+                        width="11"
+                        height="11"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M12 15V3m0 12l-4-4m4 4l4-4M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17" />
+                      </svg>
+                    )}
                     {state === 'sending'
                       ? '移交中...'
                       : state === 'success'
-                        ? '已移交'
+                        ? '✓ 已移交'
                         : state === 'failed'
                           ? '重试'
                           : '下载'}
@@ -548,10 +586,10 @@ export default function App() {
       <div
         style={{
           padding: '8px 16px',
-          borderTop: '1px solid #1e293b',
-          backgroundColor: '#0b1120',
+          borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+          backgroundColor: 'rgba(0, 0, 0, 0.12)',
           fontSize: '11px',
-          color: '#475569',
+          color: '#64748b',
           display: 'flex',
           justifyContent: 'space-between',
         }}
@@ -561,7 +599,7 @@ export default function App() {
             ? `本地端口 ${status?.port} · 上次校验 ${formatClock(status?.lastVerifiedAt ?? null)}`
             : '桌面端离线 (未启动或已退出)'}
         </span>
-        <span style={{ color: '#64748b' }}>v1.0.0</span>
+        <span style={{ color: '#475569' }}>v1.0.0</span>
       </div>
     </div>
   );

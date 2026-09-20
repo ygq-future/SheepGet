@@ -66,6 +66,10 @@ export function computeBarPosition(
   return { visible: true, left, top };
 }
 
+export function shouldShowDismissAll(activeCount: number): boolean {
+  return activeCount > 1;
+}
+
 interface TrackedPlayer {
   video: HTMLVideoElement;
   container: HTMLDivElement;
@@ -79,30 +83,36 @@ interface TrackedPlayer {
   variantUri?: string;
   statusTimer?: ReturnType<typeof setTimeout>;
   menuCloseTimer?: ReturnType<typeof setTimeout>;
+  closeAllMenuTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class MediaBarManager {
   private players = new Map<HTMLVideoElement, TrackedPlayer>();
-  private intersectionObserver: IntersectionObserver;
-  private resizeObserver: ResizeObserver;
+  private intersectionObserver?: IntersectionObserver;
+  private resizeObserver?: ResizeObserver;
   private mutationObserver: MutationObserver | null = null;
   private availableResources: MediaResource[] = [];
   private frame = 0;
+  private allDismissed = false;
 
   constructor() {
     // 播放器进出视口、被显示/隐藏都会由交叉观察器抛出，作为重算位置的触发点。
-    this.intersectionObserver = new IntersectionObserver(
-      () => {
-        this.scheduleUpdate();
-      },
-      { threshold: [0, 0.1, 0.5, 1.0] },
-    );
+    if (typeof IntersectionObserver !== 'undefined') {
+      this.intersectionObserver = new IntersectionObserver(
+        () => {
+          this.scheduleUpdate();
+        },
+        { threshold: [0, 0.1, 0.5, 1.0] },
+      );
+    }
 
     // 播放器自身的尺寸会随站点布局变化（懒布局、剧场模式、响应式），
     // 不跟随重算就会停在首次测量到的位置上。
-    this.resizeObserver = new ResizeObserver(() => {
-      this.scheduleUpdate();
-    });
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => {
+        this.scheduleUpdate();
+      });
+    }
   }
 
   start() {
@@ -127,8 +137,8 @@ export class MediaBarManager {
   }
 
   stop() {
-    this.intersectionObserver.disconnect();
-    this.resizeObserver.disconnect();
+    this.intersectionObserver?.disconnect();
+    this.resizeObserver?.disconnect();
     this.mutationObserver?.disconnect();
     document.removeEventListener('scroll', this.handleViewportChange, { capture: true });
     window.removeEventListener('resize', this.handleViewportChange);
@@ -139,8 +149,7 @@ export class MediaBarManager {
     }
 
     for (const tracked of this.players.values()) {
-      if (tracked.statusTimer) clearTimeout(tracked.statusTimer);
-      if (tracked.menuCloseTimer) clearTimeout(tracked.menuCloseTimer);
+      this.cleanupTrackedMenus(tracked);
       tracked.container.remove();
     }
     this.players.clear();
@@ -162,6 +171,82 @@ export class MediaBarManager {
     }
   }
 
+  isAllDismissed(): boolean {
+    return this.allDismissed;
+  }
+
+  getActivePlayerCount(): number {
+    if (this.allDismissed) return 0;
+    let count = 0;
+    for (const [video, tracked] of this.players.entries()) {
+      if (!tracked.dismissed && (video.isConnected ?? true)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  shouldShowDismissAllOption(): boolean {
+    return !this.allDismissed && shouldShowDismissAll(this.getActivePlayerCount());
+  }
+
+  dismissSinglePlayer(video: HTMLVideoElement) {
+    const tracked = this.players.get(video);
+    if (tracked) {
+      tracked.dismissed = true;
+      if (tracked.container?.style) {
+        tracked.container.style.display = 'none';
+      }
+      this.cleanupTrackedMenus(tracked);
+    }
+  }
+
+  dismissAll() {
+    this.allDismissed = true;
+    for (const tracked of this.players.values()) {
+      tracked.dismissed = true;
+      if (tracked.container?.style) {
+        tracked.container.style.display = 'none';
+      }
+      this.cleanupTrackedMenus(tracked);
+    }
+  }
+
+  private cleanupTrackedMenus(tracked: TrackedPlayer) {
+    if (tracked.statusTimer) {
+      clearTimeout(tracked.statusTimer);
+      tracked.statusTimer = undefined;
+    }
+    if (tracked.menuCloseTimer) {
+      clearTimeout(tracked.menuCloseTimer);
+      tracked.menuCloseTimer = undefined;
+    }
+    if (tracked.closeAllMenuTimer) {
+      clearTimeout(tracked.closeAllMenuTimer);
+      tracked.closeAllMenuTimer = undefined;
+    }
+    tracked.shadowRoot?.querySelector?.('.variant-menu')?.remove();
+    const closeAllMenu = tracked.shadowRoot?.querySelector?.('.close-all-menu');
+    if (closeAllMenu) {
+      closeAllMenu.remove();
+      const bar = tracked.shadowRoot?.getElementById?.('bar');
+      if (bar) {
+        bar.style.borderBottomLeftRadius = '14px';
+        bar.style.borderBottomRightRadius = '14px';
+      }
+    }
+  }
+
+  registerTestPlayer(video: HTMLVideoElement, tracked?: Partial<TrackedPlayer>) {
+    this.players.set(video, {
+      video,
+      container: tracked?.container ?? ({} as HTMLDivElement),
+      shadowRoot: tracked?.shadowRoot ?? ({} as ShadowRoot),
+      dismissed: tracked?.dismissed ?? false,
+      ...tracked,
+    });
+  }
+
   private handleViewportChange = () => {
     this.scheduleUpdate();
   };
@@ -177,6 +262,7 @@ export class MediaBarManager {
   }
 
   private scanVideos() {
+    if (this.allDismissed) return;
     const videos = document.querySelectorAll('video');
     for (const video of Array.from(videos)) {
       if (!this.players.has(video)) {
@@ -187,10 +273,9 @@ export class MediaBarManager {
     // Clean up removed videos
     for (const [video, tracked] of this.players.entries()) {
       if (!video.isConnected) {
-        this.intersectionObserver.unobserve(video);
-        this.resizeObserver.unobserve(video);
-        if (tracked.statusTimer) clearTimeout(tracked.statusTimer);
-        if (tracked.menuCloseTimer) clearTimeout(tracked.menuCloseTimer);
+        this.intersectionObserver?.unobserve(video);
+        this.resizeObserver?.unobserve(video);
+        this.cleanupTrackedMenus(tracked);
         tracked.container.remove();
         this.players.delete(video);
       }
@@ -198,7 +283,7 @@ export class MediaBarManager {
   }
 
   private attachPlayer(video: HTMLVideoElement) {
-    // Create host container in page DOM
+    if (this.allDismissed) return;
     const container = document.createElement('div');
     container.className = 'sheepget-mediabar-host';
     container.style.position = 'fixed';
@@ -222,8 +307,8 @@ export class MediaBarManager {
     this.associateResource(tracked);
     this.renderBar(tracked);
 
-    this.intersectionObserver.observe(video);
-    this.resizeObserver.observe(video);
+    this.intersectionObserver?.observe(video);
+    this.resizeObserver?.observe(video);
   }
 
   private associateResource(tracked: TrackedPlayer) {
@@ -279,7 +364,7 @@ export class MediaBarManager {
   }
 
   private update(tracked: TrackedPlayer) {
-    if (tracked.dismissed) {
+    if (this.allDismissed || tracked.dismissed) {
       if (tracked.container.style.display !== 'none') {
         tracked.container.style.display = 'none';
       }
@@ -348,17 +433,15 @@ export class MediaBarManager {
         .bar {
           position: relative;
           display: inline-flex;
-          /* 宿主贴近视口右缘时 shrink-to-fit 的可用宽度可能装不下状态文案，
-             按内容宽度铺开：宁可横向溢出视口也不把提示折成两行。 */
           width: max-content;
           align-items: center;
-          background: rgba(15, 23, 42, 0.92);
-          backdrop-filter: blur(8px);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 6px;
-          padding: 2px 4px 2px 8px;
-          gap: 6px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+          background: rgba(17, 20, 27, 0.94);
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 14px;
+          padding: 3px 4px 3px 5px;
+          gap: 3px;
+          box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.14), 0 8px 24px -4px rgba(0, 0, 0, 0.55);
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           user-select: none;
           animation: sheepget-fade-in 0.15s ease-out;
@@ -373,32 +456,48 @@ export class MediaBarManager {
           gap: 5px;
           background: transparent;
           border: none;
-          color: #f8fafc;
-          font-size: 12px;
+          color: #f1f5f9;
+          font-size: 11px;
           font-weight: 500;
           cursor: pointer;
-          padding: 3px 6px;
-          border-radius: 4px;
-          transition: background 0.12s ease;
+          padding: 2px 5px;
+          border-radius: 10px;
+          transition: background 0.15s ease, color 0.15s ease;
         }
         .btn-download:hover {
-          background: rgba(255, 255, 255, 0.1);
+          background: rgba(255, 255, 255, 0.08);
+          color: #ffffff;
+        }
+        .dl-icon {
+          color: #94a3b8;
+          transition: color 0.15s ease, transform 0.15s ease;
+        }
+        .btn-download:hover .dl-icon {
+          color: #38bdf8;
+          transform: translateY(1px);
         }
         .badge {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          height: 16px;
+          height: 17px;
           box-sizing: border-box;
-          background: ${resource?.isHls ? '#a855f7' : '#10b981'};
-          color: #ffffff;
-          font-size: 10px;
+          background: ${resource?.isHls ? 'rgba(168, 85, 247, 0.14)' : 'rgba(16, 185, 129, 0.14)'};
+          color: ${resource?.isHls ? '#c084fc' : '#34d399'};
+          border: 1px solid ${resource?.isHls ? 'rgba(168, 85, 247, 0.28)' : 'rgba(16, 185, 129, 0.28)'};
+          font-size: 9.5px;
           font-weight: 700;
           line-height: 1;
-          padding: 0 4px;
-          border-radius: 3px;
-          letter-spacing: 0.02em;
+          padding: 0 5px;
+          border-radius: 5px;
+          letter-spacing: 0.03em;
           text-transform: uppercase;
+        }
+        .divider {
+          width: 1px;
+          height: 12px;
+          background: rgba(255, 255, 255, 0.12);
+          margin: 0 1px;
         }
         .btn-close {
           display: inline-flex;
@@ -409,14 +508,13 @@ export class MediaBarManager {
           background: transparent;
           border: none;
           color: #94a3b8;
-          font-size: 14px;
           cursor: pointer;
-          border-radius: 3px;
+          border-radius: 50%;
           transition: color 0.12s, background 0.12s;
         }
         .btn-close:hover {
           color: #ffffff;
-          background: rgba(255, 255, 255, 0.15);
+          background: rgba(255, 255, 255, 0.14);
         }
         .status-msg {
           font-size: 11px;
@@ -427,11 +525,18 @@ export class MediaBarManager {
         }
       </style>
       <div class="bar" id="bar">
-        <button class="btn-download" id="dl-btn">
+        <button class="btn-download" id="dl-btn" title="下载视频 (${badgeText})">
           <span class="badge">${badgeText}</span>
-          <span>下载视频</span>
+          <svg class="dl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 15V3m0 12l-4-4m4 4l4-4M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17" />
+          </svg>
         </button>
-        <button class="btn-close" id="close-btn" title="关闭当前悬浮条 (刷新后恢复)">×</button>
+        <div class="divider"></div>
+        <button class="btn-close" id="close-btn" title="关闭当前悬浮条 (刷新后恢复)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
       </div>
     `;
 
@@ -441,8 +546,21 @@ export class MediaBarManager {
 
     closeBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
-      tracked.dismissed = true;
-      tracked.container.style.display = 'none';
+      this.dismissSinglePlayer(tracked.video);
+    });
+
+    closeBtn?.addEventListener('mouseenter', () => {
+      if (tracked.closeAllMenuTimer) {
+        clearTimeout(tracked.closeAllMenuTimer);
+        tracked.closeAllMenuTimer = undefined;
+      }
+      if (this.shouldShowDismissAllOption()) {
+        this.showCloseAllMenu(tracked);
+      }
+    });
+
+    closeBtn?.addEventListener('mouseleave', () => {
+      this.scheduleHideCloseAllMenu(tracked);
     });
 
     const handleMouseEnter = () => {
@@ -559,15 +677,14 @@ export class MediaBarManager {
   private showLoadingMenu(tracked: TrackedPlayer) {
     const shadow = tracked.shadowRoot;
     if (shadow.querySelector('.variant-menu')) return;
-
     const menu = document.createElement('div');
     menu.className = 'variant-menu';
     menu.style.cssText =
       'position:absolute;top:100%;left:0;right:0;width:100%;box-sizing:border-box;' +
-      'margin-top:4px;background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.14);' +
-      'border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:8px 10px;z-index:1;' +
-      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
-      'backdrop-filter:blur(8px);';
+      'margin-top:4px;background:rgba(17,20,27,0.96);border:1px solid rgba(255,255,255,0.1);' +
+      'border-radius:8px;box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.12),0 12px 28px rgba(0,0,0,0.55);' +
+      'padding:6px 10px;z-index:2;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'backdrop-filter:blur(12px);animation:sheepget-fade-in 0.12s ease-out;';
 
     const text = document.createElement('span');
     text.textContent = '正在读取清晰度…';
@@ -611,41 +728,45 @@ export class MediaBarManager {
     const menu = document.createElement('div');
     menu.className = 'variant-menu';
     menu.style.cssText =
-      'position:absolute;top:100%;left:0;right:0;width:100%;box-sizing:border-box;' +
-      'margin-top:4px;background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.14);' +
-      'border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.5);padding:4px;z-index:1;' +
-      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
-      'backdrop-filter:blur(8px);';
+      'position:absolute;top:100%;right:0;width:max-content;box-sizing:border-box;' +
+      'margin-top:4px;background:rgba(17,20,27,0.96);border:1px solid rgba(255,255,255,0.1);' +
+      'border-radius:8px;box-shadow:inset 0 1px 0 0 rgba(255,255,255,0.12),0 12px 28px rgba(0,0,0,0.55);' +
+      'padding:2px;z-index:2;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'backdrop-filter:blur(12px);animation:sheepget-fade-in 0.12s ease-out;';
 
     for (const v of sortedVariants) {
       const item = document.createElement('button');
       item.type = 'button';
       item.style.cssText =
-        'display:flex;width:100%;align-items:center;justify-content:space-between;gap:12px;' +
-        'background:transparent;border:none;color:#f8fafc;font-size:12px;padding:6px 10px;' +
-        'border-radius:4px;cursor:pointer;text-align:left;transition:background 0.12s;';
+        'display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;' +
+        'background:transparent;border:none;color:#f1f5f9;font-size:11px;padding:3px 6px;' +
+        'border-radius:5px;cursor:pointer;text-align:left;transition:background 0.12s,color 0.12s;';
       item.addEventListener('mouseenter', () => {
-        item.style.background = 'rgba(255,255,255,0.12)';
+        item.style.background = 'rgba(255,255,255,0.08)';
+        item.style.color = '#ffffff';
       });
       item.addEventListener('mouseleave', () => {
         item.style.background = 'transparent';
+        item.style.color = '#f1f5f9';
       });
 
       const label = document.createElement('span');
       label.textContent = v.label || '清晰度';
+      label.style.cssText = 'font-weight:500;';
       item.appendChild(label);
 
       if (v.bandwidth && v.bandwidth > 0) {
         const bw = document.createElement('span');
         if (duration > 0) {
           const estBytes = (v.bandwidth * duration) / 8;
-          bw.textContent = `~${formatBytes(estBytes)}`;
-          bw.title = `预估大小: ~${formatBytes(estBytes)} (码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps)`;
+          bw.textContent = formatBytes(estBytes);
+          bw.title = `预估大小: ${formatBytes(estBytes)} (码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps)`;
         } else {
           bw.textContent = `${(v.bandwidth / 1e6).toFixed(1)} Mbps`;
           bw.title = `码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps`;
         }
-        bw.style.cssText = 'font-size:10px;color:#94a3b8;flex-shrink:0;';
+        bw.style.cssText =
+          'font-size:10px;color:#94a3b8;flex-shrink:0;font-variant-numeric:tabular-nums;';
         item.appendChild(bw);
       }
       item.addEventListener('click', (e) => {
@@ -697,5 +818,74 @@ export class MediaBarManager {
         }
       },
     );
+  }
+
+  private showCloseAllMenu(tracked: TrackedPlayer) {
+    const shadow = tracked.shadowRoot;
+    if (shadow.querySelector('.close-all-menu')) return;
+    const bar = shadow.getElementById('bar');
+    if (!bar) return;
+
+    bar.style.borderBottomLeftRadius = '0';
+    bar.style.borderBottomRightRadius = '0';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'close-all-menu';
+    btn.style.cssText =
+      'position:absolute;top:100%;left:-1px;right:-1px;width:calc(100% + 2px);margin-top:-1px;box-sizing:border-box;' +
+      'display:flex;align-items:center;justify-content:center;gap:5px;' +
+      'background:rgba(17,20,27,0.96);border:1px solid rgba(255,255,255,0.1);border-top:1px solid rgba(255,255,255,0.06);' +
+      'border-radius:0 0 14px 14px;box-shadow:0 8px 20px rgba(0,0,0,0.45);padding:4px 8px;z-index:2;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'font-size:11px;font-weight:500;line-height:16px;color:#94a3b8;letter-spacing:-0.01em;cursor:pointer;' +
+      'white-space:nowrap;backdrop-filter:blur(12px);transition:all 0.15s ease;animation:sheepget-fade-in 0.12s ease-out;';
+    btn.innerHTML = `
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M4.93 4.93l14.14 14.14" />
+      </svg>
+      <span>全部关闭</span>
+    `;
+    btn.title = '关闭当前页面所有悬浮条 (刷新后恢复)';
+    btn.addEventListener('mouseenter', () => {
+      if (tracked.closeAllMenuTimer) {
+        clearTimeout(tracked.closeAllMenuTimer);
+        tracked.closeAllMenuTimer = undefined;
+      }
+      btn.style.background = 'rgba(239,68,68,0.16)';
+      btn.style.color = '#fca5a5';
+      btn.style.borderColor = 'rgba(239,68,68,0.3)';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = 'rgba(17,20,27,0.96)';
+      btn.style.color = '#94a3b8';
+      btn.style.borderColor = 'rgba(255,255,255,0.1)';
+      this.scheduleHideCloseAllMenu(tracked);
+    });
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.dismissAll();
+    });
+
+    bar.appendChild(btn);
+  }
+
+  private scheduleHideCloseAllMenu(tracked: TrackedPlayer) {
+    if (tracked.closeAllMenuTimer) clearTimeout(tracked.closeAllMenuTimer);
+    tracked.closeAllMenuTimer = setTimeout(() => {
+      const shadow = tracked.shadowRoot;
+      const menu = shadow?.querySelector?.('.close-all-menu');
+      if (menu) {
+        menu.remove();
+        const bar = shadow?.getElementById?.('bar');
+        if (bar) {
+          bar.style.borderBottomLeftRadius = '14px';
+          bar.style.borderBottomRightRadius = '14px';
+        }
+      }
+      tracked.closeAllMenuTimer = undefined;
+    }, 200);
   }
 }
