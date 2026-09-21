@@ -1,4 +1,5 @@
 import { formatBytes, type MediaResource } from './media';
+import { isExtensionContextValid, safeSendMessage } from './runtime';
 import type { HandoverResponse, HLSVariantOption } from './types';
 
 export const MEDIA_BAR_MARGIN = 10;
@@ -95,6 +96,7 @@ export class MediaBarManager {
   private availableResources: MediaResource[] = [];
   private frame = 0;
   private allDismissed = false;
+  private isContextInvalidated = false;
 
   constructor() {
     // 播放器进出视口、被显示/隐藏都会由交叉观察器抛出，作为重算位置的触发点。
@@ -172,6 +174,31 @@ export class MediaBarManager {
     this.scheduleUpdate();
   }
 
+  isInvalidated(): boolean {
+    return this.isContextInvalidated || !isExtensionContextValid();
+  }
+
+  private markContextInvalidated() {
+    this.isContextInvalidated = true;
+    if (this.mutationObserver) {
+      this.mutationObserver.disconnect();
+      this.mutationObserver = null;
+    }
+  }
+
+  private showReloadPrompt(tracked: TrackedPlayer) {
+    this.markContextInvalidated();
+    this.showStatus(
+      tracked,
+      '扩展已更新，点击刷新',
+      '#f59e0b',
+      0,
+      () => {
+        window.location.reload();
+      },
+      '扩展已重载或更新，点击刷新网页后恢复使用',
+    );
+  }
   isAllDismissed(): boolean {
     return this.allDismissed;
   }
@@ -254,6 +281,13 @@ export class MediaBarManager {
       dismissed: tracked?.dismissed ?? false,
       ...tracked,
     });
+  }
+
+  testTriggerDownload(video: HTMLVideoElement) {
+    const tracked = this.players.get(video);
+    if (tracked) {
+      this.triggerDownload(tracked);
+    }
   }
 
   private handleViewportChange = () => {
@@ -382,13 +416,28 @@ export class MediaBarManager {
 
   private prefetchVariants(tracked: TrackedPlayer) {
     const resource = tracked.resource;
-    if (!resource || !resource.isHls || tracked.variants || tracked.loadingVariants) return;
+    if (
+      this.isContextInvalidated ||
+      !isExtensionContextValid() ||
+      !resource ||
+      !resource.isHls ||
+      tracked.variants ||
+      tracked.loadingVariants
+    ) {
+      return;
+    }
     tracked.loadingVariants = true;
-    chrome.runtime.sendMessage(
+    safeSendMessage<{ variants?: HLSVariantOption[] }>(
       { type: 'GET_HLS_VARIANTS', url: resource.url, pageUrl: resource.pageUrl },
-      (resp: { variants?: HLSVariantOption[] } | undefined) => {
+      (resp) => {
         tracked.loadingVariants = false;
         tracked.variants = resp?.variants || [];
+      },
+      {
+        onContextInvalidated: () => {
+          tracked.loadingVariants = false;
+          this.markContextInvalidated();
+        },
       },
     );
   }
@@ -440,7 +489,14 @@ export class MediaBarManager {
     tracked.container.style.right = 'auto';
     tracked.container.style.bottom = 'auto';
   }
-  private showStatus(tracked: TrackedPlayer, text: string, color: string, restoreMs = 2500) {
+  private showStatus(
+    tracked: TrackedPlayer,
+    text: string,
+    color: string,
+    restoreMs = 2500,
+    onClick?: () => void,
+    title?: string,
+  ) {
     const dlBtn = tracked.shadowRoot.getElementById('dl-btn');
     if (!dlBtn) return;
     if (tracked.statusTimer) {
@@ -448,12 +504,24 @@ export class MediaBarManager {
       tracked.statusTimer = undefined;
     }
     dlBtn.innerHTML = `<span class="status-msg" style="color:${color}">${text}</span>`;
-    tracked.statusTimer = setTimeout(() => {
-      if (!tracked.shadowRoot.querySelector('.variant-menu')) {
-        this.renderBar(tracked);
-      }
-      tracked.statusTimer = undefined;
-    }, restoreMs);
+    if (title) {
+      dlBtn.title = title;
+    }
+    if (onClick) {
+      const handler = (e: MouseEvent) => {
+        e.stopPropagation();
+        onClick();
+      };
+      dlBtn.addEventListener('click', handler, { once: true });
+    }
+    if (restoreMs > 0) {
+      tracked.statusTimer = setTimeout(() => {
+        if (!tracked.shadowRoot.querySelector('.variant-menu')) {
+          this.renderBar(tracked);
+        }
+        tracked.statusTimer = undefined;
+      }, restoreMs);
+    }
   }
 
   private renderBar(tracked: TrackedPlayer) {
@@ -613,6 +681,9 @@ export class MediaBarManager {
         clearTimeout(tracked.menuCloseTimer);
         tracked.menuCloseTimer = undefined;
       }
+      if (this.isContextInvalidated || !isExtensionContextValid()) {
+        return;
+      }
       if (!tracked.resource) {
         return;
       }
@@ -629,13 +700,13 @@ export class MediaBarManager {
       if (!tracked.variants) {
         this.showLoadingMenu(tracked);
         tracked.loadingVariants = true;
-        chrome.runtime.sendMessage(
+        safeSendMessage<{ variants?: HLSVariantOption[] }>(
           {
             type: 'GET_HLS_VARIANTS',
             url: tracked.resource.url,
             pageUrl: tracked.resource.pageUrl,
           },
-          (resp: { variants?: HLSVariantOption[] } | undefined) => {
+          (resp) => {
             tracked.loadingVariants = false;
             tracked.variants = resp?.variants || [];
             if (tracked.variants.length > 1) {
@@ -643,6 +714,13 @@ export class MediaBarManager {
             } else {
               shadow.querySelector('.variant-menu')?.remove();
             }
+          },
+          {
+            onContextInvalidated: () => {
+              tracked.loadingVariants = false;
+              shadow.querySelector('.variant-menu')?.remove();
+              this.markContextInvalidated();
+            },
           },
         );
       }
@@ -655,10 +733,14 @@ export class MediaBarManager {
 
     dlBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (this.isContextInvalidated || !isExtensionContextValid()) {
+        this.showReloadPrompt(tracked);
+        return;
+      }
       if (!tracked.resource) {
-        chrome.runtime.sendMessage(
+        const sent = safeSendMessage<MediaResource[]>(
           { type: 'GET_TAB_MEDIA' },
-          (resList: MediaResource[] | undefined) => {
+          (resList) => {
             if (resList && resList.length > 0) {
               this.setResources(resList);
               if (tracked.resource) {
@@ -666,7 +748,15 @@ export class MediaBarManager {
               }
             }
           },
+          {
+            onContextInvalidated: () => {
+              this.showReloadPrompt(tracked);
+            },
+          },
         );
+        if (!sent) {
+          this.showReloadPrompt(tracked);
+        }
         return;
       }
       this.beginDownload(tracked);
@@ -683,6 +773,11 @@ export class MediaBarManager {
   private beginDownload(tracked: TrackedPlayer) {
     const resource = tracked.resource;
     if (!resource) return;
+
+    if (this.isContextInvalidated || !isExtensionContextValid()) {
+      this.showReloadPrompt(tracked);
+      return;
+    }
 
     if (!resource.isHls) {
       this.triggerDownload(tracked);
@@ -701,9 +796,9 @@ export class MediaBarManager {
 
     this.showLoadingMenu(tracked);
     tracked.loadingVariants = true;
-    chrome.runtime.sendMessage(
+    const sent = safeSendMessage<{ variants?: HLSVariantOption[] }>(
       { type: 'GET_HLS_VARIANTS', url: resource.url, pageUrl: resource.pageUrl },
-      (resp: { variants?: HLSVariantOption[] } | undefined) => {
+      (resp) => {
         tracked.loadingVariants = false;
         tracked.variants = resp?.variants || [];
         if (tracked.variants.length > 1) {
@@ -713,7 +808,20 @@ export class MediaBarManager {
         tracked.shadowRoot.querySelector('.variant-menu')?.remove();
         this.triggerDownload(tracked);
       },
+      {
+        onContextInvalidated: () => {
+          tracked.loadingVariants = false;
+          tracked.shadowRoot.querySelector('.variant-menu')?.remove();
+          this.showReloadPrompt(tracked);
+        },
+      },
     );
+
+    if (!sent) {
+      tracked.loadingVariants = false;
+      tracked.shadowRoot.querySelector('.variant-menu')?.remove();
+      this.showReloadPrompt(tracked);
+    }
   }
 
   private showLoadingMenu(tracked: TrackedPlayer) {
@@ -850,16 +958,34 @@ export class MediaBarManager {
     const resource = tracked.resource;
     if (!resource) return;
 
-    this.showStatus(tracked, '已投递至桌面端 ✓', '#34d399', 3000);
+    if (this.isContextInvalidated || !isExtensionContextValid()) {
+      this.showReloadPrompt(tracked);
+      return;
+    }
 
-    chrome.runtime.sendMessage(
+    this.showStatus(tracked, '正在投递…', '#93c5fd', 10000);
+
+    const sent = safeSendMessage<HandoverResponse>(
       { type: 'HANDOVER_MEDIA', resource: { ...resource, variantUri: tracked.variantUri } },
-      (resp: HandoverResponse | undefined) => {
-        if (!resp?.accepted) {
-          this.showStatus(tracked, '移交失败', '#f87171');
+      (resp) => {
+        if (resp?.accepted) {
+          this.showStatus(tracked, '已投递至桌面端 ✓', '#34d399', 3000);
+        } else {
+          const reason = resp?.reason?.trim();
+          const failText = reason ? `移交失败 (${reason})` : '移交失败';
+          this.showStatus(tracked, failText, '#f87171', 3500, undefined, reason);
         }
       },
+      {
+        onContextInvalidated: () => {
+          this.showReloadPrompt(tracked);
+        },
+      },
     );
+
+    if (!sent) {
+      this.showReloadPrompt(tracked);
+    }
   }
 
   private showCloseAllMenu(tracked: TrackedPlayer) {

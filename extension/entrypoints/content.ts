@@ -1,5 +1,6 @@
 import { MediaBarManager } from '../lib/mediabar';
 import { inferPageTitle, type MediaResource } from '../lib/media';
+import { safeSendMessage } from '../lib/runtime';
 import { normalizeKeyName } from '../lib/shortcuts';
 import type { ExtensionMessage, KeyStateMessage, ResetKeysMessage } from '../lib/types';
 export default defineContentScript({
@@ -10,6 +11,12 @@ export default defineContentScript({
   allFrames: true,
   matchAboutBlank: true,
   main() {
+    function cleanUpKeyListeners() {
+      window.removeEventListener('keydown', handleKeyEvent, true);
+      window.removeEventListener('keyup', handleKeyEvent, true);
+      window.removeEventListener('blur', handleBlur);
+    }
+
     function handleKeyEvent(e: KeyboardEvent) {
       if (e.repeat) return;
       const norm = normalizeKeyName(e.key);
@@ -21,20 +28,16 @@ export default defineContentScript({
         key: norm,
         isDown,
       };
-      try {
-        void chrome.runtime.sendMessage(msg);
-      } catch {
-        // Extension context might be invalidated
-      }
+      safeSendMessage(msg, undefined, {
+        onContextInvalidated: cleanUpKeyListeners,
+      });
     }
 
     function handleBlur() {
-      try {
-        const msg: ResetKeysMessage = { type: 'RESET_KEYS' };
-        void chrome.runtime.sendMessage(msg);
-      } catch {
-        // Extension context might be invalidated
-      }
+      const msg: ResetKeysMessage = { type: 'RESET_KEYS' };
+      safeSendMessage(msg, undefined, {
+        onContextInvalidated: cleanUpKeyListeners,
+      });
     }
 
     // Capture phase listeners (IDM style) to intercept keys before page handlers
@@ -46,16 +49,12 @@ export default defineContentScript({
     // 只存在于页面标题里（og:title / <title>）。background 据此给本标签页的资源命名。
     // 标题可能在 media script 注入后仍被 SPA 改写，这里延迟到 DOM 就绪后再报一次。
     function reportPageContext() {
-      try {
-        const msg: ExtensionMessage = {
-          type: 'REPORT_PAGE_CONTEXT',
-          pageTitle: inferPageTitle(document),
-          pageUrl: location.href,
-        };
-        void chrome.runtime.sendMessage(msg);
-      } catch {
-        // Extension context might be invalidated
-      }
+      const msg: ExtensionMessage = {
+        type: 'REPORT_PAGE_CONTEXT',
+        pageTitle: inferPageTitle(document),
+        pageUrl: location.href,
+      };
+      safeSendMessage(msg);
     }
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', reportPageContext, { once: true });
@@ -74,22 +73,22 @@ export default defineContentScript({
     }
 
     // Request currently detected media resources for this tab
+    safeSendMessage<MediaResource[]>({ type: 'GET_TAB_MEDIA' }, (res) => {
+      if (res && Array.isArray(res)) {
+        mediaBar.setResources(res);
+      }
+    });
+
+    // 之后新嗅探到的资源由 background 主动推送：播放器后加载、用户点了播放才发起
+    // 媒体请求的页面，首次拉取必然为空，只能靠这条推送完成关联。
     try {
-      chrome.runtime.sendMessage({ type: 'GET_TAB_MEDIA' }, (res: MediaResource[] | undefined) => {
-        if (res && Array.isArray(res)) {
-          mediaBar.setResources(res);
+      chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
+        if (msg?.type === 'TAB_MEDIA_UPDATED') {
+          mediaBar.setResources(msg.resources);
         }
       });
     } catch {
       // Extension context might be invalidated
     }
-
-    // 之后新嗅探到的资源由 background 主动推送：播放器后加载、用户点了播放才发起
-    // 媒体请求的页面，首次拉取必然为空，只能靠这条推送完成关联。
-    chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
-      if (msg?.type === 'TAB_MEDIA_UPDATED') {
-        mediaBar.setResources(msg.resources);
-      }
-    });
   },
 });

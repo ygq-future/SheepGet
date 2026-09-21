@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeBarPosition,
@@ -313,5 +313,128 @@ describe('mediabar resource visibility gating', () => {
       globalThis.cancelAnimationFrame = originalCaf;
       (globalThis as unknown as { chrome: unknown }).chrome = originalChrome;
     }
+  });
+});
+
+describe('mediabar context invalidation and handover status flow', () => {
+  const originalChrome = (globalThis as unknown as { chrome?: unknown }).chrome;
+
+  afterEach(() => {
+    (globalThis as unknown as { chrome?: unknown }).chrome = originalChrome;
+  });
+
+  function setupPlayer(manager: MediaBarManager) {
+    let innerHTML = '';
+    let title = '';
+    const dlBtn = {
+      set innerHTML(val: string) {
+        innerHTML = val;
+      },
+      get innerHTML() {
+        return innerHTML;
+      },
+      set title(val: string) {
+        title = val;
+      },
+      get title() {
+        return title;
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    };
+
+    const shadowRoot = {
+      getElementById: (id: string) => (id === 'dl-btn' ? dlBtn : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    } as unknown as ShadowRoot;
+
+    const video = {
+      isConnected: true,
+      currentSrc: 'https://example.com/video.mp4',
+    } as HTMLVideoElement;
+
+    manager.registerTestPlayer(video, {
+      shadowRoot,
+      resource: {
+        id: 'res_1',
+        url: 'https://example.com/video.mp4',
+        tabId: 1,
+        filename: 'video.mp4',
+        mimeType: 'video/mp4',
+        isHls: false,
+        foundAt: Date.now(),
+      },
+    });
+
+    return { video, dlBtn };
+  }
+
+  it('shows reload prompt and does not throw when extension context is invalidated', () => {
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: {
+        id: 'mock-id',
+        sendMessage: () => {
+          throw new Error('Extension context invalidated.');
+        },
+      },
+    };
+
+    const manager = new MediaBarManager();
+    const { video, dlBtn } = setupPlayer(manager);
+
+    manager.testTriggerDownload(video);
+
+    assert.ok(dlBtn.innerHTML.includes('扩展已更新，点击刷新'));
+    assert.ok(dlBtn.title.includes('扩展已重载或更新'));
+    assert.equal(manager.isInvalidated(), true);
+  });
+
+  it('progresses from loading to success status when handover is accepted', () => {
+    let handoverCallback: ((resp: unknown) => void) | null = null;
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: {
+        id: 'mock-id',
+        sendMessage: (_msg: unknown, cb: (resp: unknown) => void) => {
+          handoverCallback = cb;
+        },
+      },
+    };
+
+    const manager = new MediaBarManager();
+    const { video, dlBtn } = setupPlayer(manager);
+
+    manager.testTriggerDownload(video);
+
+    assert.ok(dlBtn.innerHTML.includes('正在投递…'));
+
+    // Desktop accepts handover
+    assert.ok(handoverCallback);
+    (handoverCallback as (resp: unknown) => void)({ accepted: true });
+    assert.ok(dlBtn.innerHTML.includes('已投递至桌面端 ✓'));
+  });
+
+  it('shows failure status when handover is rejected', () => {
+    let handoverCallback: ((resp: unknown) => void) | null = null;
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: {
+        id: 'mock-id',
+        sendMessage: (_msg: unknown, cb: (resp: unknown) => void) => {
+          handoverCallback = cb;
+        },
+      },
+    };
+
+    const manager = new MediaBarManager();
+    const { video, dlBtn } = setupPlayer(manager);
+
+    manager.testTriggerDownload(video);
+    assert.ok(dlBtn.innerHTML.includes('正在投递…'));
+
+    // Desktop rejects handover with reason
+    assert.ok(handoverCallback);
+    (handoverCallback as (resp: unknown) => void)({ accepted: false, reason: '桌面端未连接' });
+    assert.ok(dlBtn.innerHTML.includes('移交失败 (桌面端未连接)'));
+    assert.equal(dlBtn.title, '桌面端未连接');
   });
 });
