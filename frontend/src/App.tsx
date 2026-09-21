@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import * as task from '../bindings/sheep-get/internal/task/models';
 import {
@@ -35,6 +35,8 @@ import {
 import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ToastContainer, showToast } from './components/ui/Toast';
+import { Select } from './components/ui/Select';
+import { matchTaskCategory } from './lib/category';
 
 function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
   return (list || []).filter((t): t is task.Task => t !== null);
@@ -65,6 +67,7 @@ export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
   const [filter, setFilter] = useState<'all' | 'paused' | 'completed' | 'settings'>('all');
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [isBatchDeleting, setIsBatchDeleting] = useState<boolean>(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
@@ -119,7 +122,7 @@ export function App() {
     }
   }, [sidebarCollapsed]);
 
-  const { loadSettings } = useSettingsStore();
+  const { settings, loadSettings } = useSettingsStore();
 
   useEffect(() => {
     void loadSettings();
@@ -177,9 +180,24 @@ export function App() {
     };
   }, [loadSettings]);
 
+  const categoryOptions = useMemo(() => {
+    const opts: { value: string; label: string }[] = [];
+    for (const c of settings?.download?.customCategories || []) {
+      opts.push({ value: c.id, label: c.name });
+    }
+    for (const c of settings?.download?.builtinCategories || []) {
+      opts.push({ value: c.id, label: c.name });
+    }
+    return opts;
+  }, [settings?.download?.customCategories, settings?.download?.builtinCategories]);
+
   const filteredTasks = tasks.filter((t) => {
-    if (filter === 'paused') return t.status === task.Status.StatusPaused;
-    if (filter === 'completed') return t.status === task.Status.StatusCompleted;
+    if (filter === 'paused' && t.status !== task.Status.StatusPaused) return false;
+    if (filter === 'completed' && t.status !== task.Status.StatusCompleted) return false;
+    if (selectedCategory) {
+      const catId = matchTaskCategory(t.filename, settings);
+      if (catId !== selectedCategory) return false;
+    }
     return true;
   });
 
@@ -575,41 +593,61 @@ export function App() {
         <header className="flex h-12 w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 px-4 backdrop-blur-md">
           {/* Header Left: Icon-based Select All & Icon-based Deselect */}
           <div className="flex items-center gap-2">
-            {filter !== 'settings' && filteredTasks.length > 0 && (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleToggleSelectAll}
-                  title={allFilteredSelected ? '取消全选' : '全部选择'}
-                  className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border transition-all duration-150 ${
-                    allFilteredSelected
-                      ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-xs'
-                      : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
-                  }`}
-                >
-                  <CheckCheck className="h-4 w-4" />
-                </button>
+            {filter !== 'settings' && (
+              <>
+                <div className="w-28 sm:w-32">
+                  <Select
+                    value={selectedCategory}
+                    onChange={(val) => {
+                      setSelectedCategory(String(val));
+                      setSelectedTaskIds(new Set());
+                      setBaseSelectedIds(new Set());
+                      setSelectionAnchor(null);
+                    }}
+                    clearable
+                    placeholder="全部分类"
+                    options={categoryOptions}
+                    className="h-7 py-1 text-xs"
+                  />
+                </div>
 
-                {selectedTaskIds.size > 0 && (
-                  <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-xs">
-                    <span className="font-medium text-[var(--text-secondary)]">
-                      已选择{' '}
-                      <span className="font-mono font-semibold text-[var(--accent)]">
-                        {selectedTaskIds.size}
-                      </span>{' '}
-                      项
-                    </span>
+                {filteredTasks.length > 0 && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={handleCancelSelection}
-                      title="取消选择"
-                      className="flex h-4 w-4 cursor-pointer items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)]"
+                      onClick={handleToggleSelectAll}
+                      title={allFilteredSelected ? '取消全选' : '全部选择'}
+                      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border transition-all duration-150 ${
+                        allFilteredSelected
+                          ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-xs'
+                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
+                      }`}
                     >
-                      <X className="h-3 w-3" />
+                      <CheckCheck className="h-4 w-4" />
                     </button>
+
+                    {selectedTaskIds.size > 0 && (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-xs">
+                        <span className="font-medium text-[var(--text-secondary)]">
+                          已选择{' '}
+                          <span className="font-mono font-semibold text-[var(--accent)]">
+                            {selectedTaskIds.size}
+                          </span>{' '}
+                          项
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleCancelSelection}
+                          title="取消选择"
+                          className="flex h-4 w-4 cursor-pointer items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)]"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
 

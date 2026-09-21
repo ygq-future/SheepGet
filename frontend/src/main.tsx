@@ -10,6 +10,10 @@ import { initSettingsListener, useSettingsStore } from './stores/settings';
 initSettingsListener();
 void useSettingsStore.getState().loadSettings();
 
+// Prevent default browser context menu in all windows to maintain native desktop app feel
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+});
 const container = document.getElementById('root');
 
 const root = createRoot(container!);
