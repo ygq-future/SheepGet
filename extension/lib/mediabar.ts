@@ -71,11 +71,29 @@ export function shouldShowDismissAll(activeCount: number): boolean {
   return activeCount > 1;
 }
 
+export type PlayerTarget = HTMLVideoElement | HTMLIFrameElement;
+
+export const SHEEPGET_PLAYER_FRAME_DETECTED = 'SHEEPGET_PLAYER_FRAME_DETECTED';
+export const SHEEPGET_PLAYER_FRAME_CLAIMED = 'SHEEPGET_PLAYER_FRAME_CLAIMED';
+
+export interface PlayerFrameDetectedMessage {
+  type: typeof SHEEPGET_PLAYER_FRAME_DETECTED;
+  version: 1;
+  src?: string;
+}
+
+export interface PlayerFrameClaimedMessage {
+  type: typeof SHEEPGET_PLAYER_FRAME_CLAIMED;
+  version: 1;
+}
+
 interface TrackedPlayer {
-  video: HTMLVideoElement;
+  target: PlayerTarget;
   container: HTMLDivElement;
   shadowRoot: ShadowRoot;
   dismissed: boolean;
+  delegatedToParent?: boolean;
+  initialSrc?: string;
   resource?: MediaResource;
   /** 预拉取到的清晰度列表 */
   variants?: HLSVariantOption[];
@@ -89,7 +107,7 @@ interface TrackedPlayer {
 }
 
 export class MediaBarManager {
-  private players = new Map<HTMLVideoElement, TrackedPlayer>();
+  private players = new Map<PlayerTarget, TrackedPlayer>();
   private intersectionObserver?: IntersectionObserver;
   private resizeObserver?: ResizeObserver;
   private mutationObserver: MutationObserver | null = null;
@@ -137,6 +155,9 @@ export class MediaBarManager {
     });
     window.addEventListener('resize', this.handleViewportChange, { passive: true });
     document.addEventListener('fullscreenchange', this.handleViewportChange);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('message', this.handleWindowMessage);
+    }
   }
 
   stop() {
@@ -146,13 +167,16 @@ export class MediaBarManager {
     document.removeEventListener('scroll', this.handleViewportChange, { capture: true });
     window.removeEventListener('resize', this.handleViewportChange);
     document.removeEventListener('fullscreenchange', this.handleViewportChange);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('message', this.handleWindowMessage);
+    }
     if (this.frame) {
       cancelAnimationFrame(this.frame);
       this.frame = 0;
     }
 
-    for (const [video, tracked] of this.players.entries()) {
-      this.teardownPlayer(video, tracked);
+    for (const [target, tracked] of this.players.entries()) {
+      this.teardownPlayer(target, tracked);
     }
     this.players.clear();
   }
@@ -199,6 +223,7 @@ export class MediaBarManager {
       '扩展已重载或更新，点击刷新网页后恢复使用',
     );
   }
+
   isAllDismissed(): boolean {
     return this.allDismissed;
   }
@@ -206,8 +231,8 @@ export class MediaBarManager {
   getActivePlayerCount(): number {
     if (this.allDismissed) return 0;
     let count = 0;
-    for (const [video, tracked] of this.players.entries()) {
-      if (!tracked.dismissed && (video.isConnected ?? true)) {
+    for (const [target, tracked] of this.players.entries()) {
+      if (!tracked.dismissed && (target.isConnected ?? true)) {
         count++;
       }
     }
@@ -218,25 +243,25 @@ export class MediaBarManager {
     return !this.allDismissed && shouldShowDismissAll(this.getActivePlayerCount());
   }
 
-  dismissSinglePlayer(video: HTMLVideoElement) {
-    const tracked = this.players.get(video);
+  dismissSinglePlayer(target: PlayerTarget) {
+    const tracked = this.players.get(target);
     if (tracked) {
       tracked.dismissed = true;
       if (tracked.container?.style) {
         tracked.container.style.display = 'none';
       }
-      this.teardownPlayer(video, tracked);
+      this.teardownPlayer(target, tracked);
     }
   }
 
   dismissAll() {
     this.allDismissed = true;
-    for (const [video, tracked] of this.players.entries()) {
+    for (const [target, tracked] of this.players.entries()) {
       tracked.dismissed = true;
       if (tracked.container?.style) {
         tracked.container.style.display = 'none';
       }
-      this.teardownPlayer(video, tracked);
+      this.teardownPlayer(target, tracked);
     }
   }
 
@@ -265,28 +290,102 @@ export class MediaBarManager {
     }
   }
 
-  private teardownPlayer(video: HTMLVideoElement, tracked: TrackedPlayer) {
-    this.intersectionObserver?.unobserve(video);
-    this.resizeObserver?.unobserve(video);
+  private teardownPlayer(target: PlayerTarget, tracked: TrackedPlayer) {
+    this.intersectionObserver?.unobserve(target);
+    this.resizeObserver?.unobserve(target);
+    const bar = tracked.shadowRoot?.getElementById?.('bar');
+    if (bar && this.resizeObserver) {
+      this.resizeObserver.unobserve(bar);
+    }
     tracked.videoCleanup?.();
     this.cleanupTrackedMenus(tracked);
     tracked.container?.remove?.();
   }
 
-  registerTestPlayer(video: HTMLVideoElement, tracked?: Partial<TrackedPlayer>) {
-    this.players.set(video, {
-      video,
-      container: tracked?.container ?? ({} as HTMLDivElement),
+  registerTestPlayer(target: PlayerTarget, tracked?: Partial<TrackedPlayer>) {
+    this.players.set(target, {
+      target,
+      container: tracked?.container ?? ({ style: {} } as HTMLDivElement),
       shadowRoot: tracked?.shadowRoot ?? ({} as ShadowRoot),
       dismissed: tracked?.dismissed ?? false,
       ...tracked,
     });
   }
 
-  testTriggerDownload(video: HTMLVideoElement) {
-    const tracked = this.players.get(video);
+  testTriggerDownload(target: PlayerTarget) {
+    const tracked = this.players.get(target);
     if (tracked) {
       this.triggerDownload(tracked);
+    }
+  }
+
+  getTrackedPlayer(target: PlayerTarget): TrackedPlayer | undefined {
+    return this.players.get(target);
+  }
+
+  setPlayerDelegated(target: PlayerTarget, delegated: boolean) {
+    const tracked = this.players.get(target);
+    if (tracked) {
+      tracked.delegatedToParent = delegated;
+      this.update(tracked);
+    }
+  }
+
+  handleFullscreenChange() {
+    for (const tracked of this.players.values()) {
+      this.update(tracked);
+    }
+  }
+
+  handleWindowMessage = (event: MessageEvent) => {
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+
+    if (data.type === SHEEPGET_PLAYER_FRAME_DETECTED && data.version === 1) {
+      if (typeof document === 'undefined') return;
+      const iframes = Array.from(document.querySelectorAll('iframe'));
+      const matchingIframe = iframes.find((ifr) => {
+        try {
+          return ifr.contentWindow === event.source;
+        } catch {
+          return false;
+        }
+      });
+
+      if (matchingIframe) {
+        try {
+          (event.source as WindowProxy)?.postMessage(
+            { type: SHEEPGET_PLAYER_FRAME_CLAIMED, version: 1 } satisfies PlayerFrameClaimedMessage,
+            '*',
+          );
+        } catch {
+          // ignore
+        }
+
+        if (!this.players.has(matchingIframe)) {
+          this.attachPlayer(matchingIframe, data.src);
+        }
+      }
+    } else if (data.type === SHEEPGET_PLAYER_FRAME_CLAIMED && data.version === 1) {
+      for (const tracked of this.players.values()) {
+        tracked.delegatedToParent = true;
+      }
+      this.scheduleUpdate();
+    }
+  };
+
+  private notifyParentOfPlayer(video: HTMLVideoElement) {
+    if (typeof window === 'undefined' || window.self === window.top) return;
+    try {
+      const src = video.currentSrc || video.src || '';
+      const msg: PlayerFrameDetectedMessage = {
+        type: SHEEPGET_PLAYER_FRAME_DETECTED,
+        version: 1,
+        src,
+      };
+      window.parent.postMessage(msg, '*');
+    } catch {
+      // Cross-origin restriction or detached window
     }
   }
 
@@ -296,33 +395,40 @@ export class MediaBarManager {
 
   private scheduleUpdate() {
     if (this.frame) return;
-    this.frame = requestAnimationFrame(() => {
+    let ranSync = false;
+    const rafId = requestAnimationFrame(() => {
+      ranSync = true;
       this.frame = 0;
       for (const tracked of this.players.values()) {
         this.update(tracked);
       }
     });
+    if (!ranSync) {
+      this.frame = rafId;
+    }
   }
 
   private scanVideos() {
     if (this.allDismissed) return;
+    if (typeof document === 'undefined') return;
     const videos = document.querySelectorAll('video');
     for (const video of Array.from(videos)) {
       if (!this.players.has(video)) {
         this.attachPlayer(video);
+        this.notifyParentOfPlayer(video);
       }
     }
 
-    // Clean up removed videos
-    for (const [video, tracked] of this.players.entries()) {
-      if (!video.isConnected) {
-        this.teardownPlayer(video, tracked);
-        this.players.delete(video);
+    // Clean up removed videos and iframes
+    for (const [target, tracked] of this.players.entries()) {
+      if (!target.isConnected) {
+        this.teardownPlayer(target, tracked);
+        this.players.delete(target);
       }
     }
   }
 
-  private attachPlayer(video: HTMLVideoElement) {
+  private attachPlayer(target: PlayerTarget, initialSrc?: string) {
     if (this.allDismissed) return;
     const container = document.createElement('div');
     container.className = 'sheepget-mediabar-host';
@@ -335,41 +441,49 @@ export class MediaBarManager {
     const shadowRoot = container.attachShadow({ mode: 'closed' });
 
     const tracked: TrackedPlayer = {
-      video,
+      target,
       container,
       shadowRoot,
       dismissed: false,
+      initialSrc,
     };
 
-    this.players.set(video, tracked);
+    this.players.set(target, tracked);
     document.body.appendChild(container);
 
     this.associateResource(tracked);
     this.renderBar(tracked);
 
-    this.intersectionObserver?.observe(video);
+    this.intersectionObserver?.observe(target);
 
-    const onVideoEvent = () => {
-      const prevResource = tracked.resource;
-      this.associateResource(tracked);
-      if (tracked.resource !== prevResource) {
-        this.renderBar(tracked);
-      }
-      this.scheduleUpdate();
-    };
+    const isVideo =
+      (typeof HTMLVideoElement !== 'undefined' && target instanceof HTMLVideoElement) ||
+      ('tagName' in target && (target as Element).tagName === 'VIDEO');
+    if (isVideo && 'addEventListener' in target) {
+      const video = target as HTMLVideoElement;
+      const onVideoEvent = () => {
+        const prevResource = tracked.resource;
+        this.associateResource(tracked);
+        if (tracked.resource !== prevResource) {
+          this.renderBar(tracked);
+        }
+        this.scheduleUpdate();
+        this.notifyParentOfPlayer(video);
+      };
 
-    video.addEventListener('loadedmetadata', onVideoEvent);
-    video.addEventListener('playing', onVideoEvent);
-    video.addEventListener('play', onVideoEvent);
-    video.addEventListener('canplay', onVideoEvent);
+      video.addEventListener('loadedmetadata', onVideoEvent);
+      video.addEventListener('playing', onVideoEvent);
+      video.addEventListener('play', onVideoEvent);
+      video.addEventListener('canplay', onVideoEvent);
 
-    tracked.videoCleanup = () => {
-      video.removeEventListener('loadedmetadata', onVideoEvent);
-      video.removeEventListener('playing', onVideoEvent);
-      video.removeEventListener('play', onVideoEvent);
-      video.removeEventListener('canplay', onVideoEvent);
-    };
-    this.resizeObserver?.observe(video);
+      tracked.videoCleanup = () => {
+        video.removeEventListener('loadedmetadata', onVideoEvent);
+        video.removeEventListener('playing', onVideoEvent);
+        video.removeEventListener('play', onVideoEvent);
+        video.removeEventListener('canplay', onVideoEvent);
+      };
+    }
+    this.resizeObserver?.observe(target);
   }
 
   private associateResource(tracked: TrackedPlayer) {
@@ -377,8 +491,15 @@ export class MediaBarManager {
       return;
     }
     tracked.resource = undefined;
-    const video = tracked.video;
-    const currentSrc = video.currentSrc || video.src || '';
+    const target = tracked.target;
+    let currentSrc = '';
+    if ('currentSrc' in target || 'src' in target) {
+      const media = target as HTMLMediaElement;
+      currentSrc = media.currentSrc || media.src || '';
+    }
+    if (!currentSrc && tracked.initialSrc) {
+      currentSrc = tracked.initialSrc;
+    }
 
     // 1. Direct src match
     if (currentSrc && !currentSrc.startsWith('blob:')) {
@@ -406,14 +527,19 @@ export class MediaBarManager {
       }
     }
 
-    // 3. Fallback: single resource
+    // 3. Fallback: single resource or unique HLS resource
+    const hlsResources = this.availableResources.filter((r) => r.isHls);
+    if (hlsResources.length === 1 && hlsResources[0]) {
+      tracked.resource = hlsResources[0];
+      this.prefetchVariants(tracked);
+      return;
+    }
     const single = this.availableResources[0];
     if (this.availableResources.length === 1 && single) {
       tracked.resource = single;
       if (single.isHls) this.prefetchVariants(tracked);
     }
   }
-
   private prefetchVariants(tracked: TrackedPlayer) {
     const resource = tracked.resource;
     if (
@@ -450,6 +576,14 @@ export class MediaBarManager {
       return;
     }
 
+    const isFullscreen = typeof document !== 'undefined' && Boolean(document.fullscreenElement);
+    if (tracked.delegatedToParent && !isFullscreen) {
+      if (tracked.container.style.display !== 'none') {
+        tracked.container.style.display = 'none';
+      }
+      return;
+    }
+
     if (!tracked.resource) {
       const prev = tracked.resource;
       this.associateResource(tracked);
@@ -466,28 +600,35 @@ export class MediaBarManager {
     }
 
     const bar = tracked.shadowRoot.getElementById('bar');
-    const barRect = bar?.getBoundingClientRect();
+    const barRect = bar?.getBoundingClientRect?.();
+    const targetRect = tracked.target?.getBoundingClientRect
+      ? tracked.target.getBoundingClientRect()
+      : { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1024;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 768;
     const position = computeBarPosition(
-      tracked.video.getBoundingClientRect(),
-      { width: window.innerWidth, height: window.innerHeight },
+      targetRect,
+      { width: viewportWidth, height: viewportHeight },
       { width: barRect?.width ?? 0, height: barRect?.height ?? 0 },
     );
 
     if (!position.visible) {
-      if (tracked.container.style.display !== 'none') {
+      if (tracked.container?.style && tracked.container.style.display !== 'none') {
         tracked.container.style.display = 'none';
       }
       return;
     }
 
-    if (tracked.container.style.display !== 'block') {
-      tracked.container.style.display = 'block';
-    }
+    if (tracked.container?.style) {
+      if (tracked.container.style.display !== 'block') {
+        tracked.container.style.display = 'block';
+      }
 
-    tracked.container.style.left = `${position.left}px`;
-    tracked.container.style.top = `${position.top}px`;
-    tracked.container.style.right = 'auto';
-    tracked.container.style.bottom = 'auto';
+      tracked.container.style.left = `${position.left}px`;
+      tracked.container.style.top = `${position.top}px`;
+      tracked.container.style.right = 'auto';
+      tracked.container.style.bottom = 'auto';
+    }
   }
   private showStatus(
     tracked: TrackedPlayer,
@@ -514,10 +655,12 @@ export class MediaBarManager {
       };
       dlBtn.addEventListener('click', handler, { once: true });
     }
+    this.update(tracked);
     if (restoreMs > 0) {
       tracked.statusTimer = setTimeout(() => {
         if (!tracked.shadowRoot.querySelector('.variant-menu')) {
           this.renderBar(tracked);
+          this.update(tracked);
         }
         tracked.statusTimer = undefined;
       }, restoreMs);
@@ -656,10 +799,12 @@ export class MediaBarManager {
     const dlBtn = shadow.getElementById('dl-btn');
     const closeBtn = shadow.getElementById('close-btn');
     const barEl = shadow.getElementById('bar');
-
+    if (barEl && this.resizeObserver) {
+      this.resizeObserver.observe(barEl);
+    }
     closeBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.dismissSinglePlayer(tracked.video);
+      this.dismissSinglePlayer(tracked.target);
     });
 
     closeBtn?.addEventListener('mouseenter', () => {
@@ -727,7 +872,7 @@ export class MediaBarManager {
     };
 
     dlBtn?.addEventListener('mouseenter', handleMouseEnter);
-    barEl?.addEventListener('mouseleave', () => {
+    barEl?.addEventListener?.('mouseleave', () => {
       this.scheduleHideMenu(tracked);
     });
 
@@ -868,10 +1013,17 @@ export class MediaBarManager {
     // 菜单追加在悬浮条之后，随它一起定位；选定或点空白后移除。
     shadow.querySelector('.variant-menu')?.remove();
 
-    const video = tracked.video;
-    const duration =
-      (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0) ||
-      (tracked.resource?.probeDuration ?? 0);
+    const target = tracked.target;
+    let duration = 0;
+    if ('duration' in target && typeof (target as HTMLMediaElement).duration === 'number') {
+      const d = (target as HTMLMediaElement).duration;
+      if (Number.isFinite(d) && d > 0) {
+        duration = d;
+      }
+    }
+    if (!duration && tracked.resource?.probeDuration) {
+      duration = tracked.resource.probeDuration;
+    }
 
     const sortedVariants = [...variants].sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
 
