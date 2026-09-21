@@ -7,6 +7,48 @@ import type {
   TakeoverConfigSync,
 } from './types';
 
+export const DEFAULT_LOOPBACK_PORT = 9248;
+
+/**
+ * 直接通过本地 HTTP 探测桌面端会话。
+ * 在便携版未注册 Host 或纯 HTTP 模式下，直接探测可实现秒连且零系统注册表侵入。
+ */
+export async function discoverSessionViaHttp(
+  candidatePort: number = DEFAULT_LOOPBACK_PORT,
+  fetchFn: typeof fetch = fetch,
+): Promise<SessionMetadata | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetchFn(`http://127.0.0.1:${candidatePort}/api/v1/discover`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-SheepGet-Client': 'extension',
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.warn(
+        `[SheepGet] Discover probe returned HTTP ${res.status} on port ${candidatePort}`,
+      );
+      return null;
+    }
+    const data = (await res.json()) as { status?: string; port?: number; sessionToken?: string };
+    if (data?.status === 'ok' && data.port && data.sessionToken) {
+      return {
+        port: data.port,
+        sessionToken: data.sessionToken,
+      };
+    }
+  } catch (err) {
+    console.debug(`[SheepGet] Discover probe failed on port ${candidatePort}:`, err);
+  } finally {
+    clearTimeout(timer);
+  }
+  return null;
+}
+
 /** 事件长连接句柄：既能主动断开，也能随时问「现在还连着吗」。 */
 export interface DesktopEventLink {
   close(): void;

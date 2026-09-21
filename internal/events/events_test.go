@@ -16,6 +16,7 @@ func TestEventNames(t *testing.T) {
 		FileInfoQueueUpdated:   "fileinfo:queue_updated",
 		FileInfoUpdated:        "fileinfo:updated",
 		AppOpenSettings:        "app:open-settings",
+		ServerStatusChanged:    "server:status_changed",
 	}
 	for constVal, want := range cases {
 		if constVal != want {

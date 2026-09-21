@@ -21,6 +21,9 @@ import * as duplicate$0 from "./internal/duplicate/models.js";
 import * as engine$0 from "./internal/engine/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as server$0 from "./internal/server/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as task$0 from "./internal/task/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -134,11 +137,20 @@ export function GetFileInfoQueueLength(): $CancellablePromise<number> {
 }
 
 /**
+ * GetServerStatus returns the active loopback server runtime status.
+ */
+export function GetServerStatus(): $CancellablePromise<server$0.Status> {
+    return $Call.ByID(880383150).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
+/**
  * GetSettings returns current active settings
  */
 export function GetSettings(): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -147,7 +159,7 @@ export function GetSettings(): $CancellablePromise<config$0.Settings> {
  */
 export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }> {
     return $Call.ByID(3330596760).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
@@ -177,7 +189,7 @@ export function IsProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> {
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
     return $Call.ByID(3109076673).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType11($result);
     });
 }
 
@@ -236,7 +248,7 @@ export function OpenFolder(folderPath: string): $CancellablePromise<void> {
  */
 export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(3018225713).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -261,7 +273,7 @@ export function ProbeMediaDuration(urlStr: string, filename: string, totalBytes:
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {
-        return $$createType14($result);
+        return $$createType15($result);
     });
 }
 
@@ -280,7 +292,7 @@ export function ResetAndDownloadWithNewURL(taskID: string, newURL: string, heade
  */
 export function ResolveDestination(filename: string): $CancellablePromise<$models.DestinationInfo> {
     return $Call.ByID(177293617, filename).then(($result: any) => {
-        return $$createType15($result);
+        return $$createType16($result);
     });
 }
 
@@ -300,8 +312,16 @@ export function ResolveDuplicate(taskID: string, strategy: string, dir: string, 
  */
 export function ResolveDuplicateDecision(urlStr: string, dir: string, filename: string): $CancellablePromise<duplicate$0.Decision> {
     return $Call.ByID(687526930, urlStr, dir, filename).then(($result: any) => {
-        return $$createType16($result);
+        return $$createType17($result);
     });
+}
+
+/**
+ * RestartServer restarts the local HTTP loopback server on the specified port.
+ * If port <= 0, it uses the port configured in settings.
+ */
+export function RestartServer(port: number): $CancellablePromise<number> {
+    return $Call.ByID(3691977863, port);
 }
 
 /**
@@ -438,7 +458,7 @@ export function ToggleProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> 
  */
 export function TriggerDownload(req: window$0.DownloadRequest): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(2473743423, req).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType13($result);
     });
 }
 
@@ -447,7 +467,7 @@ export function TriggerDownload(req: window$0.DownloadRequest): $CancellableProm
  */
 export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2894041249, s).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -476,12 +496,13 @@ const $$createType4 = $Create.Nullable($$createType3);
 const $$createType5 = window$0.FileInfoItem.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
 const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = config$0.Settings.createFrom;
-const $$createType9 = $Create.Map($Create.Any, $Create.Any);
-const $$createType10 = $Create.Array($$createType1);
-const $$createType11 = window$0.DownloadResponse.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = engine$0.ProbeResult.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = $models.DestinationInfo.createFrom;
-const $$createType16 = duplicate$0.Decision.createFrom;
+const $$createType8 = server$0.Status.createFrom;
+const $$createType9 = config$0.Settings.createFrom;
+const $$createType10 = $Create.Map($Create.Any, $Create.Any);
+const $$createType11 = $Create.Array($$createType1);
+const $$createType12 = window$0.DownloadResponse.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = engine$0.ProbeResult.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);
+const $$createType16 = $models.DestinationInfo.createFrom;
+const $$createType17 = duplicate$0.Decision.createFrom;

@@ -8,7 +8,8 @@ import { Button } from './ui/Button';
 import { Switch } from './ui/Switch';
 import { Slider } from './ui/Slider';
 import { showToast } from './ui/Toast';
-import { SelectDirectory, ValidateDirectory } from '../../bindings/sheep-get/app';
+import { DEFAULT_SERVER_PORT } from '../lib/constants';
+import { RestartServer, SelectDirectory, ValidateDirectory } from '../../bindings/sheep-get/app';
 import {
   Sun,
   Moon,
@@ -324,6 +325,8 @@ export function SettingsPanel() {
   const [reorderedCategories, setReorderedCategories] = useState<
     configModels.CategoryConfig[] | null
   >(null);
+  const [serverPortDraft, setServerPortDraft] = useState<string | null>(null);
+  const [restartingServer, setRestartingServer] = useState(false);
   if (!settings) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-xs text-[var(--text-muted)]">
@@ -343,6 +346,25 @@ export function SettingsPanel() {
       showToast(checked ? '已开启开机启动' : '已关闭开机启动', 'success');
     } catch (err) {
       showToast(`设置开机启动失败: ${String(err)}`, 'error');
+    }
+  };
+  const serverPort = serverPortDraft ?? String(general.serverPort || DEFAULT_SERVER_PORT);
+
+  const handleRestartServer = async () => {
+    const portNum = parseInt(serverPort, 10);
+    if (isNaN(portNum) || portNum < 1024 || portNum > 65535) {
+      showToast('端口号必须介于 1024 和 65535 之间', 'error');
+      return;
+    }
+    setRestartingServer(true);
+    try {
+      const bound = await RestartServer(portNum);
+      setServerPortDraft(String(bound));
+      showToast(`本地 HTTP 服务已就绪，当前端口: ${bound}`, 'success');
+    } catch (err) {
+      showToast(`重启 HTTP 服务失败: ${String(err)}`, 'error');
+    } finally {
+      setRestartingServer(false);
     }
   };
 
@@ -1064,6 +1086,37 @@ export function SettingsPanel() {
                     void handleClipboardChange(checked);
                   }}
                 />
+              </div>
+            </div>
+            {/* Local HTTP Server Port */}
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <label className="text-xs font-semibold text-[var(--text-primary)]">
+                    本地 HTTP 服务端口
+                  </label>
+                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                    浏览器扩展通信监听端口（默认 9248，修改后点击重启服务立即生效）
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={1024}
+                    max={65535}
+                    value={serverPort}
+                    onChange={(e) => setServerPortDraft(e.target.value)}
+                    className="w-24 text-center text-xs"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={restartingServer}
+                    onClick={() => void handleRestartServer()}
+                  >
+                    {restartingServer ? '重启中…' : '重启服务'}
+                  </Button>
+                </div>
               </div>
             </div>
 

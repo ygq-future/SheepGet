@@ -45,6 +45,9 @@ func TestDefaultSettings(t *testing.T) {
 	if s.General.LaunchAtStartup != false {
 		t.Errorf("expected LaunchAtStartup false by default")
 	}
+	if s.General.ServerPort != DefaultServerPort {
+		t.Errorf("expected ServerPort %d by default, got %d", DefaultServerPort, s.General.ServerPort)
+	}
 	if s.Proxy.Mode != ProxyModeSystem {
 		t.Errorf("expected ProxyModeSystem, got %s", s.Proxy.Mode)
 	}

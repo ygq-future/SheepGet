@@ -107,9 +107,13 @@ func (d *DownloadConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// GeneralConfig specifies general application settings like autostart.
+// DefaultServerPort is the default local loopback HTTP server port.
+const DefaultServerPort = 9248
+
+// GeneralConfig specifies general application settings like autostart and server port.
 type GeneralConfig struct {
 	LaunchAtStartup bool `json:"launchAtStartup"`
+	ServerPort      int  `json:"serverPort"`
 }
 
 // ProxyMode specifies the proxy strategy.
@@ -318,6 +322,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 	return Settings{
 		General: GeneralConfig{
 			LaunchAtStartup: false,
+			ServerPort:      DefaultServerPort,
 		},
 		Appearance: AppearanceConfig{
 			Theme:       ThemeSystem,
@@ -355,6 +360,11 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 // ValidateAndFallback validates configuration fields and safely falls back to defaults for invalid/empty values.
 func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir string) Settings {
 	defaults := DefaultSettings(fallbackDownloadDir, fallbackTempDir)
+
+	// Validate ServerPort
+	if s.General.ServerPort < 1024 || s.General.ServerPort > 65535 {
+		s.General.ServerPort = DefaultServerPort
+	}
 
 	// Validate Theme
 	switch s.Appearance.Theme {

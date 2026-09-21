@@ -145,6 +145,17 @@ func NewApp() *App {
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	adapter := &loopbackServerAdapter{app: app}
 	loopbackSrv := server.NewServer(storeDir.SessionFile(), adapter, adapter)
+	st := settingsSvc.Get()
+	if st.General.ServerPort > 0 {
+		loopbackSrv.SetTargetPort(st.General.ServerPort)
+	} else {
+		loopbackSrv.SetTargetPort(config.DefaultServerPort)
+	}
+	loopbackSrv.SetOnStatusChange(func(status server.Status) {
+		if wailsApp := app.getApp(); wailsApp != nil {
+			wailsApp.Event.Emit(appevents.ServerStatusChanged, status)
+		}
+	})
 	app.loopbackServer = loopbackSrv
 	return app
 }
@@ -261,6 +272,13 @@ func (a *App) UpdateSettings(s config.Settings) (config.Settings, error) {
 	if err == nil && prev.General.LaunchAtStartup != updated.General.LaunchAtStartup {
 		a.syncLaunchAtStartup(updated.General.LaunchAtStartup)
 	}
+	if err == nil && prev.General.ServerPort != updated.General.ServerPort && updated.General.ServerPort > 0 {
+		if _, restartErr := a.RestartServer(updated.General.ServerPort); restartErr != nil {
+			updated.General.ServerPort = prev.General.ServerPort
+			_, _ = a.settings.Update(updated)
+			return updated, fmt.Errorf("设置已保存但本地端口重启失败: %w", restartErr)
+		}
+	}
 	return updated, err
 }
 
@@ -298,6 +316,52 @@ func (a *App) IsLaunchAtStartup() bool {
 		return a.settings.Get().General.LaunchAtStartup
 	}
 	return false
+}
+
+// RestartServer restarts the local HTTP loopback server on the specified port.
+// If port <= 0, it uses the port configured in settings.
+func (a *App) RestartServer(port int) (int, error) {
+	if a.loopbackServer == nil {
+		return 0, fmt.Errorf("loopback server not initialized")
+	}
+	if port <= 0 {
+		if a.settings != nil {
+			port = a.settings.Get().General.ServerPort
+		}
+		if port <= 0 {
+			port = config.DefaultServerPort
+		}
+	}
+
+	if err := a.loopbackServer.Restart(port); err != nil {
+		return 0, err
+	}
+
+	actualPort := a.loopbackServer.Port()
+	if a.settings != nil {
+		st := a.settings.Get()
+		if st.General.ServerPort != actualPort {
+			st.General.ServerPort = actualPort
+			_, _ = a.settings.Update(st)
+		}
+	}
+	return actualPort, nil
+}
+
+// GetServerStatus returns the active loopback server runtime status.
+func (a *App) GetServerStatus() server.Status {
+	if a.loopbackServer != nil {
+		return a.loopbackServer.Status()
+	}
+	port := config.DefaultServerPort
+	if a.settings != nil {
+		port = a.settings.Get().General.ServerPort
+	}
+	return server.Status{
+		Running:        false,
+		Port:           port,
+		ConnectedCount: 0,
+	}
 }
 
 // GetStorageInfo returns current storage mode and directories

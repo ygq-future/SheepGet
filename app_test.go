@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -99,6 +100,9 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 			DataDir: tmpDir,
 		},
 	}
+	adapter := &loopbackServerAdapter{app: app}
+	loopbackSrv := server.NewServer(filepath.Join(tmpDir, "session.json"), adapter, adapter)
+	app.loopbackServer = loopbackSrv
 	winView := &wailsWindowView{
 		getApp: app.getApp,
 		name:   "fileinfo",
@@ -1189,5 +1193,51 @@ func TestApp_GetStorageInfo(t *testing.T) {
 	}
 	if info["mode"] == "" || info["dataDir"] == "" {
 		t.Errorf("expected mode and dataDir in storage info, got: %+v", info)
+	}
+}
+
+func TestApp_ServerPortManagement(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	status := app.GetServerStatus()
+	if status.Port <= 0 {
+		t.Errorf("expected positive server port, got %d", status.Port)
+	}
+
+	// Restart on a fresh available port
+	testLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on test port: %v", err)
+	}
+	targetPort := testLn.Addr().(*net.TCPAddr).Port
+	_ = testLn.Close()
+
+	restartedPort, err := app.RestartServer(targetPort)
+	if err != nil {
+		t.Fatalf("RestartServer failed: %v", err)
+	}
+	if restartedPort != targetPort {
+		t.Errorf("expected restarted port %d, got %d", targetPort, restartedPort)
+	}
+	if app.GetServerStatus().Port != targetPort {
+		t.Errorf("expected GetServerStatus port %d, got %d", targetPort, app.GetServerStatus().Port)
+	}
+	if app.GetSettings().General.ServerPort != targetPort {
+		t.Errorf("expected settings General.ServerPort %d, got %d", targetPort, app.GetSettings().General.ServerPort)
+	}
+}
+
+func TestApp_GetServerStatus(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	status := app.GetServerStatus()
+	if !status.Running {
+		t.Errorf("expected server to be running")
+	}
+	if status.Port <= 0 {
+		t.Errorf("expected positive server port, got %d", status.Port)
+	}
+	if status.ConnectedCount < 0 {
+		t.Errorf("expected non-negative connected count, got %d", status.ConnectedCount)
 	}
 }

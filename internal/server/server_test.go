@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -202,4 +203,136 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
 		t.Errorf("expected session file to be deleted upon server stop")
 	}
+}
+
+func TestServer_Discover(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, "session.json")
+	handler := &mockDownloadHandler{}
+	cfgProvider := &mockConfigProvider{syncData: TakeoverConfigSync{ExcludedSites: []string{}}}
+
+	srv := NewServer(sessionPath, handler, cfgProvider)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+
+	// Case 1: Extension origin succeeds
+	req, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	req.Header.Set("Origin", AllowedExtensionOrigin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("discover request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for discover, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("Access-Control-Allow-Origin") != AllowedExtensionOrigin {
+		t.Errorf("expected CORS header %s, got %s", AllowedExtensionOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode discover response: %v", err)
+	}
+	_ = resp.Body.Close()
+	if payload["sessionToken"] != srv.SessionToken() {
+		t.Errorf("expected sessionToken %s, got %v", srv.SessionToken(), payload["sessionToken"])
+	}
+
+	// Case 2: Web origin is blocked (CSRF defense)
+	reqWeb, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	reqWeb.Header.Set("Origin", "https://malicious-website.com")
+	respWeb, err := http.DefaultClient.Do(reqWeb)
+	if err != nil {
+		t.Fatalf("web origin discover failed: %v", err)
+	}
+	if respWeb.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for web origin, got %d", respWeb.StatusCode)
+	}
+	_ = respWeb.Body.Close()
+
+	// Case 3: Other extension origin is blocked
+	reqOther, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	reqOther.Header.Set("Origin", "chrome-extension://malicious-extension-id-12345678")
+	respOther, err := http.DefaultClient.Do(reqOther)
+	if err != nil {
+		t.Fatalf("other extension discover failed: %v", err)
+	}
+	if respOther.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for other extension, got %d", respOther.StatusCode)
+	}
+	_ = respOther.Body.Close()
+
+	// Case 4: Request without origin (standard Chrome extension service worker GET) succeeds
+	reqEmpty, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	respEmpty, err := http.DefaultClient.Do(reqEmpty)
+	if err != nil {
+		t.Fatalf("empty origin discover failed: %v", err)
+	}
+	if respEmpty.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for extension GET without origin, got %d", respEmpty.StatusCode)
+	}
+	_ = respEmpty.Body.Close()
+}
+
+func TestServer_RestartOnPort(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, "session.json")
+	handler := &mockDownloadHandler{}
+	cfgProvider := &mockConfigProvider{syncData: TakeoverConfigSync{ExcludedSites: []string{}}}
+
+	srv := NewServer(sessionPath, handler, cfgProvider)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	initialPort := srv.Port()
+
+	// Find an available port for testing restart
+	testLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to get available port: %v", err)
+	}
+	newPort := testLn.Addr().(*net.TCPAddr).Port
+	_ = testLn.Close()
+
+	// Restart on newPort
+	if err := srv.Restart(newPort); err != nil {
+		t.Fatalf("failed to restart on port %d: %v", newPort, err)
+	}
+	if srv.Port() != newPort {
+		t.Errorf("expected server port %d after restart, got %d", newPort, srv.Port())
+	}
+
+	// Verify new port is responsive
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/api/v1/discover", newPort), nil)
+	req.Header.Set("Origin", AllowedExtensionOrigin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request to restarted server failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK after restart, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// Verify that restarting on an occupied port fails gracefully and keeps previous server running
+	occupiedLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on test port: %v", err)
+	}
+	occupiedPort := occupiedLn.Addr().(*net.TCPAddr).Port
+	defer func() { _ = occupiedLn.Close() }()
+
+	if err := srv.Restart(occupiedPort); err == nil {
+		t.Errorf("expected restart on occupied port %d to fail", occupiedPort)
+	}
+	// Original server must still be intact on newPort
+	if srv.Port() != newPort {
+		t.Errorf("expected server to retain port %d after failed restart attempt, got %d", newPort, srv.Port())
+	}
+	_ = initialPort
 }

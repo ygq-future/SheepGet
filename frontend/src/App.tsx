@@ -9,10 +9,12 @@ import {
   OpenNewDownload,
   TriggerDownload,
   ShowProgressWindow,
+  GetServerStatus,
 } from '../bindings/sheep-get/app';
 import { Clipboard, Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
 import { Event } from './lib/events';
+import { DEFAULT_SERVER_PORT } from './lib/constants';
 import { DownloadRequest } from '../bindings/sheep-get/internal/window/models';
 import { TaskItem } from './components/TaskItem';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
@@ -52,6 +54,13 @@ function sortTasks(taskList: task.Task[]): task.Task[] {
   });
 }
 
+interface ServerStatusState {
+  running: boolean;
+  port: number;
+  connectedCount: number;
+  error?: string;
+}
+
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
   const [filter, setFilter] = useState<'all' | 'paused' | 'completed' | 'settings'>('all');
@@ -68,6 +77,40 @@ export function App() {
     }
   });
 
+  const [serverStatus, setServerStatus] = useState<ServerStatusState>({
+    running: false,
+    port: DEFAULT_SERVER_PORT,
+    connectedCount: 0,
+  });
+
+  useEffect(() => {
+    void GetServerStatus().then((st) => {
+      if (st) {
+        setServerStatus({
+          running: Boolean(st.running),
+          port: st.port || DEFAULT_SERVER_PORT,
+          connectedCount: st.connectedCount || 0,
+          error: st.error,
+        });
+      }
+    });
+
+    const unsubscribeServer = Events.On(Event.ServerStatusChanged, (e) => {
+      const data = unwrapEventData<ServerStatusState>(e.data);
+      if (data) {
+        setServerStatus({
+          running: Boolean(data.running),
+          port: data.port || DEFAULT_SERVER_PORT,
+          connectedCount: data.connectedCount || 0,
+          error: data.error,
+        });
+      }
+    });
+
+    return () => {
+      unsubscribeServer();
+    };
+  }, []);
   useEffect(() => {
     try {
       localStorage.setItem('sheep_sidebar_collapsed', String(sidebarCollapsed));
@@ -355,6 +398,21 @@ export function App() {
       color: 'text-[var(--accent)]',
     },
   ];
+  const isServerErr = !serverStatus.running || Boolean(serverStatus.error);
+  const isServerConnected = serverStatus.running && serverStatus.connectedCount > 0;
+  const serverStatusColor = isServerErr
+    ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]'
+    : isServerConnected
+      ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]'
+      : 'bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)] animate-pulse';
+
+  const serverStatusTitle = isServerErr
+    ? serverStatus.error
+      ? `HTTP 服务异常: ${serverStatus.error}`
+      : `HTTP 服务未运行或端口被占用`
+    : isServerConnected
+      ? `HTTP 服务已连接 (端口 ${serverStatus.port})，浏览器扩展通信就绪`
+      : `HTTP 服务监听中 (端口 ${serverStatus.port})，等待浏览器扩展连接`;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
@@ -473,6 +531,23 @@ export function App() {
               <SettingsIcon className="h-4 w-4 shrink-0" />
               {!sidebarCollapsed && <span>偏好设置</span>}
             </span>
+
+            {sidebarCollapsed ? (
+              <span
+                className={`absolute top-2 right-2 h-2 w-2 rounded-full ${serverStatusColor}`}
+                title={serverStatusTitle}
+              />
+            ) : (
+              <div
+                className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors group-hover:bg-white/5"
+                title={serverStatusTitle}
+              >
+                <span className={`h-2 w-2 shrink-0 rounded-full ${serverStatusColor}`} />
+                <span className="font-mono text-[10px] text-[var(--text-muted)]">
+                  {serverStatus.port}
+                </span>
+              </div>
+            )}
           </button>
 
           {counts.error > 0 && (

@@ -95,6 +95,11 @@ export enum Status {
 export class Task {
     "id": string;
     "url": string;
+
+    /**
+     * PageURL 是该下载任务的来源网页地址（如浏览器扩展捕获时所在的源页面）。
+     * 当下载链接失效或用户需要时，可直接在浏览器中重新打开该源网页。
+     */
     "pageUrl"?: string;
     "filename": string;
     "directory": string;
@@ -215,22 +220,22 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField18_0 = $$createType1;
-        const $$createField19_0 = $$createType3;
-        const $$createField22_0 = $$createType4;
-        const $$createField23_0 = $$createType6;
+        const $$createField19_0 = $$createType1;
+        const $$createField20_0 = $$createType3;
+        const $$createField23_0 = $$createType4;
+        const $$createField24_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField18_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField19_0($$parsedSource["chunks"]);
         }
         if ("media" in $$parsedSource) {
-            $$parsedSource["media"] = $$createField19_0($$parsedSource["media"]);
+            $$parsedSource["media"] = $$createField20_0($$parsedSource["media"]);
         }
         if ("segmentDone" in $$parsedSource) {
-            $$parsedSource["segmentDone"] = $$createField22_0($$parsedSource["segmentDone"]);
+            $$parsedSource["segmentDone"] = $$createField23_0($$parsedSource["segmentDone"]);
         }
         if ("mediaInputs" in $$parsedSource) {
-            $$parsedSource["mediaInputs"] = $$createField23_0($$parsedSource["mediaInputs"]);
+            $$parsedSource["mediaInputs"] = $$createField24_0($$parsedSource["mediaInputs"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

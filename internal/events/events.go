@@ -15,4 +15,5 @@ const (
 	FileInfoQueueUpdated   = "fileinfo:queue_updated"
 	FileInfoUpdated        = "fileinfo:updated"
 	AppOpenSettings        = "app:open-settings"
+	ServerStatusChanged    = "server:status_changed"
 )

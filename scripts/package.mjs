@@ -106,7 +106,16 @@ async function main() {
   // 1. Build main desktop application
   const mainExe = join(binDir, 'sheep-get' + ext);
   console.log('[Package] Building main desktop application...');
-  run('go', ['build', '-tags=production', '-trimpath', '-ldflags=-w -s', '-o', mainExe, '.']);
+  const mainLdflags = isWin ? '-w -s -H=windowsgui' : '-w -s';
+  run('go', [
+    'build',
+    '-tags=production',
+    '-trimpath',
+    `-ldflags=${mainLdflags}`,
+    '-o',
+    mainExe,
+    '.',
+  ]);
 
   // 2. Build Native Messaging Host helper binary
   const hostExe = join(binDir, 'sheepget-host' + ext);

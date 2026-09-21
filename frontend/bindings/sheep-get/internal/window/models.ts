@@ -32,6 +32,7 @@ export class DownloadRequest {
      */
     "variantUri"?: string;
     "pageUrl"?: string;
+
     /** Creates a new DownloadRequest instance. */
     constructor($$source: Partial<DownloadRequest> = {}) {
         if (!("url" in $$source)) {
@@ -116,9 +117,9 @@ export class FileInfoItem {
     "queueTotal": number;
     "headers"?: { [_ in string]?: string };
     "pageUrl"?: string;
-    "probing"?: boolean;
+    "probing": boolean;
+
     /**
-     * 下面三项描述这条链接的 HLS 事实，界面据此先选清晰度、再展示选定后的大小与时长。
      * Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。
      */
     "variants"?: hls$0.VariantOption[];
@@ -178,6 +179,9 @@ export class FileInfoItem {
         if (!("queueTotal" in $$source)) {
             this["queueTotal"] = 0;
         }
+        if (!("probing" in $$source)) {
+            this["probing"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -189,7 +193,7 @@ export class FileInfoItem {
         const $$createField13_0 = $$createType2;
         const $$createField14_0 = $$createType3;
         const $$createField17_0 = $$createType0;
-        const $$createField18_0 = $$createType5;
+        const $$createField20_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
             $$parsedSource["duplicateTask"] = $$createField13_0($$parsedSource["duplicateTask"]);
@@ -201,7 +205,7 @@ export class FileInfoItem {
             $$parsedSource["headers"] = $$createField17_0($$parsedSource["headers"]);
         }
         if ("variants" in $$parsedSource) {
-            $$parsedSource["variants"] = $$createField18_0($$parsedSource["variants"]);
+            $$parsedSource["variants"] = $$createField20_0($$parsedSource["variants"]);
         }
         return new FileInfoItem($$parsedSource as Partial<FileInfoItem>);
     }

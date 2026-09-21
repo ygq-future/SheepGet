@@ -202,15 +202,19 @@ export enum DuplicateURLPolicy {
 };
 
 /**
- * GeneralConfig specifies general application settings like autostart.
+ * GeneralConfig specifies general application settings like autostart and server port.
  */
 export class GeneralConfig {
     "launchAtStartup": boolean;
+    "serverPort": number;
 
     /** Creates a new GeneralConfig instance. */
     constructor($$source: Partial<GeneralConfig> = {}) {
         if (!("launchAtStartup" in $$source)) {
             this["launchAtStartup"] = false;
+        }
+        if (!("serverPort" in $$source)) {
+            this["serverPort"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -336,7 +340,7 @@ export class Settings {
 }
 
 /**
- * TakeoverConfig specifies automatic browser takeover rules, independent of file categories.
+ * TakeoverConfig specifies automatic browser takeover rules such as excluded sites and shortcuts.
  */
 export class TakeoverConfig {
     "excludedSites": string[];

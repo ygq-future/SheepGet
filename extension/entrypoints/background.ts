@@ -1,4 +1,9 @@
-import { DesktopClient, type DesktopEventLink } from '../lib/client';
+import {
+  DesktopClient,
+  type DesktopEventLink,
+  DEFAULT_LOOPBACK_PORT,
+  discoverSessionViaHttp,
+} from '../lib/client';
 import { ResponseFilenameCache } from '../lib/filenames';
 import { LINK_VERIFY_TTL_MS, planHandoverFailure, shouldReverifyLink } from '../lib/handover';
 import {
@@ -608,13 +613,35 @@ async function reverifyLink(trigger: string): Promise<DesktopStatus> {
   }
 
   // 没有 client 时也先试一次存下来的会话：原生消息宿主若没注册成功，这条路径还能救回来。
-  if (!desktopClient) {
-    const stored = await getStoredSession();
-    if (stored) {
-      const client = new DesktopClient(stored);
+  const stored = await getStoredSession();
+  if (!desktopClient && stored) {
+    const client = new DesktopClient(stored);
+    if (await client.ping(PING_TIMEOUT_MS)) {
+      adoptLink(stored, client);
+      console.info(`[SheepGet] Desktop link re-established on stored port ${stored.port}`);
+      return desktopStatus();
+    }
+  }
+
+  // 优先通过本地 HTTP 直接探测（为便携版与免 Host 模式提供纯净 HTTP 通信链路）
+  // 按优先级探测：上次成功连接的端口、默认端口 9248
+  const candidatePorts = Array.from(
+    new Set(
+      [stored?.port, DEFAULT_LOOPBACK_PORT].filter(
+        (p): p is number => typeof p === 'number' && p > 0,
+      ),
+    ),
+  );
+  for (const port of candidatePorts) {
+    const httpDiscovered = await discoverSessionViaHttp(port);
+    if (httpDiscovered) {
+      const client = new DesktopClient(httpDiscovered);
       if (await client.ping(PING_TIMEOUT_MS)) {
-        adoptLink(stored, client);
-        console.info(`[SheepGet] Desktop link re-established on stored port ${stored.port}`);
+        adoptLink(httpDiscovered, client);
+        void setStoredSession(httpDiscovered);
+        console.info(
+          `[SheepGet] Desktop link established via direct HTTP on port ${httpDiscovered.port} (${trigger})`,
+        );
         return desktopStatus();
       }
     }

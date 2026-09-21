@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,20 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"sheep-get/internal/atomicfile"
 )
+
+// PinnedExtensionID is the fixed 32-character extension ID for SheepGet (ADR-0005).
+const PinnedExtensionID = "oediboaeofmnlkgcjhnpfnngphkjooam"
+
+// AllowedExtensionOrigin is the expected browser extension Origin header value.
+const AllowedExtensionOrigin = "chrome-extension://" + PinnedExtensionID
+
+// Status represents the runtime status of the loopback HTTP and WebSocket server.
+type Status struct {
+	Running        bool   `json:"running"`
+	Port           int    `json:"port"`
+	ConnectedCount int    `json:"connectedCount"`
+	Error          string `json:"error,omitempty"`
+}
 
 // DownloadHandler is implemented by the desktop app to accept handover requests.
 type DownloadHandler interface {
@@ -42,15 +57,19 @@ type Server struct {
 	handler        DownloadHandler
 	configProvider ConfigProvider
 
+	targetPort   int
 	listener     net.Listener
 	httpServer   *http.Server
 	port         int
 	sessionToken string
 	startedAt    int64
+	lastErr      string
 
-	mu            sync.RWMutex
-	clients       map[*websocket.Conn]struct{}
-	configVersion atomic.Int64
+	mu             sync.RWMutex
+	clients        map[*websocket.Conn]struct{}
+	configVersion  atomic.Int64
+	onStatusChange func(Status)
+	statusCh       chan Status
 }
 
 // NewServer creates an unstarted local loopback server instance.
@@ -60,20 +79,168 @@ func NewServer(sessionPath string, handler DownloadHandler, configProvider Confi
 		handler:        handler,
 		configProvider: configProvider,
 		clients:        make(map[*websocket.Conn]struct{}),
+		statusCh:       make(chan Status, 64),
 	}
 	s.configVersion.Store(time.Now().Unix())
+	go s.statusWorker()
 	return s
 }
 
-// Start binds to an ephemeral loopback port, writes session metadata, and starts serving.
-func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return fmt.Errorf("failed to bind loopback server: %w", err)
+// SetTargetPort sets the desired listening port before start or restart.
+func (s *Server) SetTargetPort(port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.targetPort = port
+}
+
+// SetOnStatusChange configures a callback invoked whenever server status or connected client count changes.
+func (s *Server) SetOnStatusChange(fn func(Status)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onStatusChange = fn
+}
+
+// Status returns a snapshot of the current loopback server status.
+func (s *Server) Status() Status {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Status{
+		Running:        s.listener != nil,
+		Port:           s.port,
+		ConnectedCount: len(s.clients),
+		Error:          s.lastErr,
 	}
+}
+
+func (s *Server) statusWorker() {
+	for st := range s.statusCh {
+		s.mu.RLock()
+		fn := s.onStatusChange
+		s.mu.RUnlock()
+		if fn != nil {
+			fn(st)
+		}
+	}
+}
+
+func (s *Server) notifyStatusChangeLocked() {
+	st := Status{
+		Running:        s.listener != nil,
+		Port:           s.port,
+		ConnectedCount: len(s.clients),
+		Error:          s.lastErr,
+	}
+	select {
+	case s.statusCh <- st:
+	default:
+		select {
+		case <-s.statusCh:
+		default:
+		}
+		s.statusCh <- st
+	}
+}
+
+// Start binds to the configured or ephemeral loopback port, writes session metadata, and starts serving.
+func (s *Server) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startLocked()
+}
+
+// Restart safely restarts listening on newPort without dropping the existing server if newPort is occupied.
+func (s *Server) Restart(newPort int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	targetPort := s.targetPort
+	if newPort > 0 {
+		targetPort = newPort
+	}
+
+	var newLn net.Listener
+	var err error
+	if targetPort > 0 {
+		addr := fmt.Sprintf("127.0.0.1:%d", targetPort)
+		newLn, err = net.Listen("tcp", addr)
+		if err != nil {
+			s.lastErr = err.Error()
+			s.notifyStatusChangeLocked()
+			return fmt.Errorf("failed to bind loopback server on %s: %w", addr, err)
+		}
+	} else {
+		newLn, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			s.lastErr = err.Error()
+			s.notifyStatusChangeLocked()
+			return fmt.Errorf("failed to bind loopback server: %w", err)
+		}
+	}
+
+	// Successfully bound new port; now safely stop previous server and switch
+	s.stopLocked()
+	s.targetPort = targetPort
+	return s.startWithListenerLocked(newLn)
+}
+
+// Stop gracefully terminates all active connections, closes the server, and deletes the session file.
+func (s *Server) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopLocked()
+	return nil
+}
+
+func (s *Server) stopLocked() {
+	for conn := range s.clients {
+		_ = conn.Close(websocket.StatusNormalClosure, "server shutting down")
+		delete(s.clients, conn)
+	}
+
+	if s.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = s.httpServer.Shutdown(ctx)
+		cancel()
+		s.httpServer = nil
+	}
+
+	if s.listener != nil {
+		_ = s.listener.Close()
+		s.listener = nil
+	}
+
+	if s.sessionPath != "" {
+		_ = os.Remove(s.sessionPath)
+	}
+	s.notifyStatusChangeLocked()
+
+}
+
+func (s *Server) startLocked() error {
+	var ln net.Listener
+	var err error
+	if s.targetPort > 0 {
+		addr := fmt.Sprintf("127.0.0.1:%d", s.targetPort)
+		ln, err = net.Listen("tcp", addr)
+		if err != nil {
+			s.lastErr = err.Error()
+			s.notifyStatusChangeLocked()
+			return fmt.Errorf("failed to bind loopback server on %s: %w", addr, err)
+		}
+	} else {
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			s.lastErr = err.Error()
+			s.notifyStatusChangeLocked()
+			return fmt.Errorf("failed to bind loopback server: %w", err)
+		}
+	}
+	return s.startWithListenerLocked(ln)
+}
+
+func (s *Server) startWithListenerLocked(ln net.Listener) error {
 	s.listener = ln
 	s.port = ln.Addr().(*net.TCPAddr).Port
-
 	// Generate secure random token (32 bytes = 64 hex characters)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -101,6 +268,9 @@ func (s *Server) Start() error {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/discover", s.handleDiscover)
+	mux.HandleFunc("OPTIONS /api/v1/discover", s.handleDiscover)
+	mux.HandleFunc("POST /api/v1/discover", s.handleDiscover)
 	mux.HandleFunc("GET /api/v1/ping", s.authMiddleware(s.handlePing))
 	mux.HandleFunc("GET /api/v1/config/takeover", s.authMiddleware(s.handleTakeoverConfig))
 	mux.HandleFunc("HEAD /api/v1/config/takeover", s.authMiddleware(s.handleTakeoverConfig))
@@ -119,39 +289,22 @@ func (s *Server) Start() error {
 		_ = s.httpServer.Serve(ln)
 	}()
 
+	s.lastErr = ""
+	s.notifyStatusChangeLocked()
 	return nil
-}
-
-// Stop gracefully terminates all active connections, closes the server, and deletes the session file.
-func (s *Server) Stop() error {
-	s.mu.Lock()
-	for conn := range s.clients {
-		_ = conn.Close(websocket.StatusNormalClosure, "server shutting down")
-		delete(s.clients, conn)
-	}
-	s.mu.Unlock()
-
-	var err error
-	if s.httpServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		err = s.httpServer.Shutdown(ctx)
-	}
-
-	if s.sessionPath != "" {
-		_ = os.Remove(s.sessionPath)
-	}
-
-	return err
 }
 
 // Port returns the active bound port.
 func (s *Server) Port() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.port
 }
 
 // SessionToken returns the active session token.
 func (s *Server) SessionToken() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.sessionToken
 }
 
@@ -182,18 +335,52 @@ func (s *Server) BroadcastTakeoverConfig(syncData TakeoverConfigSync) {
 	}
 }
 
-// authMiddleware validates the X-SheepGet-Token header.
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-SheepGet-Token")
-		if token == "" || token != s.sessionToken {
+		s.mu.RLock()
+		currentToken := s.sessionToken
+		s.mu.RUnlock()
+		if token == "" || token != currentToken {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if strings.HasPrefix(origin, "http://") || strings.HasPrefix(origin, "https://") {
+		http.Error(w, `{"error":"forbidden web origin"}`, http.StatusForbidden)
+		return
+	}
+	if origin != "" && origin != AllowedExtensionOrigin {
+		http.Error(w, `{"error":"forbidden origin"}`, http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", AllowedExtensionOrigin)
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-SheepGet-Token")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	s.mu.RLock()
+	resp := map[string]any{
+		"status":       "ok",
+		"version":      "1.0.0",
+		"port":         s.port,
+		"sessionToken": s.sessionToken,
+		"startedAt":    s.startedAt,
+	}
+	s.mu.RUnlock()
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
@@ -201,7 +388,6 @@ func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok","version":"1.0.0"}`))
 }
-
 func (s *Server) handleTakeoverConfig(w http.ResponseWriter, r *http.Request) {
 	ver := s.configVersion.Load()
 	eTag := fmt.Sprintf(`"%d"`, ver)
@@ -342,11 +528,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.clients[conn] = struct{}{}
+	s.notifyStatusChangeLocked()
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
 		delete(s.clients, conn)
+		s.notifyStatusChangeLocked()
 		s.mu.Unlock()
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
