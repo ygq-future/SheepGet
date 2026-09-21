@@ -319,7 +319,7 @@ func TestServer_RestartOnPort(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	// Verify that restarting on an occupied port fails gracefully and keeps previous server running
+	// Verify that restarting on an occupied port automatically increments within span
 	occupiedLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen on test port: %v", err)
@@ -327,12 +327,42 @@ func TestServer_RestartOnPort(t *testing.T) {
 	occupiedPort := occupiedLn.Addr().(*net.TCPAddr).Port
 	defer func() { _ = occupiedLn.Close() }()
 
-	if err := srv.Restart(occupiedPort); err == nil {
-		t.Errorf("expected restart on occupied port %d to fail", occupiedPort)
+	if err := srv.Restart(occupiedPort); err != nil {
+		t.Fatalf("expected restart on occupied port %d to auto-increment and succeed: %v", occupiedPort, err)
 	}
-	// Original server must still be intact on newPort
-	if srv.Port() != newPort {
-		t.Errorf("expected server to retain port %d after failed restart attempt, got %d", newPort, srv.Port())
+	if srv.Port() <= occupiedPort || srv.Port() > occupiedPort+MaxPortAutoIncrementSpan {
+		t.Errorf("expected server port to auto-increment within span [%d, %d], got %d", occupiedPort, occupiedPort+MaxPortAutoIncrementSpan, srv.Port())
+	}
+
+	// Verify that when all ports in the auto-increment span are occupied, restart fails gracefully and keeps previous server running
+	currentPort := srv.Port()
+	exhaustLns := make([]net.Listener, 0, MaxPortAutoIncrementSpan+1)
+	baseBlockedPort := 54000
+	for p := baseBlockedPort; p <= baseBlockedPort+MaxPortAutoIncrementSpan; p++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			t.Fatalf("failed to occupy test port %d: %v", p, err)
+		}
+		exhaustLns = append(exhaustLns, ln)
+	}
+	defer func() {
+		for _, ln := range exhaustLns {
+			_ = ln.Close()
+		}
+	}()
+
+	if err := srv.Restart(baseBlockedPort); err == nil {
+		t.Errorf("expected restart on completely occupied port span [%d-%d] to fail", baseBlockedPort, baseBlockedPort+MaxPortAutoIncrementSpan)
+	}
+	if srv.Port() != currentPort {
+		t.Errorf("expected server to retain port %d after failed restart attempt, got %d", currentPort, srv.Port())
 	}
 	_ = initialPort
+}
+
+func TestServer_EventsContract(t *testing.T) {
+	// Pinned event string contract matching browser extension expectations
+	if EventServerMigrated != "server_migrated" {
+		t.Errorf("expected EventServerMigrated to be 'server_migrated', got '%s'", EventServerMigrated)
+	}
 }

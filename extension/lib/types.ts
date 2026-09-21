@@ -164,6 +164,12 @@ export interface ReconnectMessage {
   type: 'RECONNECT';
 }
 
+/** 手动更新扩展通信目标端口（单一数据来源）。 */
+export interface SetTargetPortMessage {
+  type: 'SET_TARGET_PORT';
+  port: number;
+}
+
 export type ExtensionMessage =
   | KeyStateMessage
   | ResetKeysMessage
@@ -174,4 +180,5 @@ export type ExtensionMessage =
   | GetHLSVariantsMessage
   | GetMediaProbeMessage
   | GetStatusMessage
-  | ReconnectMessage;
+  | ReconnectMessage
+  | SetTargetPortMessage;

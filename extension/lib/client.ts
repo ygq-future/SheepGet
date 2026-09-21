@@ -8,7 +8,7 @@ import type {
 } from './types';
 
 export const DEFAULT_LOOPBACK_PORT = 9248;
-
+export const PORT_FALLBACK_SPAN = 5;
 /**
  * 直接通过本地 HTTP 探测桌面端会话。
  * 在便携版未注册 Host 或纯 HTTP 模式下，直接探测可实现秒连且零系统注册表侵入。
@@ -18,7 +18,7 @@ export async function discoverSessionViaHttp(
   fetchFn: typeof fetch = fetch,
 ): Promise<SessionMetadata | null> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
+  const timer = setTimeout(() => controller.abort(), 600);
   try {
     const res = await fetchFn(`http://127.0.0.1:${candidatePort}/api/v1/discover`, {
       method: 'GET',
@@ -242,6 +242,7 @@ export class DesktopClient {
   connectEvents(
     onConfigUpdated: (cfg: TakeoverConfigSync) => void,
     onLinkStateChange?: (open: boolean) => void,
+    onServerMigrated?: (newPort: number) => void,
   ): DesktopEventLink {
     const wsUrl = `ws://127.0.0.1:${this.session.port}/api/v1/events?token=${encodeURIComponent(
       this.session.sessionToken,
@@ -265,6 +266,11 @@ export class DesktopClient {
           };
           if (msg.event === 'takeover_config_updated' && msg.data) {
             onConfigUpdated(msg.data as TakeoverConfigSync);
+          } else if (msg.event === 'server_migrated' && msg.data) {
+            const data = msg.data as { port?: number };
+            if (data.port && typeof data.port === 'number') {
+              onServerMigrated?.(data.port);
+            }
           }
         } catch {
           // Ignore invalid message

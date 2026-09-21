@@ -1203,6 +1203,9 @@ func TestApp_ServerPortManagement(t *testing.T) {
 	if status.Port <= 0 {
 		t.Errorf("expected positive server port, got %d", status.Port)
 	}
+	if app.GetSettings().General.ServerPort != status.Port {
+		t.Errorf("expected settings General.ServerPort %d to match status.Port %d on startup", app.GetSettings().General.ServerPort, status.Port)
+	}
 
 	// Restart on a fresh available port
 	testLn, err := net.Listen("tcp", "127.0.0.1:0")

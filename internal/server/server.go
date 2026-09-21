@@ -29,6 +29,9 @@ const PinnedExtensionID = "oediboaeofmnlkgcjhnpfnngphkjooam"
 // AllowedExtensionOrigin is the expected browser extension Origin header value.
 const AllowedExtensionOrigin = "chrome-extension://" + PinnedExtensionID
 
+// EventServerMigrated is the WebSocket event name emitted to extension clients before migrating to a new port.
+const EventServerMigrated = "server_migrated"
+
 // Status represents the runtime status of the loopback HTTP and WebSocket server.
 type Status struct {
 	Running        bool   `json:"running"`
@@ -148,7 +151,37 @@ func (s *Server) Start() error {
 	return s.startLocked()
 }
 
-// Restart safely restarts listening on newPort without dropping the existing server if newPort is occupied.
+// MaxPortAutoIncrementSpan defines the maximum number of fallback ports to try when targetPort is occupied.
+const MaxPortAutoIncrementSpan = 5
+
+func listenWithAutoIncrement(basePort int) (net.Listener, int, error) {
+	if basePort <= 0 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, 0, err
+		}
+		return ln, ln.Addr().(*net.TCPAddr).Port, nil
+	}
+
+	var lastErr error
+	maxPort := basePort + MaxPortAutoIncrementSpan
+	if maxPort > 65535 {
+		maxPort = 65535
+	}
+
+	for p := basePort; p <= maxPort; p++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", p)
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, p, nil
+		}
+		lastErr = err
+	}
+	return nil, 0, fmt.Errorf("failed to bind loopback server on ports %d-%d: %w", basePort, maxPort, lastErr)
+}
+
+// Restart safely restarts listening on newPort (with auto-increment fallback if occupied)
+// without dropping the existing server if all candidate ports are occupied.
 func (s *Server) Restart(newPort int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -158,29 +191,44 @@ func (s *Server) Restart(newPort int) error {
 		targetPort = newPort
 	}
 
-	var newLn net.Listener
-	var err error
-	if targetPort > 0 {
-		addr := fmt.Sprintf("127.0.0.1:%d", targetPort)
-		newLn, err = net.Listen("tcp", addr)
-		if err != nil {
-			s.lastErr = err.Error()
-			s.notifyStatusChangeLocked()
-			return fmt.Errorf("failed to bind loopback server on %s: %w", addr, err)
+	newLn, actualPort, err := listenWithAutoIncrement(targetPort)
+	if err != nil {
+		s.lastErr = err.Error()
+		s.notifyStatusChangeLocked()
+		return err
+	}
+
+	// If the listening port changed and we have connected clients,
+	// notify them so they immediately migrate to the new port before the old server shuts down.
+	if s.port != actualPort && len(s.clients) > 0 {
+		migrationMsg := EventMessage{
+			Event: EventServerMigrated,
+			Data: map[string]any{
+				"port": actualPort,
+			},
 		}
-	} else {
-		newLn, err = net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			s.lastErr = err.Error()
-			s.notifyStatusChangeLocked()
-			return fmt.Errorf("failed to bind loopback server: %w", err)
+		for conn := range s.clients {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			_ = wsjson.Write(ctx, conn, migrationMsg)
+			cancel()
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// Successfully bound new port; now safely stop previous server and switch
 	s.stopLocked()
 	s.targetPort = targetPort
 	return s.startWithListenerLocked(newLn)
+}
+
+func (s *Server) startLocked() error {
+	ln, _, err := listenWithAutoIncrement(s.targetPort)
+	if err != nil {
+		s.lastErr = err.Error()
+		s.notifyStatusChangeLocked()
+		return err
+	}
+	return s.startWithListenerLocked(ln)
 }
 
 // Stop gracefully terminates all active connections, closes the server, and deletes the session file.
@@ -214,28 +262,6 @@ func (s *Server) stopLocked() {
 	}
 	s.notifyStatusChangeLocked()
 
-}
-
-func (s *Server) startLocked() error {
-	var ln net.Listener
-	var err error
-	if s.targetPort > 0 {
-		addr := fmt.Sprintf("127.0.0.1:%d", s.targetPort)
-		ln, err = net.Listen("tcp", addr)
-		if err != nil {
-			s.lastErr = err.Error()
-			s.notifyStatusChangeLocked()
-			return fmt.Errorf("failed to bind loopback server on %s: %w", addr, err)
-		}
-	} else {
-		ln, err = net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			s.lastErr = err.Error()
-			s.notifyStatusChangeLocked()
-			return fmt.Errorf("failed to bind loopback server: %w", err)
-		}
-	}
-	return s.startWithListenerLocked(ln)
 }
 
 func (s *Server) startWithListenerLocked(ln net.Listener) error {

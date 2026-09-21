@@ -197,6 +197,15 @@ func (a *App) startup(ctx context.Context) {
 	if a.loopbackServer != nil {
 		if err := a.loopbackServer.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start loopback server: %v\n", err)
+		} else {
+			actualPort := a.loopbackServer.Port()
+			if actualPort > 0 && a.settings != nil {
+				st := a.settings.Get()
+				if st.General.ServerPort != actualPort {
+					st.General.ServerPort = actualPort
+					_, _ = a.settings.Update(st)
+				}
+			}
 		}
 	}
 }

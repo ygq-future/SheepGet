@@ -359,7 +359,7 @@ export function SettingsPanel() {
     setRestartingServer(true);
     try {
       const bound = await RestartServer(portNum);
-      setServerPortDraft(String(bound));
+      setServerPortDraft(null);
       showToast(`本地 HTTP 服务已就绪，当前端口: ${bound}`, 'success');
     } catch (err) {
       showToast(`重启 HTTP 服务失败: ${String(err)}`, 'error');
@@ -1101,12 +1101,12 @@ export function SettingsPanel() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Input
-                    type="number"
-                    min={1024}
-                    max={65535}
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={5}
                     value={serverPort}
-                    onChange={(e) => setServerPortDraft(e.target.value)}
-                    className="w-24 text-center text-xs"
+                    onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
+                    className="w-24 [appearance:textfield] text-center text-xs [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                   />
                   <Button
                     variant="secondary"

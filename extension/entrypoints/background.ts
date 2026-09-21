@@ -2,6 +2,7 @@ import {
   DesktopClient,
   type DesktopEventLink,
   DEFAULT_LOOPBACK_PORT,
+  PORT_FALLBACK_SPAN,
   discoverSessionViaHttp,
 } from '../lib/client';
 import { ResponseFilenameCache } from '../lib/filenames';
@@ -19,8 +20,10 @@ import {
   DEFAULT_TAKEOVER_CONFIG,
   getStoredSession,
   getStoredTakeoverConfig,
+  getStoredTargetPort,
   setStoredSession,
   setStoredTakeoverConfig,
+  setStoredTargetPort,
 } from '../lib/storage';
 import type {
   DesktopStatus,
@@ -45,7 +48,7 @@ let linkOnline = false;
 let linkSession: SessionMetadata | null = null;
 let linkLastVerifiedAt: number | null = null;
 let linkOfflineReason: string | null = null;
-
+let currentTargetPort = DEFAULT_LOOPBACK_PORT;
 const PING_TIMEOUT_MS = 1200;
 const HANDOVER_TIMEOUT_MS = 2500;
 
@@ -248,6 +251,17 @@ export default defineBackground(() => {
     } else if (msg?.type === 'RECONNECT') {
       void (async () => {
         sendResponse(await reverifyLink('popup'));
+      })();
+      return true;
+    } else if (msg?.type === 'SET_TARGET_PORT') {
+      void (async () => {
+        const port = Number((msg as { port?: number }).port);
+        if (port >= 1024 && port <= 65535) {
+          await applyNewTargetPort(port);
+          sendResponse(await reverifyLink('manual-port-change'));
+        } else {
+          sendResponse(desktopStatus());
+        }
       })();
       return true;
     }
@@ -578,7 +592,7 @@ async function init() {
     .catch((err: unknown) => {
       console.warn('[SheepGet] Failed to create the link health alarm:', err);
     });
-
+  currentTargetPort = await getStoredTargetPort();
   await reverifyLink('startup');
 }
 
@@ -586,7 +600,7 @@ async function init() {
 function desktopStatus(): DesktopStatus {
   return {
     online: linkOnline,
-    port: linkSession?.port ?? null,
+    port: linkSession?.port ?? currentTargetPort,
     lastVerifiedAt: linkLastVerifiedAt,
     reason: linkOfflineReason,
   };
@@ -624,21 +638,46 @@ async function reverifyLink(trigger: string): Promise<DesktopStatus> {
   }
 
   // 优先通过本地 HTTP 直接探测（为便携版与免 Host 模式提供纯净 HTTP 通信链路）
-  // 按优先级探测：上次成功连接的端口、默认端口 9248
-  const candidatePorts = Array.from(
-    new Set(
-      [stored?.port, DEFAULT_LOOPBACK_PORT].filter(
-        (p): p is number => typeof p === 'number' && p > 0,
-      ),
-    ),
-  );
+  // 单一数据来源：获取当前目标端口作为基准
+  currentTargetPort = await getStoredTargetPort();
+  const basePort = currentTargetPort || stored?.port || DEFAULT_LOOPBACK_PORT;
+
+  // 触发情况 3：顺延探测机制 [basePort, basePort + 1, ..., basePort + PORT_FALLBACK_SPAN]
+  const candidatePorts: number[] = [];
+  for (let i = 0; i <= PORT_FALLBACK_SPAN; i++) {
+    const p = basePort + i;
+    if (p >= 1024 && p <= 65535 && !candidatePorts.includes(p)) {
+      candidatePorts.push(p);
+    }
+  }
+  // 保底：若 stored.port 与 DEFAULT_LOOPBACK_PORT 不在顺延池中，也一并加入末尾保底
+  for (const fallback of [stored?.port, DEFAULT_LOOPBACK_PORT]) {
+    if (
+      typeof fallback === 'number' &&
+      fallback >= 1024 &&
+      fallback <= 65535 &&
+      !candidatePorts.includes(fallback)
+    ) {
+      candidatePorts.push(fallback);
+    }
+  }
+
   for (const port of candidatePorts) {
     const httpDiscovered = await discoverSessionViaHttp(port);
     if (httpDiscovered) {
       const client = new DesktopClient(httpDiscovered);
       if (await client.ping(PING_TIMEOUT_MS)) {
+        const portChanged = httpDiscovered.port !== currentTargetPort;
         adoptLink(httpDiscovered, client);
         void setStoredSession(httpDiscovered);
+        // 单一数据来源：如果顺延探测命中的端口与当前目标端口不一致，更新单一目标端口
+        if (portChanged) {
+          currentTargetPort = httpDiscovered.port;
+          void setStoredTargetPort(httpDiscovered.port);
+          console.info(
+            `[SheepGet] Auto-increment fallback hit on port ${httpDiscovered.port}, updated target port`,
+          );
+        }
         console.info(
           `[SheepGet] Desktop link established via direct HTTP on port ${httpDiscovered.port} (${trigger})`,
         );
@@ -675,6 +714,7 @@ function adoptLink(session: SessionMetadata, client: DesktopClient) {
   linkOnline = true;
   linkLastVerifiedAt = Date.now();
   linkOfflineReason = null;
+  currentTargetPort = session.port;
 
   eventLink = client.connectEvents(
     (cfg) => {
@@ -687,15 +727,34 @@ function adoptLink(session: SessionMetadata, client: DesktopClient) {
         markLinkOffline('桌面端事件连接已断开');
       }
     },
+    (newPort) => {
+      // 触发情况 2：WebSocket 下发端口迁移通知
+      console.info(`[SheepGet] Desktop server migrating to port ${newPort}`);
+      void (async () => {
+        await applyNewTargetPort(newPort);
+        setTimeout(() => {
+          void reverifyLink('server-migrated');
+        }, 100);
+      })();
+    },
   );
 
   void reconcileTakeoverConfig(client);
 }
-
 function teardownEvents() {
   eventLink?.close();
   eventLink = null;
   desktopClient = null;
+}
+
+async function applyNewTargetPort(newPort: number) {
+  currentTargetPort = newPort;
+  await setStoredTargetPort(newPort);
+  const st = await getStoredSession();
+  if (st) {
+    await setStoredSession({ ...st, port: newPort });
+  }
+  teardownEvents();
 }
 
 /** 记录一次「链路被证实可用」。一次成功的 ping 或一次成功的交接都算。 */

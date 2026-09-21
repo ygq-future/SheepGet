@@ -1,3 +1,4 @@
+import { DEFAULT_LOOPBACK_PORT } from './client';
 import type { SessionMetadata, TakeoverConfigSync } from './types';
 
 /**
@@ -17,6 +18,7 @@ export const DEFAULT_TAKEOVER_CONFIG: TakeoverConfigSync = {
 const STORAGE_KEYS = {
   TAKEOVER_CONFIG: 'sheepget_takeover_config',
   SESSION: 'sheepget_session',
+  TARGET_PORT: 'sheepget_target_port',
 } as const;
 
 export async function getStoredTakeoverConfig(): Promise<TakeoverConfigSync> {
@@ -62,5 +64,28 @@ export async function setStoredSession(session: SessionMetadata | null): Promise
     }
   } catch (err) {
     console.warn('[SheepGet] Failed to write session to storage:', err);
+  }
+}
+
+export async function getStoredTargetPort(): Promise<number> {
+  try {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.TARGET_PORT);
+    const val = Number(result[STORAGE_KEYS.TARGET_PORT]);
+    if (val >= 1024 && val <= 65535) {
+      return val;
+    }
+  } catch (err) {
+    console.warn('[SheepGet] Failed to read target port from storage:', err);
+  }
+  return DEFAULT_LOOPBACK_PORT;
+}
+
+export async function setStoredTargetPort(port: number): Promise<void> {
+  try {
+    if (port >= 1024 && port <= 65535) {
+      await chrome.storage.local.set({ [STORAGE_KEYS.TARGET_PORT]: port });
+    }
+  } catch (err) {
+    console.warn('[SheepGet] Failed to write target port to storage:', err);
   }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { DEFAULT_LOOPBACK_PORT } from '../../lib/client';
 import { watchDesktopStatus } from '../../lib/liveStatus';
 import { formatBytes, formatDuration, mimeShortLabel, type MediaResource } from '../../lib/media';
 import type {
@@ -43,8 +44,33 @@ export default function App() {
   /** 已经发起过探测的资源：探测失败也不重试，避免面板开着时反复打桌面端。 */
   const probedRef = useRef<Set<string>>(new Set());
 
+  const [editingPort, setEditingPort] = useState(false);
+  const [customPortInput, setCustomPortInput] = useState('');
+  const [savingPort, setSavingPort] = useState(false);
+
   const online = status?.online === true;
 
+  const handleSavePort = async () => {
+    const portNum = parseInt(customPortInput, 10);
+    if (isNaN(portNum) || portNum < 1024 || portNum > 65535) {
+      return;
+    }
+    setSavingPort(true);
+    try {
+      const updatedStatus = await chrome.runtime.sendMessage({
+        type: 'SET_TARGET_PORT',
+        port: portNum,
+      });
+      if (updatedStatus) {
+        setStatus(updatedStatus as DesktopStatus);
+      }
+      setEditingPort(false);
+    } catch {
+      // ignore
+    } finally {
+      setSavingPort(false);
+    }
+  };
   useEffect(() => {
     void loadMedia();
     void refreshLink(false);
@@ -594,11 +620,92 @@ export default function App() {
           justifyContent: 'space-between',
         }}
       >
-        <span>
-          {online
-            ? `本地端口 ${status?.port} · 上次校验 ${formatClock(status?.lastVerifiedAt ?? null)}`
-            : '桌面端离线 (未启动或已退出)'}
-        </span>
+        {editingPort ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>端口:</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={5}
+              autoFocus
+              value={customPortInput}
+              onChange={(e) => setCustomPortInput(e.target.value.replace(/\D/g, ''))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleSavePort();
+                if (e.key === 'Escape') setEditingPort(false);
+              }}
+              style={{
+                width: '56px',
+                padding: '2px 4px',
+                fontSize: '11px',
+                textAlign: 'center',
+                backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: '4px',
+                color: '#f1f5f9',
+                outline: 'none',
+              }}
+            />
+            <button
+              disabled={savingPort}
+              onClick={() => void handleSavePort()}
+              style={{
+                padding: '2px 8px',
+                fontSize: '10px',
+                backgroundColor: '#10b981',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '3px',
+                cursor: 'pointer',
+              }}
+            >
+              {savingPort ? '连接中…' : '连接'}
+            </button>
+            <button
+              onClick={() => setEditingPort(false)}
+              style={{
+                padding: '2px 6px',
+                fontSize: '10px',
+                backgroundColor: 'transparent',
+                color: '#94a3b8',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>
+              {online
+                ? `本地端口 ${status?.port} · 上次校验 ${formatClock(
+                    status?.lastVerifiedAt ?? null,
+                  )}`
+                : `桌面端离线 · 目标端口 ${status?.port ?? DEFAULT_LOOPBACK_PORT}`}
+            </span>
+            {!online && (
+              <button
+                onClick={() => {
+                  setCustomPortInput(String(status?.port ?? DEFAULT_LOOPBACK_PORT));
+                  setEditingPort(true);
+                }}
+                style={{
+                  padding: '1px 5px',
+                  fontSize: '10px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                  color: '#94a3b8',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '3px',
+                  cursor: 'pointer',
+                }}
+                title="修改扩展连接桌面端的目标端口"
+              >
+                修改端口
+              </button>
+            )}
+          </div>
+        )}
         <span style={{ color: '#475569' }}>v1.0.0</span>
       </div>
     </div>
