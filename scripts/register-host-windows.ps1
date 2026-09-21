@@ -7,9 +7,12 @@ $ErrorActionPreference = "Stop"
 
 if (-not $HostExePath) {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    $defaultCandidate = Join-Path $scriptDir "..\build\bin\sheepget-host.exe"
-    if (Test-Path $defaultCandidate) {
-        $HostExePath = (Resolve-Path $defaultCandidate).Path
+    $localCandidate = Join-Path $scriptDir "sheepget-host.exe"
+    $buildCandidate = Join-Path $scriptDir "..\build\bin\sheepget-host.exe"
+    if (Test-Path $localCandidate) {
+        $HostExePath = (Resolve-Path $localCandidate).Path
+    } elseif (Test-Path $buildCandidate) {
+        $HostExePath = (Resolve-Path $buildCandidate).Path
     } else {
         Write-Error "sheepget-host.exe not found. Please build it first: go build -o build/bin/sheepget-host.exe ./cmd/sheepget-host"
     }

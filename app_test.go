@@ -15,6 +15,7 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/server"
+	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 )
@@ -93,6 +94,10 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 		manager:  mgr,
 		store:    store,
 		settings: settingsSvc,
+		storage: &storage.Storage{
+			Mode:    storage.ModeInstalled,
+			DataDir: tmpDir,
+		},
 	}
 	winView := &wailsWindowView{
 		getApp: app.getApp,
@@ -1135,5 +1140,54 @@ func TestApp_SelectDirectory_AppNotInitialized(t *testing.T) {
 	_, err := app.SelectDirectory(tmpDir)
 	if err == nil || !strings.Contains(err.Error(), "application not initialized") {
 		t.Errorf("expected application not initialized error, got: %v", err)
+	}
+}
+
+func TestApp_OpenFile_NonExistent(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+
+	err := app.OpenFile(filepath.Join(tmpDir, "missing_file_xyz.bin"))
+	if err == nil {
+		t.Fatalf("expected error opening non-existent file")
+	}
+	if !strings.Contains(err.Error(), "文件不存在或已被删除") {
+		t.Errorf("expected missing file error message, got: %v", err)
+	}
+}
+
+func TestApp_LaunchAtStartup(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	// By default, launch at startup is false
+	if app.IsLaunchAtStartup() {
+		t.Errorf("expected launch at startup to be false by default")
+	}
+
+	// Enable
+	if err := app.SetLaunchAtStartup(true); err != nil {
+		t.Fatalf("SetLaunchAtStartup(true) failed: %v", err)
+	}
+	if !app.IsLaunchAtStartup() {
+		t.Errorf("expected launch at startup to be true")
+	}
+
+	// Disable
+	if err := app.SetLaunchAtStartup(false); err != nil {
+		t.Fatalf("SetLaunchAtStartup(false) failed: %v", err)
+	}
+	if app.IsLaunchAtStartup() {
+		t.Errorf("expected launch at startup to be false after disabling")
+	}
+}
+
+func TestApp_GetStorageInfo(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	info := app.GetStorageInfo()
+	if info == nil {
+		t.Fatalf("expected non-nil storage info")
+	}
+	if info["mode"] == "" || info["dataDir"] == "" {
+		t.Errorf("expected mode and dataDir in storage info, got: %+v", info)
 	}
 }

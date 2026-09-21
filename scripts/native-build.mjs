@@ -26,6 +26,7 @@ try {
     stdio: 'inherit',
   });
   cpSync(join(workspace, 'build/bin'), join(root, 'build/bin'), { recursive: true });
+  run(process.execPath, [join(root, 'scripts', 'package.mjs')], { stdio: 'inherit' });
 } finally {
   rmSync(workspace, { recursive: true, force: true });
 }

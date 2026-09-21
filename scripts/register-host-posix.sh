@@ -6,10 +6,17 @@ EXTENSION_ID="oediboaeofmnlkgcjhnpfnngphkjooam"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-HOST_BIN="${1:-$ROOT_DIR/build/bin/sheepget-host}"
+HOST_BIN="$1"
+if [ -z "$HOST_BIN" ]; then
+  if [ -f "$SCRIPT_DIR/sheepget-host" ]; then
+    HOST_BIN="$SCRIPT_DIR/sheepget-host"
+  elif [ -f "$ROOT_DIR/build/bin/sheepget-host" ]; then
+    HOST_BIN="$ROOT_DIR/build/bin/sheepget-host"
+  fi
+fi
 
-if [ ! -f "$HOST_BIN" ]; then
-  echo "Error: sheepget-host not found at $HOST_BIN. Build it first." >&2
+if [ -z "$HOST_BIN" ] || [ ! -f "$HOST_BIN" ]; then
+  echo "Error: sheepget-host not found. Build it first." >&2
   exit 1
 fi
 

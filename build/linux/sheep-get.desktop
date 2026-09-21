@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SheepGet
+Comment=Modern Desktop Download Manager
+Exec=sheep-get %U
+Terminal=false
+Type=Application
+Icon=sheep-get
+Categories=Network;FileTransfer;
+MimeType=x-scheme-handler/sheepget;

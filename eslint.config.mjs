@@ -4,7 +4,13 @@ export default [
     ...js.configs.recommended,
     files: ['scripts/**/*.mjs', '*.mjs'],
     languageOptions: {
-      globals: { process: 'readonly', console: 'readonly', Buffer: 'readonly', URL: 'readonly' },
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        fetch: 'readonly',
+      },
     },
   },
 ];

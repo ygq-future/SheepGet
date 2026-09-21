@@ -82,3 +82,53 @@ func TestResolveDataDir_InstalledMode(t *testing.T) {
 		t.Errorf("unexpected SessionFile path: %s", res.SessionFile())
 	}
 }
+
+func TestStorage_PhysicalIsolation(t *testing.T) {
+	// Verify portable mode operations remain strictly in ./data and never touch standard user dir
+	portableAppDir := t.TempDir()
+	portableMarker := filepath.Join(portableAppDir, "portable")
+	if err := os.WriteFile(portableMarker, []byte{}, 0644); err != nil {
+		t.Fatalf("failed to create portable marker: %v", err)
+	}
+
+	portableStorage, err := ResolveDataDir(portableAppDir)
+	if err != nil {
+		t.Fatalf("failed to resolve portable storage: %v", err)
+	}
+	if portableStorage.Mode != ModePortable {
+		t.Fatalf("expected ModePortable, got %v", portableStorage.Mode)
+	}
+
+	standardDir, err := getStandardUserDir()
+	if err != nil {
+		t.Fatalf("failed to get standard dir: %v", err)
+	}
+	if portableStorage.DataDir == standardDir {
+		t.Fatalf("portable DataDir must NOT match standard user dir %q", standardDir)
+	}
+	if !filepath.IsLocal(filepath.Clean(portableStorage.DataDir)) && filepath.Dir(portableStorage.DataDir) != portableAppDir {
+		t.Fatalf("portable DataDir %q must reside directly under app dir %q", portableStorage.DataDir, portableAppDir)
+	}
+
+	// Verify writing to portable storage paths stays strictly within portableAppDir
+	testConfig := portableStorage.ConfigFile()
+	if err := os.WriteFile(testConfig, []byte(`{"test":true}`), 0644); err != nil {
+		t.Fatalf("failed to write test config in portable dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(portableAppDir, "data", "config.json")); err != nil {
+		t.Fatalf("expected config.json strictly inside portable data dir: %v", err)
+	}
+
+	// Verify installed mode resolution does not touch portableAppDir
+	cleanAppDir := t.TempDir()
+	installedStorage, err := ResolveDataDir(cleanAppDir)
+	if err != nil {
+		t.Fatalf("failed to resolve installed storage: %v", err)
+	}
+	if installedStorage.Mode != ModeInstalled {
+		t.Fatalf("expected ModeInstalled, got %v", installedStorage.Mode)
+	}
+	if _, err := os.Stat(filepath.Join(cleanAppDir, "data")); !os.IsNotExist(err) {
+		t.Fatalf("installed mode must never create data/ inside application directory")
+	}
+}

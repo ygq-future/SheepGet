@@ -104,3 +104,29 @@ func TestReadSessionMetadata(t *testing.T) {
 		t.Errorf("unexpected session metadata: %+v", loaded)
 	}
 }
+
+func TestFindDesktopExecutableInDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Case 1: none exists -> error
+	if _, err := findDesktopExecutableInDir(tmpDir); err == nil {
+		t.Errorf("expected error when no executable exists")
+	}
+
+	// Case 2: sheep-get binary exists
+	ext := ""
+	if os.PathSeparator == '\\' {
+		ext = ".exe"
+	}
+	target := filepath.Join(tmpDir, "sheep-get"+ext)
+	if err := os.WriteFile(target, []byte("binary"), 0755); err != nil {
+		t.Fatalf("failed to create dummy binary: %v", err)
+	}
+
+	found, err := findDesktopExecutableInDir(tmpDir)
+	if err != nil {
+		t.Fatalf("expected to find executable, got: %v", err)
+	}
+	if found != target {
+		t.Errorf("expected %q, got %q", target, found)
+	}
+}

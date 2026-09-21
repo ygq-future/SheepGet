@@ -96,6 +96,17 @@ Section
 
     !insertmacro wails.files
 
+    ; Native messaging host & extension assets
+    File /nonfatal "/oname=sheepget-host.exe" "..\..\bin\sheepget-host.exe"
+    File /nonfatal "/oname=com.sheepget.host.json" "..\..\bin\com.sheepget.host.json"
+    SetOutPath "$INSTDIR\extension"
+    File /nonfatal /r "..\..\bin\extension\*.*"
+    SetOutPath $INSTDIR
+
+    ; Register Native Messaging Host for Chrome and Edge
+    WriteRegStr HKCU "Software\Google\Chrome\NativeMessagingHosts\com.sheepget.host" "" "$INSTDIR\com.sheepget.host.json"
+    WriteRegStr HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.sheepget.host" "" "$INSTDIR\com.sheepget.host.json"
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
@@ -107,6 +118,10 @@ SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    ; Clean up Native Messaging Host registry keys
+    DeleteRegKey HKCU "Software\Google\Chrome\NativeMessagingHosts\com.sheepget.host"
+    DeleteRegKey HKCU "Software\Microsoft\Edge\NativeMessagingHosts\com.sheepget.host"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 

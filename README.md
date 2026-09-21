@@ -51,19 +51,17 @@ SheepGet 是一款面向 **Windows、macOS 和 Linux** 的现代化桌面下载�
 
 ---
 
-## 浏览器配套扩展安装
+## 浏览器配套扩展与安装指引
 
 SheepGet 提供随程序附带的浏览器配套扩展（Manifest V3），支持 Google Chrome 与 Microsoft Edge。
 
 ### 1. 获取扩展文件
 
-通过项目构建命令生成扩展产物：
-
-```bash
-bun run --cwd extension build
-```
-
-构建生成的扩展文件夹位于：**`dist-extension/chrome-mv3/`**。
+- **使用发行版 / 便携包**：解压后的根目录下已直接附带 **`extension/`** 文件夹，开箱即用。
+- **从源码构建**：执行扩展构建命令，产物输出至根目录 **`dist-extension/chrome-mv3/`**：
+  ```bash
+  bun run --cwd extension build
+  ```
 
 ### 2. 加载扩展到浏览器
 
@@ -72,8 +70,8 @@ bun run --cwd extension build
 1. 打开 Chrome，在地址栏输入 `chrome://extensions/` 并回车；
 2. 开启页面右上角的「**开发者模式**」（Developer mode）；
 3. 点击左上角「**加载已解压的扩展程序**」（Load unpacked）；
-4. 选择本项目根目录下的 `dist-extension/chrome-mv3` 文件夹完成加载；
-5. 核对扩展列表中的 **SheepGet Integration Module**，扩展 ID 应为：
+4. 选择分发包中的 `extension` 文件夹（或源码构建的 `dist-extension/chrome-mv3`）；
+5. 核对扩展列表中的 **SheepGet Integration Module**，其扩展 ID 固化为：
    ```text
    oediboaeofmnlkgcjhnpfnngphkjooam
    ```
@@ -83,24 +81,47 @@ bun run --cwd extension build
 1. 打开 Edge，在地址栏输入 `edge://extensions/` 并回车；
 2. 开启左侧菜单栏下方的「**开发人员模式**」开关；
 3. 点击「**加载解压缩的扩展**」；
-4. 选择 `dist-extension/chrome-mv3` 文件夹完成加载。
+4. 选择分发包中的 `extension` 文件夹（或 `dist-extension/chrome-mv3`）完成加载。
 
-### 3. 配置桌面端静默唤起（可选）
+### 3. 配置桌面端静默唤起（Native Messaging Host）
 
-如需在桌面端未打开时通过浏览器操作直接唤起 SheepGet，可注册本地通信跳板：
+扩展与桌面端日常通信走本地高安全性 Loopback 通道。如需在桌面端未运行时代替浏览器静默拉起 SheepGet，可注册 Native Messaging 宿主：
 
-- **Windows 系统**：以普通用户身份运行 PowerShell 脚本：
+- **Windows 系统**：
+  - **标准安装版**：安装包已自动注册注册表，无需任何手动操作。
+  - **便携版 / 手动注册**：在程序所在目录下运行 PowerShell 脚本：
+    ```powershell
+    powershell -ExecutionPolicy Bypass -File register-host-windows.ps1
+    ```
+    _（如需解除注册，运行 `powershell -File unregister-host-windows.ps1`）_
 
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts/register-host-windows.ps1
-  ```
-
-  _(如需卸载，运行 `powershell -File scripts/unregister-host-windows.ps1`)_
-
-- **macOS / Linux 系统**：在终端运行注册脚本：
+- **macOS / Linux 系统**：在程序目录下运行注册脚本：
   ```bash
-  ./scripts/register-host-posix.sh
+  chmod +x register-host-posix.sh
+  ./register-host-posix.sh
   ```
+  _（如需解除注册，运行 `./unregister-host-posix.sh`）_
+
+---
+
+## 打包分发与成果输出
+
+执行跨平台打包命令，自动就绪构建工具集（NSIS / WiX），构建桌面主程序、Native Messaging 宿主、浏览器扩展并生成便携版、NSIS 安装程序与 MSI 安装包：
+
+```bash
+bun run package
+```
+
+打包产物**统一输出至项目根目录 `dist/`**，命名规范与发布矩阵完全对齐：
+
+```text
+dist/
+├── sheep-get_0.1.0_x64-setup.exe                  # Windows x64 NSIS 安装程序（带向导与快捷方式）
+├── sheep-get_0.1.0_windows-x64-portable.zip       # Windows x64 绿色免安装便携包（即拷即用）
+├── sheep-get_0.1.0_x64_en-US.msi                  # Windows x64 MSI 企业静默安装包
+├── SHA256SUMS.txt                                 # 所有分发资产的 SHA-256 校验和
+└── extension/                                     # 预编译配套浏览器扩展目录
+```
 
 ---
 

@@ -5,6 +5,9 @@
 *.so
 *.dylib
 build/bin/
+*.wixobj
+*.wixpdb
+build/windows/installer/tmp/
 
 # Test binary, built with `go test -c`
 *.test

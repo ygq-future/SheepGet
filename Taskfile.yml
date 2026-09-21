@@ -20,3 +20,8 @@ tasks:
     dir: frontend
     cmds:
       - bun run dev --port {{.WAILS_VITE_PORT | default 9245}}
+
+  package:
+    desc: Packages the application for distribution
+    cmds:
+      - node scripts/package.mjs

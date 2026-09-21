@@ -79,6 +79,12 @@ func ResolveDataDir(execDir string) (*Storage, error) {
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
 			return nil, fmt.Errorf("portable mode: failed to create data dir at %s: %w", dataDir, err)
 		}
+		// Verify writability in portable mode per ADR-0003
+		probeFile := filepath.Join(dataDir, ".probe_write")
+		if err := os.WriteFile(probeFile, []byte("ok"), 0644); err != nil {
+			return nil, fmt.Errorf("portable mode: data dir %s is read-only or not writable: %w", dataDir, err)
+		}
+		_ = os.Remove(probeFile)
 	} else {
 		mode = ModeInstalled
 		standardDir, err := getStandardUserDir()

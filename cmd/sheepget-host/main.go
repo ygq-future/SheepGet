@@ -100,8 +100,10 @@ func findDesktopExecutable() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	execDir := filepath.Dir(execPath)
+	return findDesktopExecutableInDir(filepath.Dir(execPath))
+}
 
+func findDesktopExecutableInDir(execDir string) (string, error) {
 	ext := ""
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
@@ -109,9 +111,14 @@ func findDesktopExecutable() (string, error) {
 
 	candidates := []string{
 		filepath.Join(execDir, "sheep-get"+ext),
+		filepath.Join(execDir, "SheepGet"+ext),
 		filepath.Join(execDir, "quality-app"+ext),
 		filepath.Join(execDir, "..", "sheep-get"+ext),
+		filepath.Join(execDir, "..", "SheepGet"+ext),
 		filepath.Join(execDir, "..", "build", "bin", "quality-app"+ext),
+		filepath.Join(execDir, "..", "build", "bin", "sheep-get"+ext),
+		filepath.Join(execDir, "SheepGet.app", "Contents", "MacOS", "SheepGet"),
+		filepath.Join(execDir, "sheep-get.app", "Contents", "MacOS", "sheep-get"),
 	}
 
 	for _, c := range candidates {
