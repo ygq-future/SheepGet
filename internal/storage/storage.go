@@ -42,7 +42,7 @@ func (s *Storage) LogsDir() string {
 	return filepath.Join(s.DataDir, "logs")
 }
 
-// SessionFile returns the path to session.json (loopback server metadata for extension and host)
+// SessionFile returns the path to session.json (runtime metadata for the active loopback server)
 func (s *Storage) SessionFile() string {
 	return filepath.Join(s.DataDir, "session.json")
 }

@@ -117,20 +117,7 @@ async function main() {
     '.',
   ]);
 
-  // 2. Build Native Messaging Host helper binary
-  const hostExe = join(binDir, 'sheepget-host' + ext);
-  console.log('[Package] Building Native Messaging Host helper...');
-  run('go', [
-    'build',
-    '-mod=readonly',
-    '-trimpath',
-    '-ldflags=-w -s',
-    '-o',
-    hostExe,
-    './cmd/sheepget-host',
-  ]);
-
-  // 3. Build browser extension
+  // 2. Build browser extension
   console.log('[Package] Building browser extension...');
   run('bun', ['run', 'build'], { cwd: join(root, 'extension'), quiet: true });
 
@@ -138,24 +125,13 @@ async function main() {
   const extTargetDir = join(distDir, 'extension');
   rmSync(extTargetDir, { recursive: true, force: true });
   cpSync(extSourceDir, extTargetDir, { recursive: true });
-
-  // 4. Generate Native Messaging Host Manifest
-  const hostManifestPath = join(distDir, 'com.sheepget.host.json');
-  const manifestContent = {
-    name: 'com.sheepget.host',
-    description: 'SheepGet Native Messaging Host',
-    path: isWin ? 'sheepget-host.exe' : './sheepget-host',
-    type: 'stdio',
-    allowed_origins: ['chrome-extension://oediboaeofmnlkgcjhnpfnngphkjooam/'],
-  };
-  writeFileSync(hostManifestPath, JSON.stringify(manifestContent, null, 2) + '\n', 'utf8');
-  cpSync(hostManifestPath, join(binDir, 'com.sheepget.host.json'));
   cpSync(extTargetDir, join(binDir, 'extension'), { recursive: true });
 
   const artifacts = [];
 
-  // 5. Build Portable Distribution
+  // 3. Build Portable Distribution
   console.log('[Package] Assembling portable distribution bundle...');
+
   const portableDirName = isWin
     ? `sheep-get_${version}_windows-${archLabel}-portable`
     : `sheep-get_${version}_${platformName}-${archLabel}-portable`;
@@ -164,8 +140,6 @@ async function main() {
   mkdirSync(portableStage, { recursive: true });
 
   cpSync(mainExe, join(portableStage, 'sheep-get' + ext));
-  cpSync(hostExe, join(portableStage, 'sheepget-host' + ext));
-  cpSync(hostManifestPath, join(portableStage, 'com.sheepget.host.json'));
   cpSync(extTargetDir, join(portableStage, 'extension'), { recursive: true });
   cpSync(join(root, 'README.md'), join(portableStage, 'README.md'));
 
@@ -173,28 +147,12 @@ async function main() {
   mkdirSync(join(portableStage, 'data'), { recursive: true });
 
   if (isWin) {
-    cpSync(
-      join(root, 'scripts', 'register-host-windows.ps1'),
-      join(portableStage, 'register-host-windows.ps1'),
-    );
-    cpSync(
-      join(root, 'scripts', 'unregister-host-windows.ps1'),
-      join(portableStage, 'unregister-host-windows.ps1'),
-    );
     // Create zip for Windows portable
     const portableZipName = `sheep-get_${version}_windows-${archLabel}-portable.zip`;
     const portableZipPath = join(distDir, portableZipName);
     run('tar', ['-a', '-c', '-f', portableZipPath, '-C', distDir, portableDirName]);
     artifacts.push({ name: portableZipName, path: portableZipPath, type: 'Portable Zip' });
   } else {
-    cpSync(
-      join(root, 'scripts', 'register-host-posix.sh'),
-      join(portableStage, 'register-host-posix.sh'),
-    );
-    cpSync(
-      join(root, 'scripts', 'unregister-host-posix.sh'),
-      join(portableStage, 'unregister-host-posix.sh'),
-    );
     if (isLinux) {
       cpSync(
         join(root, 'build', 'linux', 'sheep-get.desktop'),
@@ -206,7 +164,7 @@ async function main() {
     run('tar', ['-czf', portableTarPath, '-C', distDir, portableDirName]);
     artifacts.push({ name: portableTarName, path: portableTarPath, type: 'Portable tar.gz' });
   }
-  // 6. Windows: Build NSIS Setup Installer (.exe) and WiX Installer (.msi)
+  // 4. Windows: Build NSIS Setup Installer (.exe) and WiX Installer (.msi)
   if (isWin) {
     // NSIS Setup Installer
     const nsisExe = join(toolsDir, 'nsis', 'makensis.exe');

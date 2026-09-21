@@ -52,10 +52,6 @@ let currentTargetPort = DEFAULT_LOOPBACK_PORT;
 const PING_TIMEOUT_MS = 1200;
 const HANDOVER_TIMEOUT_MS = 2500;
 
-// 发现会话（起一次原生消息宿主）的等待上限。宿主读到一条消息、回一条、自己就退出，
-// 实测一次十来毫秒；超过这个数说明它卡住了，按「没发现」处理。
-const NATIVE_DISCOVER_TIMEOUT_MS = 2000;
-
 // 保活定时器。0.5 分钟是 Chrome 允许的最小周期（更小会被夹到 0.5 并告警）。
 // 它的作用不是「心跳好看」，而是给链路状态一个陈旧上界：无论 service worker 因为什么
 // 原因握着一个失效会话不放（长连接被静默掐断、SW 被挂起后重建、桌面端重启），
@@ -610,8 +606,7 @@ function desktopStatus(): DesktopStatus {
  * 确认当前链路可用，必要时重新发现桌面端。
  *
  * 顺序刻意如此：先用手上已有的会话确认（桌面端没重启时这步就结束，不会反复重建长连接），
- * 失败再问原生消息宿主拿最新端口与令牌——那是唯一能把「扩展不知道桌面端换了端口」
- * 变成「扩展知道」的途径。
+ * 失败再通过目标端口与顺延探测池探测最新端口与令牌。
  */
 async function reverifyLink(trigger: string): Promise<DesktopStatus> {
   if (desktopClient && (await desktopClient.ping(PING_TIMEOUT_MS))) {
@@ -626,7 +621,7 @@ async function reverifyLink(trigger: string): Promise<DesktopStatus> {
     return desktopStatus();
   }
 
-  // 没有 client 时也先试一次存下来的会话：原生消息宿主若没注册成功，这条路径还能救回来。
+  // 没有 client 时也先试一次存下来的会话：如果历史端口仍可用，直接快速恢复。
   const stored = await getStoredSession();
   if (!desktopClient && stored) {
     const client = new DesktopClient(stored);
@@ -686,20 +681,7 @@ async function reverifyLink(trigger: string): Promise<DesktopStatus> {
     }
   }
 
-  const discovered = await discoverSessionViaNativeHost();
-  if (!discovered) {
-    markLinkOffline('未发现运行中的桌面端');
-    return desktopStatus();
-  }
-
-  const client = new DesktopClient(discovered);
-  if (!(await client.ping(PING_TIMEOUT_MS))) {
-    markLinkOffline('原生消息宿主返回的会话无法连通');
-    return desktopStatus();
-  }
-
-  adoptLink(discovered, client);
-  console.info(`[SheepGet] Desktop link re-established on port ${discovered.port} (${trigger})`);
+  markLinkOffline('未发现运行中的桌面端');
   return desktopStatus();
 }
 
@@ -781,47 +763,6 @@ async function reconcileTakeoverConfig(client: DesktopClient) {
     currentConfig = remoteConfig;
     await setStoredTakeoverConfig(remoteConfig);
   }
-}
-
-/** 问原生消息宿主当前端口与令牌；桌面端没在跑或宿主没注册都返回 null。 */
-async function discoverSessionViaNativeHost(): Promise<SessionMetadata | null> {
-  const { promise, resolve } = Promise.withResolvers<SessionMetadata | null>();
-  let settled = false;
-  // Chrome 的 sendNativeMessage 没有超时：宿主进程要是卡住（杀软拦下、磁盘无响应、进程没退干净），
-  // 回调就永远不会来。发现会话因此必须自己兜底——判成「没发现」而不是把调用方吊在这里，
-  // 否则面板会一直停在「检查中」，交接也会一直等一个不会到来的答复。
-  const timer = setTimeout(() => finish(null), NATIVE_DISCOVER_TIMEOUT_MS);
-  function finish(value: SessionMetadata | null) {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    resolve(value);
-  }
-  try {
-    chrome.runtime.sendNativeMessage(
-      'com.sheepget.host',
-      { action: 'query' },
-      (response?: { status?: string; port?: number; sessionToken?: string }) => {
-        if (chrome.runtime.lastError) {
-          finish(null);
-          return;
-        }
-        if (response?.status === 'ok' && response.port && response.sessionToken) {
-          const session: SessionMetadata = {
-            port: response.port,
-            sessionToken: response.sessionToken,
-          };
-          void setStoredSession(session);
-          finish(session);
-          return;
-        }
-        finish(null);
-      },
-    );
-  } catch {
-    finish(null);
-  }
-  return promise;
 }
 
 /**

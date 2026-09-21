@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted (Decision 2 superseded by ADR-0006)
 ---
 
 # 浏览器扩展架构与桌面端通信集成
@@ -40,35 +40,9 @@ status: draft
 
 ---
 
-## 决策 2：通信通道与桌面端唤起机制
+## 决策 2：通信通道与桌面端唤起机制（已由 ADR-0006 替代）
 
-### 候选选项
-
-- **选项 A（纯 Native Messaging + 独立 Host 二进制）**：
-  通过 `browser.runtime.connectNative` 通信，依赖系统注册的 Native Messaging Host 唤起主程序。
-- **选项 B（纯本地 Loopback 安全端口 + `sheepget://` 协议唤起）**：
-  桌面端启动 HTTP/WebSocket 本地安全端口；未运行时扩展通过浏览器自定义协议 URL 唤起。
-- **选项 C（双轨混合：本地 Loopback 为主通道 + Native Host 充当静默唤起跳板 + 协议/UI 降级）**：
-  日常高频通信与状态同步走本地 Loopback；安装模式下注册轻量 `sheepget-host` 充当静默拉起跳板；便携模式或未注册环境通过协议/UI 提示用户。
-
-### 权衡与取舍（修正伪论据）
-
-不再采用“Loopback 比 Native Messaging 性能更快”这一在小包通信中并不成立的伪论据。本决策完全基于以下两项核心物理约束：
-
-1. **便携模式（Portable Mode）兼容性硬约束（ADR-0003）**：
-   便携版应用严禁擅自修改系统注册表（如 Windows `HKCU\Software\Google\Chrome\NativeMessagingHosts`）或在系统全局目录写入文件。若纯走 Native Messaging，便携版将因无 Host 注册而彻底瘫痪。免注册的本地 Loopback 是便携版维持通讯的唯一通道。
-2. **安装模式下的静默唤起体验（Spec 第 14 条）**：
-   在正式安装模式下，用户触发下载时期望应用能像成熟下载工具一样静默启动并弹出文件信息窗口。若使用浏览器自定义协议（`sheepget://`），浏览器内核出于安全策略必然弹出“是否允许打开 SheepGet？”的模态确认框，阻断流畅操作。通过已注册的极薄 Native Host 启动主程序能够实现无感静默唤起。
-
-### 决策结论
-
-**采用选项 C（双轨制混合通道）**：
-
-1. 桌面端启动时在 `127.0.0.1` 开启本地 HTTP/WebSocket 安全通道（附带随机启动 Token 鉴权），承担日常下载交接与状态广播；
-2. 安装版提供并注册轻量 `sheepget-host` 辅助可执行程序，作为 Native Messaging 静默唤起跳板；
-3. 免安装便携版（未注册 Host 时）若检测到 Loopback 离线，则通过系统协议唤起或扩展气泡提示引导启动。
-
----
+## 通信通道与唤起边界已在系统演进中统一为本地安全环回通道，完整架构与决策权衡详见 [ADR-0006：浏览器扩展统一本地环回通信架构](0006-unified-loopback-communication-for-browser-extension.md)。
 
 ## 决策 3：扩展工程结构、质量门禁与扩展 ID 固定策略
 
@@ -91,8 +65,8 @@ Wails v3 桌面端前端（Wails Bindings, SPA DOM）与 Chrome/Edge MV3 扩展�
    - 依赖与类型检查：`wxt prepare && tsc --noEmit`；
    - 生产构建检查：`wxt build`（确保能无警告产出有效的 MV3 目录）。
 3. **扩展 ID 固定策略（钉死 ID）**：
-   在开发者模式侧载时，若无显式公钥，扩展 ID 会随路径改变而重新计算，导致 Native Messaging Host 的 `allowed_origins` 失效。
-   **规则**：在 `wxt.config.ts` 的 manifest 声明中配置固定的 `key` 字段（从仓库预设的扩展公钥派生），确保生成的扩展 ID 在所有开发与测试环境中全局恒定（例如固化为固定的 32 位扩展 ID），Host 白名单严格与该 ID 绑定。
+   在开发者模式侧载时，若无显式公钥，扩展 ID 会随路径改变而重新计算。
+   **规则**：在 `wxt.config.ts` 的 manifest 声明中配置固定的 `key` 字段（从仓库预设的扩展公钥派生），确保生成的扩展 ID 在所有开发与测试环境中全局恒定（固化为固定的 32 位扩展 ID `oediboaeofmnlkgcjhnpfnngphkjooam`），避免浏览器多路径加载导致配置与存储分化。
 
 ---
 

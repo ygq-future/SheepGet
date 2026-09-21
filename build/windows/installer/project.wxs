@@ -55,16 +55,6 @@
       <Component Id="MainExecutable" Guid="3E46C1A4-0B9F-4D0C-A925-9988D4E2F7C1" Win64="yes">
         <File Id="SheepGetEXE" Source="$(var.SourceDir)\sheep-get.exe" KeyPath="yes" />
       </Component>
-      <Component Id="HostExecutable" Guid="98F1D64B-2B77-44DE-BE68-B057CC848972" Win64="yes">
-        <File Id="SheepGetHostEXE" Source="$(var.SourceDir)\sheepget-host.exe" KeyPath="yes" />
-      </Component>
-      <Component Id="HostManifest" Guid="E6334F1A-D15F-4FE9-8A14-41133FBD5B42" Win64="yes">
-        <File Id="SheepGetHostJSON" Source="$(var.SourceDir)\com.sheepget.host.json" KeyPath="yes" />
-      </Component>
-      <Component Id="HostRegistry" Guid="A7829C1F-3241-4FE9-8A14-41133FBD5B43" Win64="yes">
-        <RegistryValue Root="HKCU" Key="Software\Google\Chrome\NativeMessagingHosts\com.sheepget.host" Value="[INSTALLFOLDER]com.sheepget.host.json" Type="string" KeyPath="yes" />
-        <RegistryValue Root="HKCU" Key="Software\Microsoft\Edge\NativeMessagingHosts\com.sheepget.host" Value="[INSTALLFOLDER]com.sheepget.host.json" Type="string" />
-      </Component>
     </ComponentGroup>
   </Fragment>
 </Wix>

@@ -26,7 +26,6 @@ export default defineConfig({
       'storage',
       'tabs',
       'scripting',
-      'nativeMessaging',
       'alarms',
     ],
     host_permissions: ['<all_urls>'],

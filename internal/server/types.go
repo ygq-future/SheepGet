@@ -1,7 +1,7 @@
 package server
 
 // SessionMetadata represents the runtime session information written to session.json
-// so that local extensions and native messaging hosts can discover the active loopback server.
+// and returned by the discovery probe endpoint.
 type SessionMetadata struct {
 	Port         int    `json:"port"`
 	SessionToken string `json:"sessionToken"`

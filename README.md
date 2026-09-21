@@ -83,30 +83,19 @@ SheepGet 提供随程序附带的浏览器配套扩展（Manifest V3），支持
 3. 点击「**加载解压缩的扩展**」；
 4. 选择分发包中的 `extension` 文件夹（或 `dist-extension/chrome-mv3`）完成加载。
 
-### 3. 配置桌面端静默唤起（Native Messaging Host）
+### 3. 与桌面端通信与自动发现
 
-扩展与桌面端日常通信走本地高安全性 Loopback 通道。如需在桌面端未运行时代替浏览器静默拉起 SheepGet，可注册 Native Messaging 宿主：
+无论是便携版还是安装版，SheepGet 均统一采用本地安全 HTTP 与 WebSocket 环回通道与配套扩展通信：
 
-- **Windows 系统**：
-  - **标准安装版**：安装包已自动注册注册表，无需任何手动操作。
-  - **便携版 / 手动注册**：在程序所在目录下运行 PowerShell 脚本：
-    ```powershell
-    powershell -ExecutionPolicy Bypass -File register-host-windows.ps1
-    ```
-    _（如需解除注册，运行 `powershell -File unregister-host-windows.ps1`）_
-
-- **macOS / Linux 系统**：在程序目录下运行注册脚本：
-  ```bash
-  chmod +x register-host-posix.sh
-  ./register-host-posix.sh
-  ```
-  _（如需解除注册，运行 `./unregister-host-posix.sh`）_
+- 桌面端启动时在本地安全端口（默认 `9248`，遇冲突自动顺延）开启服务通道并生成会话认证令牌；
+- 浏览器扩展通过本地 HTTP 自动探测并自愈连接，在扩展弹窗中可实时查看当前连接状态与生效端口；
+- 当桌面端未启动时，浏览器正常保留原生下载行为，待桌面端就绪后扩展自动恢复接管。
 
 ---
 
 ## 打包分发与成果输出
 
-执行跨平台打包命令，自动就绪构建工具集（NSIS / WiX），构建桌面主程序、Native Messaging 宿主、浏览器扩展并生成便携版、NSIS 安装程序与 MSI 安装包：
+执行跨平台打包命令，自动就绪构建工具集（NSIS / WiX），构建桌面主程序、浏览器扩展并生成便携版、NSIS 安装程序与 MSI 安装包：
 
 ```bash
 bun run package
