@@ -9,7 +9,12 @@ import { Switch } from './ui/Switch';
 import { Slider } from './ui/Slider';
 import { showToast } from './ui/Toast';
 import { DEFAULT_SERVER_PORT } from '../lib/constants';
-import { RestartServer, SelectDirectory, ValidateDirectory } from '../../bindings/sheep-get/app';
+import {
+  OpenFolder,
+  RestartServer,
+  SelectDirectory,
+  ValidateDirectory,
+} from '../../bindings/sheep-get/app';
 import {
   Sun,
   Moon,
@@ -26,8 +31,7 @@ import {
   GripVertical,
   X,
   Sliders,
-  Wifi,
-  Info,
+  Pipette,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
 import { normalizeExtensions } from '../lib/category';
@@ -44,6 +48,8 @@ const PRESET_ACCENTS = [
   { name: '琥珀金', hex: '#f59e0b' },
 ];
 
+const DEFAULT_ACCENT_COLOR = PRESET_ACCENTS[0].hex;
+
 const SHORTCUT_KEY_OPTIONS = [
   { value: 'Delete', label: 'Delete 键' },
   { value: 'Insert', label: 'Insert 键' },
@@ -51,6 +57,110 @@ const SHORTCUT_KEY_OPTIONS = [
   { value: 'Ctrl', label: 'Ctrl 键' },
   { value: 'Shift', label: 'Shift 键' },
 ];
+
+type SettingsTab = 'general' | 'appearance' | 'download' | 'rules';
+
+interface TabMeta {
+  id: SettingsTab;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+}
+
+const SETTINGS_TABS: TabMeta[] = [
+  {
+    id: 'general',
+    label: '常规',
+    icon: Sliders,
+    title: '常规与系统',
+    description: '开机启动、剪贴板监控与本地存储模式',
+  },
+  {
+    id: 'appearance',
+    label: '外观',
+    icon: Palette,
+    title: '外观与个性化',
+    description: '界面主题明暗与品牌高亮强调色',
+  },
+  {
+    id: 'download',
+    label: '下载',
+    icon: Zap,
+    title: '下载与网络',
+    description: '存储路径、传输并发性能、下载策略与网络代理',
+  },
+  {
+    id: 'rules',
+    label: '接管与规则',
+    icon: FolderTree,
+    title: '接管与分类规则',
+    description: '浏览器扩展通信、页面接管控制与自动分类保存规则',
+  },
+];
+
+function SettingSection({
+  title,
+  description,
+  action,
+  children,
+}: {
+  title?: string;
+  description?: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      {(title || action) && (
+        <div className="flex items-center justify-between px-1">
+          <div>
+            {title && <h3 className="text-xs font-semibold text-[var(--text-primary)]">{title}</h3>}
+            {description && (
+              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">{description}</p>
+            )}
+          </div>
+          {action && <div>{action}</div>}
+        </div>
+      )}
+      <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] shadow-xs">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SettingRow({
+  label,
+  description,
+  children,
+  align = 'center',
+  className = '',
+}: {
+  label: React.ReactNode;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+  align?: 'center' | 'top';
+  className?: string;
+}) {
+  return (
+    <div
+      className={`flex ${
+        align === 'top' ? 'items-start' : 'items-center'
+      } justify-between gap-4 px-4 py-3 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40 ${className}`}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-[var(--text-primary)]">{label}</div>
+        {description && (
+          <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+            {description}
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">{children}</div>
+    </div>
+  );
+}
 
 interface CustomCategoryItemProps {
   cat: configModels.CategoryConfig;
@@ -106,7 +216,6 @@ function CustomCategoryItem({
       dragControls={dragControls}
       className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
     >
-      {/* Row 1: Name, Directory, Actions */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <div
@@ -213,7 +322,6 @@ function CustomCategoryItem({
         </div>
       </div>
 
-      {/* Row 2: Tag stream with inline Add button */}
       <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
         {(cat.extensions || []).map((ext) => (
           <span
@@ -273,10 +381,10 @@ function CustomCategoryItem({
 
 export function SettingsPanel() {
   const { settings, storageInfo, updateSettings } = useSettingsStore();
-  const [activeTab, setActiveTab] = useState<
-    'general' | 'appearance' | 'download' | 'categories' | 'network'
-  >('general');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [customColor, setCustomColor] = useState('');
+  const colorInputRef = useRef<HTMLInputElement | null>(null);
+
   const appearance = settings?.appearance || new configModels.AppearanceConfig();
   const download = settings?.download || new configModels.DownloadConfig();
   const general = settings?.general || new configModels.GeneralConfig();
@@ -327,6 +435,7 @@ export function SettingsPanel() {
   >(null);
   const [serverPortDraft, setServerPortDraft] = useState<string | null>(null);
   const [restartingServer, setRestartingServer] = useState(false);
+
   if (!settings) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-xs text-[var(--text-muted)]">
@@ -334,6 +443,8 @@ export function SettingsPanel() {
       </div>
     );
   }
+
+  const currentTabMeta = SETTINGS_TABS.find((tab) => tab.id === activeTab) ?? SETTINGS_TABS[0];
 
   const handleLaunchAtStartupChange = async (checked: boolean) => {
     try {
@@ -348,6 +459,7 @@ export function SettingsPanel() {
       showToast(`设置开机启动失败: ${String(err)}`, 'error');
     }
   };
+
   const serverPort = serverPortDraft ?? String(general.serverPort || DEFAULT_SERVER_PORT);
 
   const handleRestartServer = async () => {
@@ -382,7 +494,6 @@ export function SettingsPanel() {
     }
   };
 
-  // 后端校验回退了提交值时，用错误提示代替成功提示，让用户知道该值未被采用。
   const reportCorrections = (corrections: SettingsCorrection[]): boolean => {
     const [first] = corrections;
     if (!first) return false;
@@ -457,7 +568,6 @@ export function SettingsPanel() {
       return;
     }
 
-    // Dirty check: if address hasn't changed AND mode is already custom, do nothing!
     if (
       trimmed === (proxy.customAddr || '') &&
       proxy.mode === configModels.ProxyMode.ProxyModeCustom
@@ -476,7 +586,6 @@ export function SettingsPanel() {
         }),
       });
       if (reportCorrections(corrections)) {
-        // 后端未采用该地址并回退到系统代理，草稿与选中模式同步为实际生效值。
         setCustomProxyDraft('');
         setSelectedProxyMode(configModels.ProxyMode.ProxyModeSystem);
         return;
@@ -488,6 +597,7 @@ export function SettingsPanel() {
       showToast(`保存代理地址失败: ${String(err)}`, 'error');
     }
   };
+
   const handleCommitNewExcludedSite = async () => {
     let clean = newExcludedSiteVal.trim().toLowerCase();
     setIsAddingExcludedSite(false);
@@ -622,7 +732,6 @@ export function SettingsPanel() {
         });
         showToast('默认保存目录已更新', 'success');
       } else {
-        // Immediately revert to valid saved directory and pop toast
         setDirInput(download.defaultDirectory || '');
         showToast(errorMsg || '所选路径不存在或不可写入', 'error', '保存路径无效');
       }
@@ -667,6 +776,7 @@ export function SettingsPanel() {
       }),
     });
   };
+
   const handleShowProgressWindowChange = async (showProgressWindow: boolean) => {
     await updateSettings({
       download: new configModels.DownloadConfig({
@@ -846,6 +956,7 @@ export function SettingsPanel() {
     });
     showToast('已删除自定义分类', 'info');
   };
+
   const handleUpdateCustomCategory = async (
     index: number,
     updates: Partial<configModels.CategoryConfig>,
@@ -953,6 +1064,7 @@ export function SettingsPanel() {
     const cat = isCustom ? download.customCategories?.[index] : download.builtinCategories?.[index];
     if (!cat) {
       setAddingExtCatId(null);
+      setNewExtVal('');
       return;
     }
     const parsed = normalizeExtensions(newExtVal);
@@ -995,6 +1107,7 @@ export function SettingsPanel() {
         } else {
           await handleUpdateBuiltinCategory(index, { extensions: nextExts });
         }
+        showToast(`已添加后缀: ${validToAdd.map((e) => `.${e}`).join(', ')}`, 'success');
       }
     }
     setAddingExtCatId(null);
@@ -1003,24 +1116,21 @@ export function SettingsPanel() {
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col font-sans">
-      <div className="mb-6 flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
+      {/* Dynamic Header & Tab Navigation */}
+      <div className="mb-5 flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
         <div>
-          <h2 className="text-base font-semibold text-[var(--text-primary)]">偏好设置</h2>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">管理应用外观与下载规则配置</p>
+          <h2 className="text-base font-semibold text-[var(--text-primary)]">
+            {currentTabMeta.title}
+          </h2>
+          <p className="mt-0.5 text-xs text-[var(--text-muted)]">{currentTabMeta.description}</p>
         </div>
 
         {/* Tab Navigation with smooth motion pill and accent color */}
         <div className="flex flex-wrap gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 shadow-xs">
-          {[
-            { id: 'general', label: '常规', icon: Sliders },
-            { id: 'appearance', label: '外观', icon: Palette },
-            { id: 'download', label: '下载', icon: Zap },
-            { id: 'categories', label: '分类', icon: FolderTree },
-            { id: 'network', label: '代理', icon: Wifi },
-          ].map(({ id, label, icon: Icon }) => (
+          {SETTINGS_TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
-              onClick={() => setActiveTab(id as typeof activeTab)}
+              onClick={() => setActiveTab(id)}
               className="group relative flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors select-none"
             >
               {activeTab === id && (
@@ -1046,496 +1156,331 @@ export function SettingsPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto pr-1">
-        {/* General Tab */}
+        {/* Tab 1: General (常规与系统) */}
         {activeTab === 'general' && (
-          <div className="space-y-6">
-            {/* Launch at startup */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs font-semibold text-[var(--text-primary)]">
-                    开机自动启动
-                  </label>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    开机登录系统时自动启动 SheepGet 并在后台托盘就绪
-                  </p>
-                </div>
+          <div className="space-y-5">
+            <SettingSection title="系统行为" description="桌面启动常驻与系统剪贴板监听">
+              <SettingRow
+                label="开机自动启动"
+                description="开机登录系统时自动启动并在后台托盘就绪。关闭主窗口后常驻托盘，可在托盘右键彻底退出。"
+              >
                 <Switch
                   checked={general.launchAtStartup}
                   onCheckedChange={(checked) => {
                     void handleLaunchAtStartupChange(checked);
                   }}
                 />
-              </div>
-            </div>
+              </SettingRow>
 
-            {/* Clipboard Monitoring */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs font-semibold text-[var(--text-primary)]">
-                    监视剪贴板链接
-                  </label>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    复制匹配下载分类后缀的文件下载链接时自动呼出下载确认窗口
-                  </p>
-                </div>
+              <SettingRow
+                label="监视剪贴板链接"
+                description="复制匹配下载分类后缀的文件下载链接时，自动弹出新建任务确认窗口"
+              >
                 <Switch
                   checked={clipboardConfig.enabled}
                   onCheckedChange={(checked) => {
                     void handleClipboardChange(checked);
                   }}
                 />
-              </div>
-            </div>
-            {/* Local HTTP Server Port */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <label className="text-xs font-semibold text-[var(--text-primary)]">
-                    本地 HTTP 服务端口
-                  </label>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    浏览器扩展通信监听端口（默认 9248，修改后点击重启服务立即生效）
-                  </p>
+              </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="数据存储" description="应用运行数据与持久化配置">
+              <SettingRow
+                label={
+                  <div className="flex items-center gap-2">
+                    <span>存储与便携模式</span>
+                    <Badge variant={storageInfo?.mode === 'portable' ? 'accent' : 'default'}>
+                      {storageInfo?.mode === 'portable'
+                        ? '便携模式 (Portable)'
+                        : '安装模式 (Standard)'}
+                    </Badge>
+                  </div>
+                }
+                description={storageInfo?.dataDir || '默认应用数据存储目录'}
+              >
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!storageInfo?.dataDir}
+                  onClick={() => {
+                    if (storageInfo?.dataDir) {
+                      void OpenFolder(storageInfo.dataDir);
+                    }
+                  }}
+                  className="h-8 gap-1.5 px-3 text-xs"
+                >
+                  <Folder className="h-3.5 w-3.5" />
+                  <span>打开目录</span>
+                </Button>
+              </SettingRow>
+            </SettingSection>
+          </div>
+        )}
+
+        {/* Tab 2: Appearance (外观与个性化) */}
+        {activeTab === 'appearance' && (
+          <div className="space-y-5">
+            <SettingSection title="界面主题" description="应用界面的色彩明暗风格模式">
+              <div className="p-3">
+                <div className="grid grid-cols-3 gap-2.5">
+                  {[
+                    {
+                      id: configModels.ThemeMode.ThemeSystem,
+                      label: '跟随系统',
+                      icon: Laptop,
+                    },
+                    {
+                      id: configModels.ThemeMode.ThemeLight,
+                      label: '浅色模式',
+                      icon: Sun,
+                    },
+                    {
+                      id: configModels.ThemeMode.ThemeDark,
+                      label: '深色模式',
+                      icon: Moon,
+                    },
+                  ].map((item) => {
+                    const Icon = item.icon;
+                    const isSelected = appearance.theme === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          void handleThemeChange(item.id);
+                        }}
+                        className={`flex items-center justify-center gap-2 rounded-lg border py-2.5 text-xs font-medium transition-all ${
+                          isSelected
+                            ? 'border-[var(--accent)] bg-[var(--accent-muted)]/30 text-[var(--text-primary)] shadow-xs ring-1 ring-[var(--accent)]'
+                            : 'border-[var(--border-subtle)] bg-[var(--bg-subtle)]/30 text-[var(--text-secondary)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
+                        }`}
+                      >
+                        <Icon className="h-4 w-4" />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="flex items-center gap-2">
+              </div>
+            </SettingSection>
+
+            <SettingSection
+              title="强调色"
+              description="用于高亮按钮、进度条指示与焦点的品牌强调颜色"
+            >
+              <SettingRow
+                label="主题强调色"
+                description="从精选预设色板中挑选，或自由指定 Hex 颜色代码"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Preset Swatches */}
+                  <div className="flex items-center gap-1.5">
+                    {PRESET_ACCENTS.map((preset) => {
+                      const isSelected =
+                        appearance.accentColor?.toLowerCase() === preset.hex.toLowerCase();
+                      return (
+                        <button
+                          key={preset.hex}
+                          type="button"
+                          onClick={() => {
+                            void handleAccentChange(preset.hex);
+                          }}
+                          className={`group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/10 transition-transform hover:scale-110 active:scale-95 dark:border-white/20 ${
+                            isSelected
+                              ? 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]'
+                              : ''
+                          }`}
+                          style={{ backgroundColor: preset.hex }}
+                          title={preset.name}
+                        >
+                          {isSelected && (
+                            <Check className="h-3.5 w-3.5 stroke-[3] text-white drop-shadow-sm" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Refined Custom Color Picker & Hex Input */}
+                  <div className="flex items-center gap-2 border-l border-[var(--border-subtle)] pl-2.5">
+                    <button
+                      type="button"
+                      onClick={() => colorInputRef.current?.click()}
+                      className="group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/15 shadow-xs transition-transform hover:scale-105 active:scale-95 dark:border-white/20"
+                      style={{
+                        backgroundColor: appearance.accentColor || DEFAULT_ACCENT_COLOR,
+                      }}
+                      title="点击取色板选择自定义颜色"
+                    >
+                      <Pipette className="h-3.5 w-3.5 stroke-[2.5] text-white drop-shadow-xs" />
+                    </button>
+                    <input
+                      ref={colorInputRef}
+                      type="color"
+                      value={appearance.accentColor || DEFAULT_ACCENT_COLOR}
+                      onChange={(e) => {
+                        void handleAccentChange(e.target.value);
+                        setCustomColor(e.target.value);
+                      }}
+                      className="sr-only"
+                      tabIndex={-1}
+                      aria-hidden="true"
+                    />
+
+                    <div className="relative flex items-center">
+                      <span
+                        className="absolute left-2.5 h-2.5 w-2.5 rounded-full border border-black/10 dark:border-white/20"
+                        style={{ backgroundColor: appearance.accentColor || DEFAULT_ACCENT_COLOR }}
+                      />
+                      <Input
+                        type="text"
+                        value={customColor || appearance.accentColor || ''}
+                        placeholder={DEFAULT_ACCENT_COLOR}
+                        onChange={(e) => setCustomColor(e.target.value)}
+                        onBlur={() => {
+                          if (
+                            customColor &&
+                            /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)
+                          ) {
+                            void handleAccentChange(customColor);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (
+                            e.key === 'Enter' &&
+                            customColor &&
+                            /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)
+                          ) {
+                            void handleAccentChange(customColor);
+                          }
+                        }}
+                        className="h-7 w-24 pl-7 font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </SettingRow>
+            </SettingSection>
+          </div>
+        )}
+
+        {/* Tab 3: Download & Network (下载与网络) */}
+        {activeTab === 'download' && (
+          <div className="space-y-5">
+            <SettingSection title="存储路径" description="本地下载目标与分块临时缓存目录">
+              <SettingRow label="默认保存位置" description="新建下载任务时默认使用的本地存储路径">
+                <div className="flex max-w-md min-w-[280px] items-center gap-1.5">
                   <Input
                     type="text"
-                    inputMode="numeric"
-                    maxLength={5}
-                    value={serverPort}
-                    onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
-                    className="w-24 [appearance:textfield] text-center text-xs [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    value={dirInput}
+                    onChange={(e) => setDirInput(e.target.value)}
+                    onBlur={() => void handleCommitDirectory(dirInput)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleCommitDirectory(dirInput);
+                      }
+                    }}
+                    placeholder="请输入有效目录路径"
+                    className="h-8 flex-1 font-mono text-xs"
                   />
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={restartingServer}
-                    onClick={() => void handleRestartServer()}
+                    onClick={() => void handleSelectDefaultDir()}
+                    className="h-8 shrink-0 gap-1 px-2.5 text-xs"
                   >
-                    {restartingServer ? '重启中…' : '重启服务'}
+                    <Folder className="h-3.5 w-3.5" />
+                    <span>浏览</span>
                   </Button>
                 </div>
-              </div>
-            </div>
+              </SettingRow>
 
-            {/* Excluded Sites */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                排除页面站点
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                以下站点及其子域名中发起的下载保留在浏览器中进行，不触发自动接管
-              </p>
-
-              {/* Tag stream with inline Add button */}
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                {(takeover.excludedSites || []).map((site) => (
-                  <span
-                    key={site}
-                    className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
-                  >
-                    <span>{site}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleRemoveExcludedSite(site);
-                      }}
-                      className="opacity-50 hover:text-red-500 hover:opacity-100"
-                      title={`移除 ${site}`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-
-                {isAddingExcludedSite ? (
-                  <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
-                    <input
-                      autoFocus
-                      type="text"
-                      value={newExcludedSiteVal}
-                      onChange={(e) => setNewExcludedSiteVal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          void handleCommitNewExcludedSite();
-                        } else if (e.key === 'Escape') {
-                          setIsAddingExcludedSite(false);
-                        }
-                      }}
-                      onBlur={() => void handleCommitNewExcludedSite()}
-                      placeholder="如 *.github.com"
-                      className="w-28 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
-                    />
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAddingExcludedSite(true);
-                      setNewExcludedSiteVal('');
-                    }}
-                    className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                  >
-                    <Plus className="h-3 w-3" />
-                    <span>添加</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Temporary Shortcuts */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                接管临时控制快捷键
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                在浏览器点击链接时按住对应按键临时改变接管策略，松开立即恢复默认规则
-              </p>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                    临时暂停接管快捷键
-                  </label>
-                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                    按住时本次下载交由浏览器处理
-                  </p>
-                  <div className="mt-1.5 max-w-[180px]">
-                    <Select
-                      value={takeover.pauseShortcut || 'Delete'}
-                      onChange={(val) => {
-                        void handlePauseShortcutChange(val);
-                      }}
-                      options={SHORTCUT_KEY_OPTIONS}
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[11px] font-medium text-[var(--text-secondary)]">
-                    强制接管下载快捷键
-                  </label>
-                  <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                    按住时忽略文件后缀与站点排除规则强制接管
-                  </p>
-                  <div className="mt-1.5 max-w-[180px]">
-                    <Select
-                      value={takeover.forceShortcut || 'Insert'}
-                      onChange={(val) => {
-                        void handleForceShortcutChange(val);
-                      }}
-                      options={SHORTCUT_KEY_OPTIONS}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* System Tray Behavior Note */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-muted)] text-[var(--accent)]">
-                  <Info className="h-3.5 w-3.5" />
-                </div>
-                <div className="space-y-1 text-xs">
-                  <div className="font-semibold text-[var(--text-primary)]">常驻系统托盘</div>
-                  <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-                    关闭主窗口后，SheepGet
-                    会固定最小化常驻在系统托盘中，保持已有下载任务与剪贴板/浏览器监听。如需彻底退出程序，请在系统托盘图标右键菜单中点击「退出」。
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Storage Info */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                存储与便携模式
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                应用配置与下载任务数据独立保存在本地
-              </p>
-              <div className="mt-3 flex items-center gap-2">
-                <Badge variant={storageInfo?.mode === 'portable' ? 'accent' : 'default'}>
-                  {storageInfo?.mode === 'portable' ? '便携模式 (Portable)' : '安装模式 (Standard)'}
-                </Badge>
-                <span
-                  className="truncate font-mono text-xs text-[var(--text-secondary)]"
-                  title={storageInfo?.dataDir || ''}
-                >
-                  {storageInfo?.dataDir || '默认数据目录'}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Appearance Tab */}
-        {activeTab === 'appearance' && (
-          <div className="space-y-6">
-            {/* Theme Mode */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">主题模式</label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                选择应用界面模式，支持跟随系统明暗设置切换
-              </p>
-
-              <div className="mt-3 grid grid-cols-3 gap-3">
-                {[
-                  {
-                    id: configModels.ThemeMode.ThemeSystem,
-                    label: '跟随系统',
-                    icon: Laptop,
-                  },
-                  {
-                    id: configModels.ThemeMode.ThemeLight,
-                    label: '浅色模式',
-                    icon: Sun,
-                  },
-                  {
-                    id: configModels.ThemeMode.ThemeDark,
-                    label: '深色模式',
-                    icon: Moon,
-                  },
-                ].map((item) => {
-                  const Icon = item.icon;
-                  const isSelected = appearance.theme === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        void handleThemeChange(item.id);
-                      }}
-                      className={`flex items-center justify-center gap-2 rounded-lg border p-3 text-xs font-medium transition-all ${
-                        isSelected
-                          ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--text-primary)] shadow-xs'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Accent Color */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">强调色</label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                自定义按钮、进度条及高亮焦点的强调颜色
-              </p>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2.5">
-                {PRESET_ACCENTS.map((preset) => {
-                  const isSelected =
-                    appearance.accentColor?.toLowerCase() === preset.hex.toLowerCase();
-                  return (
-                    <button
-                      key={preset.hex}
-                      onClick={() => {
-                        void handleAccentChange(preset.hex);
-                      }}
-                      className="group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/10 transition-transform hover:scale-105 active:scale-95 dark:border-white/20"
-                      style={{ backgroundColor: preset.hex }}
-                      title={preset.name}
-                    >
-                      {isSelected && (
-                        <Check className="h-4 w-4 stroke-[3] text-white drop-shadow-md" />
-                      )}
-                    </button>
-                  );
-                })}
-
-                {/* Custom Color Picker */}
-                <div className="ml-2 flex items-center gap-2 border-l border-[var(--border-subtle)] pl-3">
-                  <input
-                    type="color"
-                    value={appearance.accentColor || '#10b981'}
-                    onChange={(e) => {
-                      void handleAccentChange(e.target.value);
-                    }}
-                    className="h-7 w-7 cursor-pointer appearance-none rounded-lg border border-[var(--border-subtle)] bg-transparent p-0"
-                    title="选择自定义颜色"
-                  />
+              <SettingRow
+                label="临时缓存目录"
+                description="分块下载与未完成数据的临时暂存路径，下载完成后自动安全转存"
+              >
+                <div className="flex max-w-md min-w-[280px] items-center gap-1.5">
                   <Input
                     type="text"
-                    value={customColor || appearance.accentColor || ''}
-                    placeholder="#10b981"
-                    onChange={(e) => setCustomColor(e.target.value)}
-                    onBlur={() => {
-                      if (customColor && /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)) {
-                        void handleAccentChange(customColor);
+                    value={tempDirInput}
+                    onChange={(e) => setTempDirInput(e.target.value)}
+                    onBlur={() => void handleCommitTempDirectory(tempDirInput)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleCommitTempDirectory(tempDirInput);
                       }
                     }}
-                    className="w-20 font-mono text-[11px]"
+                    placeholder="请输入临时缓存目录路径"
+                    className="h-8 flex-1 font-mono text-xs"
                   />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void handleSelectTempDir()}
+                    className="h-8 shrink-0 gap-1 px-2.5 text-xs"
+                  >
+                    <Folder className="h-3.5 w-3.5" />
+                    <span>浏览</span>
+                  </Button>
                 </div>
-              </div>
-            </div>
-          </div>
-        )}
+              </SettingRow>
+            </SettingSection>
 
-        {/* Download Tab */}
-        {activeTab === 'download' && (
-          <div className="space-y-6">
-            {/* Default Directory with editable input and validation */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                默认保存位置
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                新建下载时默认使用的本地存储路径，支持直接编辑输入或浏览选择
-              </p>
-
-              <div className="mt-2.5 flex items-center gap-2">
-                <Input
-                  type="text"
-                  value={dirInput}
-                  onChange={(e) => {
-                    setDirInput(e.target.value);
-                  }}
-                  onBlur={() => {
-                    void handleCommitDirectory(dirInput);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleCommitDirectory(dirInput);
-                    }
-                  }}
-                  placeholder="请输入有效目录路径"
-                  className="flex-1 font-mono text-xs"
-                />
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() => {
-                    void handleSelectDefaultDir();
-                  }}
-                  className="shrink-0 gap-1.5"
-                >
-                  <Folder className="h-3.5 w-3.5" />
-                  <span>浏览选择</span>
-                </Button>
-              </div>
-            </div>
-
-            {/* Temp Directory with editable input and validation */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">
-                临时缓存目录
-              </label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                分块下载与中转临时文件存放路径。下载完成后将自动安全转存至目标保存位置
-              </p>
-
-              <div className="mt-2.5 flex items-center gap-2">
-                <Input
-                  type="text"
-                  value={tempDirInput}
-                  onChange={(e) => {
-                    setTempDirInput(e.target.value);
-                  }}
-                  onBlur={() => {
-                    void handleCommitTempDirectory(tempDirInput);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleCommitTempDirectory(tempDirInput);
-                    }
-                  }}
-                  placeholder="请输入临时缓存目录路径"
-                  className="flex-1 font-mono text-xs"
-                />
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() => {
-                    void handleSelectTempDir();
-                  }}
-                  className="shrink-0 gap-1.5"
-                >
-                  <Folder className="h-3.5 w-3.5" />
-                  <span>浏览选择</span>
-                </Button>
-              </div>
-            </div>
-            {/* Concurrency & Connections */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-                <label className="text-xs font-semibold text-[var(--text-primary)]">
-                  全局并发任务上限
-                </label>
-                <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                  同时处于下载传输状态的最大任务数 (1 ~ 32)
-                </p>
-                <div className="mt-3 flex items-center gap-3">
+            <SettingSection title="传输并发性能" description="并发调度上限与多连接分块参数">
+              <SettingRow
+                label="全局并发任务上限"
+                description="同时处于下载传输状态的最大任务数 (1 ~ 32)"
+              >
+                <div className="flex w-52 items-center gap-3">
                   <div className="flex-1">
                     <Slider
                       min={1}
                       max={32}
                       value={download.maxConcurrentDownloads || 3}
-                      onChange={(val) => {
-                        void handleMaxConcurrentChange(val);
-                      }}
+                      onChange={(val) => void handleMaxConcurrentChange(val)}
                     />
                   </div>
                   <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
                     {download.maxConcurrentDownloads}
                   </span>
                 </div>
-              </div>
+              </SettingRow>
 
-              <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-                <label className="text-xs font-semibold text-[var(--text-primary)]">
-                  单任务默认分块连接数
-                </label>
-                <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                  支持多线程分块下载时的默认连接数 (1 ~ 32)
-                </p>
-                <div className="mt-3 flex items-center gap-3">
+              <SettingRow
+                label="单任务分块连接数"
+                description="支持多线程分块下载时的默认连接数 (1 ~ 32)"
+              >
+                <div className="flex w-52 items-center gap-3">
                   <div className="flex-1">
                     <Slider
                       min={1}
                       max={32}
                       value={download.defaultConnectionsPerTask || 8}
-                      onChange={(val) => {
-                        void handleDefaultConnChange(val);
-                      }}
+                      onChange={(val) => void handleDefaultConnChange(val)}
                     />
                   </div>
                   <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
                     {download.defaultConnectionsPerTask}
                   </span>
                 </div>
-              </div>
-            </div>
+              </SettingRow>
+            </SettingSection>
 
-            {/* Duplicate Policy & Pre-Download */}
-            <div className="space-y-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs font-semibold text-[var(--text-primary)]">
-                    重复链接处理策略
-                  </label>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    检测到已存在相同 URL 任务时的全局默认行为
-                  </p>
-                </div>
+            <SettingSection title="下载策略与反馈" description="重复任务、提前下载与进度窗口行为">
+              <SettingRow
+                label="重复链接处理策略"
+                description="检测到已存在相同 URL 任务时的全局默认行为"
+              >
                 <div className="w-48">
                   <Select
                     value={
                       download.duplicateUrlPolicy ||
                       configModels.DuplicateURLPolicy.DuplicatePolicyAsk
                     }
-                    onChange={(val) => {
-                      void handleDuplicatePolicyChange(val);
-                    }}
+                    onChange={(val) => void handleDuplicatePolicyChange(val)}
                     options={[
                       {
                         value: configModels.DuplicateURLPolicy.DuplicatePolicyAsk,
@@ -1556,136 +1501,269 @@ export function SettingsPanel() {
                     ]}
                   />
                 </div>
-              </div>
+              </SettingRow>
 
-              <div className="border-t border-[var(--border-subtle)] pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-xs font-semibold text-[var(--text-primary)]">
-                      提前下载
-                    </label>
-                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                      打开新建确认窗口时立即在后台下载数据
-                    </p>
-                  </div>
-                  <Switch
-                    checked={!!download.preDownload}
-                    onCheckedChange={(checked) => {
-                      void handlePreDownloadChange(checked);
-                    }}
-                  />
-                </div>
-              </div>
+              <SettingRow
+                label="提前下载"
+                description="打开新建确认窗口时立即在后台发起连接并下载数据"
+              >
+                <Switch
+                  checked={!!download.preDownload}
+                  onCheckedChange={(checked) => void handlePreDownloadChange(checked)}
+                />
+              </SettingRow>
 
-              <div className="border-t border-[var(--border-subtle)] pt-4">
-                <div className="flex items-center justify-between">
-                  <div className="pr-4">
-                    <label className="text-xs font-semibold text-[var(--text-primary)]">
-                      使用服务器修改时间
-                    </label>
-                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                      下载完成后将本地文件修改时间设置为服务器提供的修改时间，未提供则使用完成时间。
-                    </p>
-                  </div>
-                  <Switch
-                    checked={!!download.useServerFileTime}
-                    onCheckedChange={(checked) => {
-                      void handleUseServerFileTimeChange(checked);
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
+              <SettingRow
+                label="使用服务器修改时间"
+                description="下载完成后将本地文件修改时间设置为服务器提供的修改时间，未提供则使用完成时间"
+              >
+                <Switch
+                  checked={!!download.useServerFileTime}
+                  onCheckedChange={(checked) => void handleUseServerFileTimeChange(checked)}
+                />
+              </SettingRow>
 
-            {/* Progress Window & Completed Info Settings */}
-            <div className="space-y-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="text-xs font-semibold text-[var(--text-primary)]">
-                    自动显示下载进度窗口
-                  </label>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    开始下载任务时自动唤起共享下载进度窗口
-                  </p>
-                </div>
+              <SettingRow
+                label="自动显示下载进度窗口"
+                description="开始下载任务时自动唤起共享下载进度悬浮窗口"
+              >
                 <Switch
                   checked={download.showProgressWindow ?? true}
-                  onCheckedChange={(checked) => {
-                    void handleShowProgressWindowChange(checked);
-                  }}
+                  onCheckedChange={(checked) => void handleShowProgressWindowChange(checked)}
                 />
-              </div>
+              </SettingRow>
 
-              <div className="border-t border-[var(--border-subtle)] pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-xs font-semibold text-[var(--text-primary)]">
-                      保留完成信息
-                    </label>
-                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                      任务下载完成后在进度窗口顶部保留该条完成记录与操作
-                    </p>
-                  </div>
-                  <Switch
-                    checked={download.keepCompletedInfo ?? true}
-                    onCheckedChange={(checked) => {
-                      void handleKeepCompletedInfoChange(checked);
-                    }}
+              <SettingRow
+                label="保留完成信息"
+                description="任务下载完成后在进度窗口顶部保留该条完成记录与操作"
+              >
+                <Switch
+                  checked={download.keepCompletedInfo ?? true}
+                  onCheckedChange={(checked) => void handleKeepCompletedInfoChange(checked)}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="打开后自动移除完成信息"
+                description="在进度窗口点击打开文件或文件夹后，自动移除该条完成信息"
+              >
+                <Switch
+                  checked={!!download.autoRemoveCompletedOnOpen}
+                  onCheckedChange={(checked) => void handleAutoRemoveCompletedChange(checked)}
+                />
+              </SettingRow>
+            </SettingSection>
+
+            {/* Network Proxy Integrated Section */}
+            <SettingSection
+              title="网络代理"
+              description="配置客户端下载与元数据探测的网络代理，新任务及继续任务将应用最新设置"
+            >
+              <SettingRow label="代理模式" description="选择直连、遵循系统代理或手动指定代理服务器">
+                <div className="w-52">
+                  <Select
+                    value={selectedProxyMode}
+                    onChange={(val) => void handleProxyModeChange(val)}
+                    options={[
+                      {
+                        value: configModels.ProxyMode.ProxyModeDirect,
+                        label: '直连 (不使用代理)',
+                        description: '所有网络请求直接连接目标服务器',
+                      },
+                      {
+                        value: configModels.ProxyMode.ProxyModeSystem,
+                        label: '系统代理 (默认)',
+                        description: '读取并遵循操作系统的网络代理设置',
+                      },
+                      {
+                        value: configModels.ProxyMode.ProxyModeCustom,
+                        label: '自定义代理',
+                        description: '手动指定代理服务器地址与端口',
+                      },
+                    ]}
                   />
                 </div>
-              </div>
+              </SettingRow>
 
-              <div className="border-t border-[var(--border-subtle)] pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <label className="text-xs font-semibold text-[var(--text-primary)]">
-                      打开后自动移除完成信息
-                    </label>
-                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                      在进度窗口点击打开文件或打开文件夹后，自动移除该条完成信息
-                    </p>
+              {selectedProxyMode === configModels.ProxyMode.ProxyModeCustom && (
+                <SettingRow
+                  label="自定义代理地址"
+                  description="支持 HTTP/HTTPS 代理及 SOCKS5 代理 (如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080)"
+                  align="top"
+                >
+                  <div className="flex flex-col items-end gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={customProxyDraft}
+                        onChange={(e) => {
+                          setCustomProxyDraft(e.target.value);
+                          setProxyError('');
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleCustomProxyCommit();
+                          }
+                        }}
+                        placeholder="http://127.0.0.1:7890"
+                        className="h-8 w-64 font-mono text-xs"
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => void handleCustomProxyCommit()}
+                        className="h-8 shrink-0 text-xs"
+                      >
+                        {proxy.mode === configModels.ProxyMode.ProxyModeCustom
+                          ? '保存'
+                          : '保存并启用'}
+                      </Button>
+                    </div>
+                    {proxyError && (
+                      <p className="text-[11px] font-medium text-rose-500">{proxyError}</p>
+                    )}
                   </div>
-                  <Switch
-                    checked={!!download.autoRemoveCompletedOnOpen}
-                    onCheckedChange={(checked) => {
-                      void handleAutoRemoveCompletedChange(checked);
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
+                </SettingRow>
+              )}
+            </SettingSection>
           </div>
         )}
 
-        {/* Categories Tab */}
-        {activeTab === 'categories' && (
-          <div className="space-y-4">
-            {/* Header info */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3">
-              <div className="flex items-center gap-2">
-                <FolderTree className="h-4 w-4 text-[var(--accent)]" />
-                <span className="text-xs font-semibold text-[var(--text-primary)]">
-                  分类保存规则
-                </span>
-              </div>
-              <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-                根据文件后缀自动分类并分配保存目录；新建下载窗口中的手动指定优先。
-              </p>
-            </div>
-
-            {/* Custom Categories */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between px-1">
+        {/* Tab 4: Rules & Interception (接管与规则) */}
+        {activeTab === 'rules' && (
+          <div className="space-y-5">
+            <SettingSection
+              title="浏览器扩展与接管"
+              description="配置本地通信端口、排除站点与临时快捷键"
+            >
+              <SettingRow
+                label="本地 HTTP 服务端口"
+                description="浏览器扩展通信监听端口（默认 9248，修改后点击重启服务立即生效）"
+              >
                 <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-semibold text-[var(--text-primary)]">自定义分类</h3>
-                  <Badge variant="accent">{download.customCategories?.length || 0}</Badge>
+                  <Input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={5}
+                    value={serverPort}
+                    onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
+                    className="w-20 text-center font-mono text-xs"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={restartingServer}
+                    onClick={() => void handleRestartServer()}
+                    className="h-8 text-xs"
+                  >
+                    {restartingServer ? '重启中…' : '重启服务'}
+                  </Button>
+                </div>
+              </SettingRow>
+
+              <SettingRow
+                label="排除页面站点"
+                description="以下站点及其子域名中发起的下载保留在浏览器中进行，不触发自动接管"
+                align="top"
+              >
+                <div className="flex max-w-sm flex-wrap items-center justify-end gap-1.5">
+                  {(takeover.excludedSites || []).map((site) => (
+                    <span
+                      key={site}
+                      className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                    >
+                      <span>{site}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveExcludedSite(site)}
+                        className="opacity-50 hover:text-red-500 hover:opacity-100"
+                        title={`移除 ${site}`}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+
+                  {isAddingExcludedSite ? (
+                    <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={newExcludedSiteVal}
+                        onChange={(e) => setNewExcludedSiteVal(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleCommitNewExcludedSite();
+                          } else if (e.key === 'Escape') {
+                            setIsAddingExcludedSite(false);
+                          }
+                        }}
+                        onBlur={() => void handleCommitNewExcludedSite()}
+                        placeholder="如 *.github.com"
+                        className="w-28 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                      />
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingExcludedSite(true);
+                        setNewExcludedSiteVal('');
+                      }}
+                      className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                    >
+                      <Plus className="h-3 w-3" />
+                      <span>添加站点</span>
+                    </button>
+                  )}
+                </div>
+              </SettingRow>
+
+              <SettingRow
+                label="临时接管快捷键"
+                description="点击链接时按住对应按键可临时改变接管策略，松开立即恢复默认规则"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-[var(--text-muted)]">暂停:</span>
+                    <div className="w-32">
+                      <Select
+                        value={takeover.pauseShortcut || 'Delete'}
+                        onChange={(val) => void handlePauseShortcutChange(val)}
+                        options={SHORTCUT_KEY_OPTIONS}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-[var(--text-muted)]">强制:</span>
+                    <div className="w-32">
+                      <Select
+                        value={takeover.forceShortcut || 'Insert'}
+                        onChange={(val) => void handleForceShortcutChange(val)}
+                        options={SHORTCUT_KEY_OPTIONS}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </SettingRow>
+            </SettingSection>
+
+            {/* Custom Categories Section */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-semibold text-[var(--text-primary)]">自定义分类</h3>
+                    <Badge variant="accent">{download.customCategories?.length || 0}</Badge>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                    优先按用户排序匹配；可拖动左侧滑块调整优先级
+                  </p>
                 </div>
                 <Button
                   variant="primary"
                   size="sm"
-                  onClick={() => {
-                    void handleAddCustomCategory();
-                  }}
+                  onClick={() => void handleAddCustomCategory()}
                   className="h-7 gap-1 px-2.5 text-xs"
                 >
                   <Plus className="h-3.5 w-3.5" />
@@ -1703,10 +1781,8 @@ export function SettingsPanel() {
                 as="div"
                 axis="y"
                 values={reorderedCategories ?? download.customCategories ?? []}
-                onReorder={(newOrder) => {
-                  handleReorderCustomCategories(newOrder);
-                }}
-                className="space-y-2.5"
+                onReorder={(newOrder) => handleReorderCustomCategories(newOrder)}
+                className="space-y-2"
               >
                 {(reorderedCategories ?? download.customCategories ?? []).map((cat, idx) => (
                   <CustomCategoryItem
@@ -1734,246 +1810,144 @@ export function SettingsPanel() {
               </Reorder.Group>
             </div>
 
-            {/* Builtin Categories */}
-            <div className="space-y-2.5 border-t border-[var(--border-subtle)] pt-4">
+            {/* Builtin Categories Section */}
+            <div className="space-y-2 pt-1">
               <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-semibold text-[var(--text-primary)]">内置分类</h3>
-                  <Badge variant="outline">{download.builtinCategories?.length || 6}</Badge>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-semibold text-[var(--text-primary)]">内置分类</h3>
+                    <Badge variant="outline">{download.builtinCategories?.length || 6}</Badge>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                    预置文件类型规则；自定义分类未命中时在此兜底匹配
+                  </p>
                 </div>
               </div>
 
-              {download.builtinCategories?.map((cat, idx) => {
-                const isFallback = cat.id === 'builtin-file' || cat.name === '文件';
-                return (
-                  <div
-                    key={cat.id || idx}
-                    className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3"
-                  >
-                    {/* Row 1: Name, Badge, Directory */}
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-[var(--text-primary)]">
-                          {cat.name}
-                        </span>
-                        <Badge variant={isFallback ? 'warning' : 'outline'}>
-                          {isFallback ? '默认' : '内置'}
-                        </Badge>
-                      </div>
+              <div className="space-y-2">
+                {download.builtinCategories?.map((cat, idx) => {
+                  const isFallback = cat.id === 'builtin-file' || cat.name === '文件';
+                  return (
+                    <div
+                      key={cat.id || idx}
+                      className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-[var(--text-primary)]">
+                            {cat.name}
+                          </span>
+                          <Badge variant={isFallback ? 'warning' : 'outline'}>
+                            {isFallback ? '默认兜底' : '内置'}
+                          </Badge>
+                        </div>
 
-                      <div className="flex max-w-sm min-w-0 flex-1 items-center justify-end gap-1.5">
-                        <Input
-                          value={
-                            cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
-                          }
-                          onChange={(e) => {
-                            setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
-                          }}
-                          onBlur={() => {
-                            const val =
-                              cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
-                            void handleCommitCategoryDirectory(false, idx, val);
-                            const next = { ...catDirDrafts };
-                            delete next[cat.id];
-                            setCatDirDrafts(next);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
+                        <div className="flex max-w-sm min-w-0 flex-1 items-center justify-end gap-1.5">
+                          <Input
+                            value={
+                              cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
+                            }
+                            onChange={(e) => {
+                              setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
+                            }}
+                            onBlur={() => {
                               const val =
                                 cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
                               void handleCommitCategoryDirectory(false, idx, val);
                               const next = { ...catDirDrafts };
                               delete next[cat.id];
                               setCatDirDrafts(next);
-                            }
-                          }}
-                          placeholder="留空则使用默认保存位置"
-                          className="h-7 flex-1 px-2 font-mono text-xs"
-                        />
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => {
-                            void handleSelectCategoryDirectory(false, idx);
-                          }}
-                          className="h-7 shrink-0 gap-1 px-2 text-xs"
-                        >
-                          <Folder className="h-3 w-3" />
-                          <span>浏览</span>
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Row 2: Tag stream with inline Add button */}
-                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                      {(cat.extensions || []).map((ext) => (
-                        <span
-                          key={ext}
-                          className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
-                        >
-                          <span>.{ext}</span>
-                          <button
-                            type="button"
-                            onClick={() => void handleRemoveExtension(false, idx, ext)}
-                            className="opacity-50 hover:text-red-500 hover:opacity-100"
-                            title={`移除 .${ext}`}
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-
-                      {addingExtCatId === cat.id ? (
-                        <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
-                          <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
-                          <input
-                            autoFocus
-                            type="text"
-                            value={newExtVal}
-                            onChange={(e) => setNewExtVal(e.target.value)}
+                            }}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                 e.preventDefault();
-                                void handleCommitNewExtension(false, idx);
-                              } else if (e.key === 'Escape') {
-                                setAddingExtCatId(null);
+                                const val =
+                                  cat.id in catDirDrafts
+                                    ? catDirDrafts[cat.id]
+                                    : cat.directory || '';
+                                void handleCommitCategoryDirectory(false, idx, val);
+                                const next = { ...catDirDrafts };
+                                delete next[cat.id];
+                                setCatDirDrafts(next);
                               }
                             }}
-                            onBlur={() => void handleCommitNewExtension(false, idx)}
-                            placeholder="后缀"
-                            className="w-14 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                            placeholder="留空则使用默认保存位置"
+                            className="h-7 flex-1 px-2 font-mono text-xs"
                           />
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAddingExtCatId(cat.id);
-                            setNewExtVal('');
-                          }}
-                          className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                        >
-                          <Plus className="h-3 w-3" />
-                          <span>添加</span>
-                        </button>
-                      )}
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => void handleSelectCategoryDirectory(false, idx)}
+                            className="h-7 shrink-0 gap-1 px-2 text-xs"
+                          >
+                            <Folder className="h-3 w-3" />
+                            <span>浏览</span>
+                          </Button>
+                        </div>
+                      </div>
 
-                      {isFallback && (
-                        <span className="pl-1 text-[10px] text-[var(--text-muted)]">
-                          未匹配后缀的文件默认归入此目录
-                        </span>
-                      )}
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        {(cat.extensions || []).map((ext) => (
+                          <span
+                            key={ext}
+                            className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                          >
+                            <span>.{ext}</span>
+                            <button
+                              type="button"
+                              onClick={() => void handleRemoveExtension(false, idx, ext)}
+                              className="opacity-50 hover:text-red-500 hover:opacity-100"
+                              title={`移除 .${ext}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        ))}
+
+                        {addingExtCatId === cat.id ? (
+                          <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+                            <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
+                            <input
+                              autoFocus
+                              type="text"
+                              value={newExtVal}
+                              onChange={(e) => setNewExtVal(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  void handleCommitNewExtension(false, idx);
+                                } else if (e.key === 'Escape') {
+                                  setAddingExtCatId(null);
+                                }
+                              }}
+                              onBlur={() => void handleCommitNewExtension(false, idx)}
+                              placeholder="后缀"
+                              className="w-14 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                            />
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAddingExtCatId(cat.id);
+                              setNewExtVal('');
+                            }}
+                            className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                          >
+                            <Plus className="h-3 w-3" />
+                            <span>添加</span>
+                          </button>
+                        )}
+
+                        {isFallback && (
+                          <span className="pl-1 text-[10px] text-[var(--text-muted)]">
+                            未匹配后缀的文件默认归入此目录
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Network Tab */}
-        {activeTab === 'network' && (
-          <div className="space-y-6">
-            {/* Proxy Mode */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <label className="text-xs font-semibold text-[var(--text-primary)]">代理模式</label>
-              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                配置 SheepGet 下载与元数据探测的网络代理模式
-              </p>
-
-              <div className="mt-3 max-w-sm">
-                <Select
-                  value={selectedProxyMode}
-                  onChange={(val) => {
-                    void handleProxyModeChange(val);
-                  }}
-                  options={[
-                    {
-                      value: configModels.ProxyMode.ProxyModeDirect,
-                      label: '直连 (不使用代理)',
-                      description: '所有网络请求直接连接目标服务器',
-                    },
-                    {
-                      value: configModels.ProxyMode.ProxyModeSystem,
-                      label: '系统代理 (默认)',
-                      description: '读取并遵循操作系统的网络代理设置',
-                    },
-                    {
-                      value: configModels.ProxyMode.ProxyModeCustom,
-                      label: '自定义代理',
-                      description: '手动指定代理服务器地址与端口',
-                    },
-                  ]}
-                />
-              </div>
-
-              {/* Custom Proxy Address input */}
-              {selectedProxyMode === configModels.ProxyMode.ProxyModeCustom && (
-                <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-xs font-semibold text-[var(--text-primary)]">
-                        自定义代理服务器地址
-                      </label>
-                      <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                        支持 HTTP/HTTPS 代理及 SOCKS5 代理
-                      </p>
-                    </div>
-                    {proxy.mode !== configModels.ProxyMode.ProxyModeCustom && (
-                      <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-500">
-                        未生效（填写并保存后启用）
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-2 flex max-w-md items-center gap-2">
-                    <Input
-                      value={customProxyDraft}
-                      onChange={(e) => {
-                        setCustomProxyDraft(e.target.value);
-                        setProxyError('');
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          void handleCustomProxyCommit();
-                        }
-                      }}
-                      placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
-                      className="h-8 font-mono text-xs"
-                    />
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        void handleCustomProxyCommit();
-                      }}
-                      className="h-8 shrink-0 text-xs"
-                    >
-                      {proxy.mode === configModels.ProxyMode.ProxyModeCustom
-                        ? '保存'
-                        : '保存并启用'}
-                    </Button>
-                  </div>
-                  {proxyError && (
-                    <p className="mt-1 text-[11px] font-medium text-rose-500">{proxyError}</p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Scope explanation card */}
-            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-muted)] text-[var(--accent)]">
-                  <Info className="h-3.5 w-3.5" />
-                </div>
-                <div className="space-y-1 text-xs">
-                  <div className="font-semibold text-[var(--text-primary)]">代理生效规则</div>
-                  <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-                    代理配置仅作用于 SheepGet
-                    自身联网。进行中的下载任务沿用开始时的代理，新任务及继续任务将应用最新配置。
-                  </p>
-                </div>
+                  );
+                })}
               </div>
             </div>
           </div>
