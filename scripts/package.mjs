@@ -41,6 +41,11 @@ const binDir = join(root, 'build', 'bin');
 const toolsDir = join(root, '.tools');
 mkdirSync(binDir, { recursive: true });
 mkdirSync(toolsDir, { recursive: true });
+function resolveWails3() {
+  const localExe = join(toolsDir, 'wails3' + (isWin ? '.exe' : ''));
+  if (existsSync(localExe)) return localExe;
+  return 'wails3';
+}
 
 const distDir = join(root, 'dist');
 rmSync(distDir, { recursive: true, force: true });
@@ -140,7 +145,7 @@ async function main() {
       },
     };
     writeFileSync(tempInfoTarget, JSON.stringify(infoPayload, null, 2), 'utf-8');
-    run('wails3', [
+    run(resolveWails3(), [
       'generate',
       'syso',
       '-arch',
