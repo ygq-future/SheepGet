@@ -230,6 +230,13 @@ export function OnTaskUpdated(t: task$0.Task | null): $CancellablePromise<void> 
 }
 
 /**
+ * OpenExtensionFolder reveals the bundled extension directory in the system file manager.
+ */
+export function OpenExtensionFolder(): $CancellablePromise<void> {
+    return $Call.ByID(1138059214);
+}
+
+/**
  * OpenFile opens the downloaded file with system default application after verifying existence
  */
 export function OpenFile(filePath: string): $CancellablePromise<void> {
@@ -264,6 +271,14 @@ export function OpenSettingsWindow(): $CancellablePromise<void> {
  */
 export function PauseTask(id: string): $CancellablePromise<void> {
     return $Call.ByID(3621607596, id);
+}
+
+/**
+ * PrepareExtensionPage 唤起浏览器并把扩展管理页地址写入剪贴板，返回该地址。
+ * 用户在浏览器地址栏粘贴即可进入扩展管理页，随后手动加载扩展目录。
+ */
+export function PrepareExtensionPage(browser: string): $CancellablePromise<string> {
+    return $Call.ByID(3095611994, browser);
 }
 
 /**

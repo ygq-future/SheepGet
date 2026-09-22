@@ -51,39 +51,29 @@ SheepGet 是一款面向 **Windows、macOS 和 Linux** 的现代化桌面下载�
 
 ---
 
-## 浏览器配套扩展与安装指引
+## 浏览器配套扩展与安装
 
 SheepGet 提供随程序附带的浏览器配套扩展（Manifest V3），支持 Google Chrome 与 Microsoft Edge。
 
-### 1. 获取扩展文件
+### 1. 扩展快速加载（三键一拖）
 
-- **使用发行版 / 便携包**：解压后的根目录下已直接附带 **`extension/`** 文件夹，开箱即用。
-- **从源码构建**：执行扩展构建命令，产物输出至根目录 **`dist-extension/chrome-mv3/`**：
-  ```bash
-  bun run --cwd extension build
-  ```
+SheepGet 桌面端内置扩展定位与地址接力功能，通过以下步骤即可完成加载：
 
-### 2. 加载扩展到浏览器
+1. **进入扩展页面**：在 SheepGet 主界面打开「设置」→「接管与规则」，点击「**打开 Chrome 并复制地址**」（或「打开 Edge 并复制地址」）。程序会唤起浏览器并把扩展管理页地址写入剪贴板，切到浏览器地址栏按 `Ctrl+V`、`回车` 即可进入；随后开启页面右上角的「**开发者模式**」。
+2. **定位扩展目录**：在设置面板中点击「**定位扩展目录**」，系统文件管理器将自动打开并高亮配套扩展文件夹；
+3. **拖拽完成安装**：直接将高亮的扩展文件夹**拖入浏览器扩展页面**，即可完成加载。
 
-#### Google Chrome：
+> 扩展管理页属于浏览器特权页面：Chromium 会丢弃命令行传入的 `chrome://` / `edge://` 地址，也禁止网页内容导航过去，因此该页面只能由用户在地址栏粘贴进入。
 
-1. 打开 Chrome，在地址栏输入 `chrome://extensions/` 并回车；
-2. 开启页面右上角的「**开发者模式**」（Developer mode）；
-3. 点击左上角「**加载已解压的扩展程序**」（Load unpacked）；
-4. 选择分发包中的 `extension` 文件夹（或源码构建的 `dist-extension/chrome-mv3`）；
-5. 核对扩展列表中的 **SheepGet Integration Module**，其扩展 ID 固化为：
-   ```text
-   oediboaeofmnlkgcjhnpfnngphkjooam
-   ```
+加载成功后，可在浏览器扩展列表中核对 **SheepGet Integration Module**，其扩展 ID 固化为：
 
-#### Microsoft Edge：
+```text
+oediboaeofmnlkgcjhnpfnngphkjooam
+```
 
-1. 打开 Edge，在地址栏输入 `edge://extensions/` 并回车；
-2. 开启左侧菜单栏下方的「**开发人员模式**」开关；
-3. 点击「**加载解压缩的扩展**」；
-4. 选择分发包中的 `extension` 文件夹（或 `dist-extension/chrome-mv3`）完成加载。
+> **提示**：也可以在扩展管理页点击「加载已解压的扩展程序」，直接选中「定位扩展目录」已高亮的那个文件夹；从源码构建的开发者执行 `bun run --cwd extension build` 即可生成构建产物。
 
-### 3. 与桌面端通信与自动发现
+### 2. 与桌面端通信与自动发现
 
 无论是便携版还是安装版，SheepGet 均统一采用本地安全 HTTP 与 WebSocket 环回通道与配套扩展通信：
 

@@ -10,7 +10,9 @@ import { Slider } from './ui/Slider';
 import { showToast } from './ui/Toast';
 import { DEFAULT_SERVER_PORT } from '../lib/constants';
 import {
+  OpenExtensionFolder,
   OpenFolder,
+  PrepareExtensionPage,
   RestartServer,
   SelectDirectory,
   ValidateDirectory,
@@ -32,6 +34,8 @@ import {
   X,
   Sliders,
   Pipette,
+  FolderOpen,
+  ExternalLink,
 } from 'lucide-react';
 import { Badge } from './ui/Badge';
 import { normalizeExtensions } from '../lib/category';
@@ -1141,6 +1145,24 @@ export function SettingsPanel() {
     setNewExtVal('');
   };
 
+  const handleOpenExtensionFolder = async () => {
+    try {
+      await OpenExtensionFolder();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'error', '打开扩展目录失败');
+    }
+  };
+
+  const handlePrepareExtensionPage = async (browser: 'chrome' | 'edge') => {
+    try {
+      const address = await PrepareExtensionPage(browser);
+      showToast(`已复制 ${address}，切到浏览器地址栏按 Ctrl+V 回车`, 'success');
+    } catch (err) {
+      const name = browser === 'edge' ? 'Edge' : 'Chrome';
+      showToast(err instanceof Error ? err.message : String(err), 'error', `唤起 ${name} 失败`);
+    }
+  };
+
   return (
     <div className="flex h-full w-full min-w-0 flex-col font-sans">
       {/* Dynamic Header & Tab Navigation */}
@@ -1685,6 +1707,71 @@ export function SettingsPanel() {
               title="浏览器扩展与接管"
               description="配置本地通信端口、排除站点与临时快捷键"
             >
+              <div className="space-y-3 p-4">
+                <div className="flex items-center justify-between gap-2.5">
+                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                    配套扩展快速安装
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleOpenExtensionFolder()}
+                      className="h-7 gap-1.5 px-2.5 text-xs font-medium"
+                      title="在系统文件管理器中打开并高亮扩展文件夹"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5" />
+                      <span>定位扩展目录</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handlePrepareExtensionPage('chrome')}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      title="唤起 Chrome，并把扩展管理页地址写入剪贴板"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>打开 Chrome 并复制地址</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handlePrepareExtensionPage('edge')}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                      title="唤起 Edge，并把扩展管理页地址写入剪贴板"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>打开 Edge 并复制地址</span>
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/50 p-3 text-[11px]">
+                  <div className="flex items-center gap-1.5 font-medium text-[var(--text-primary)]">
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 font-mono text-[10px] text-[var(--accent)]">
+                      i
+                    </span>
+                    <span>快速加载指引（三键一拖）</span>
+                  </div>
+                  <ol className="list-inside list-decimal space-y-1 pl-0.5 leading-relaxed text-[var(--text-secondary)]">
+                    <li>
+                      点击「<strong>打开 Chrome 并复制地址</strong>」，到浏览器地址栏按{' '}
+                      <strong>Ctrl+V</strong>、<strong>回车</strong>进入扩展管理页，开启右上角「
+                      <strong>开发者模式</strong>」。
+                    </li>
+                    <li>
+                      点击「<strong>定位扩展目录</strong>」，系统将自动打开并高亮配套扩展文件夹。
+                    </li>
+                    <li>
+                      将高亮的扩展文件夹直接<strong>拖入浏览器扩展页面</strong>，即可完成加载。
+                    </li>
+                  </ol>
+                  <p className="pl-0.5 leading-relaxed text-[var(--text-muted)]">
+                    扩展管理页属于浏览器特权页面，只能由用户在地址栏粘贴进入，程序无法代为打开。
+                  </p>
+                </div>
+              </div>
+
               <SettingRow
                 label="本地 HTTP 服务端口"
                 description="浏览器扩展通信监听端口（默认 9248，修改后点击重启服务立即生效）"
@@ -1769,10 +1856,7 @@ export function SettingsPanel() {
                 </div>
               </SettingRow>
 
-              <SettingRow
-                label="临时接管快捷键"
-                description="点击链接时按住对应按键可临时改变接管策略，松开立即恢复默认规则"
-              >
+              <SettingRow label="临时接管快捷键" description="按住按键临时改变接管策略，松开即恢复">
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[11px] text-[var(--text-muted)]">暂停:</span>
