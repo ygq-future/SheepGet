@@ -35,7 +35,7 @@ import {
 import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
-import { matchTaskCategory } from './lib/category';
+import { filterTasks, type TaskFilterType } from './lib/taskFilter';
 const SettingsPanel = lazy(() =>
   import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })),
 );
@@ -67,7 +67,7 @@ interface ServerStatusState {
 
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
-  const [filter, setFilter] = useState<'all' | 'paused' | 'completed' | 'settings'>(() => {
+  const [filter, setFilter] = useState<TaskFilterType | 'settings'>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('open') === 'settings' ? 'settings' : 'all';
   });
@@ -196,15 +196,8 @@ export function App() {
     return opts;
   }, [settings?.download?.customCategories, settings?.download?.builtinCategories]);
 
-  const filteredTasks = tasks.filter((t) => {
-    if (filter === 'paused' && t.status !== task.Status.StatusPaused) return false;
-    if (filter === 'completed' && t.status !== task.Status.StatusCompleted) return false;
-    if (selectedCategory) {
-      const catId = matchTaskCategory(t.filename, settings);
-      if (catId !== selectedCategory) return false;
-    }
-    return true;
-  });
+  const filteredTasks =
+    filter === 'settings' ? [] : filterTasks(tasks, filter, selectedCategory, settings);
 
   // Handle single task delete request
   const handleDeleteSingleRequest = (target: task.Task) => {
@@ -420,6 +413,13 @@ export function App() {
       count: counts.completed,
       color: 'text-[var(--accent)]',
     },
+    {
+      id: 'error' as const,
+      label: '下载异常',
+      icon: AlertCircle,
+      count: counts.error,
+      color: 'text-rose-500',
+    },
   ];
   const isServerErr = !serverStatus.running || Boolean(serverStatus.error);
   const isServerConnected = serverStatus.running && serverStatus.connectedCount > 0;
@@ -496,9 +496,15 @@ export function App() {
                 >
                   {/* Active Indicator Bar */}
                   {isActive && !sidebarCollapsed && (
-                    <span className="absolute top-2 bottom-2 left-1 w-0.5 rounded-full bg-[var(--accent)] shadow-xs" />
+                    <span
+                      className={`absolute top-2 bottom-2 left-1 w-0.5 rounded-full shadow-xs ${
+                        item.id === 'error' ? 'bg-rose-500' : 'bg-[var(--accent)]'
+                      }`}
+                    />
                   )}
-
+                  {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
+                    <span className="absolute top-2 right-2 h-1.5 w-1.5 rounded-full bg-rose-500" />
+                  )}
                   <span
                     className={`flex items-center gap-2.5 transition-colors ${
                       isActive
@@ -514,8 +520,12 @@ export function App() {
                     <span
                       className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
                         isActive
-                          ? 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
-                          : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
+                          ? item.id === 'error'
+                            ? 'bg-rose-500/15 font-semibold text-rose-500'
+                            : 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
+                          : item.id === 'error' && item.count > 0
+                            ? 'bg-rose-500/10 font-medium text-rose-500'
+                            : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
                       }`}
                     >
                       {item.count}
@@ -572,23 +582,6 @@ export function App() {
               </div>
             )}
           </button>
-
-          {counts.error > 0 && (
-            <div
-              className={`rounded-lg border border-rose-500/20 bg-rose-500/10 p-2 text-rose-500 ${
-                sidebarCollapsed
-                  ? 'flex justify-center'
-                  : 'flex items-center justify-between text-[11px]'
-              }`}
-              title={`异常状态: ${counts.error}`}
-            >
-              <span className="flex items-center gap-1.5">
-                <AlertCircle className="h-3 w-3" />
-                {!sidebarCollapsed && <span>异常状态</span>}
-              </span>
-              {!sidebarCollapsed && <span className="font-mono font-medium">{counts.error}</span>}
-            </div>
-          )}
         </div>
       </aside>
 
