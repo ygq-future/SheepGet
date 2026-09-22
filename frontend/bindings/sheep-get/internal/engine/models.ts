@@ -13,6 +13,239 @@ import * as hls$0 from "../hls/models.js";
 import * as task$0 from "../task/models.js";
 
 /**
+ * CleanupDuplicateGroup represents a group of completed tasks pointing to files with identical size and MD5 hash.
+ */
+export class CleanupDuplicateGroup {
+    "md5": string;
+    "fileSize": number;
+    "originalTask": task$0.Task | null;
+    "duplicateTasks": (task$0.Task | null)[];
+
+    /** Creates a new CleanupDuplicateGroup instance. */
+    constructor($$source: Partial<CleanupDuplicateGroup> = {}) {
+        if (!("md5" in $$source)) {
+            this["md5"] = "";
+        }
+        if (!("fileSize" in $$source)) {
+            this["fileSize"] = 0;
+        }
+        if (!("originalTask" in $$source)) {
+            this["originalTask"] = null;
+        }
+        if (!("duplicateTasks" in $$source)) {
+            this["duplicateTasks"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupDuplicateGroup instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CleanupDuplicateGroup {
+        const $$createField2_0 = $$createType1;
+        const $$createField3_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("originalTask" in $$parsedSource) {
+            $$parsedSource["originalTask"] = $$createField2_0($$parsedSource["originalTask"]);
+        }
+        if ("duplicateTasks" in $$parsedSource) {
+            $$parsedSource["duplicateTasks"] = $$createField3_0($$parsedSource["duplicateTasks"]);
+        }
+        return new CleanupDuplicateGroup($$parsedSource as Partial<CleanupDuplicateGroup>);
+    }
+}
+
+/**
+ * CleanupExecuteOptions specifies which cleanable items to delete.
+ */
+export class CleanupExecuteOptions {
+    "deleteOlderTasks": boolean;
+    "deleteOlderDiskFiles": boolean;
+    "olderThanDays": number;
+    "deleteDuplicates": boolean;
+    "deleteMissingTasks": boolean;
+
+    /** Creates a new CleanupExecuteOptions instance. */
+    constructor($$source: Partial<CleanupExecuteOptions> = {}) {
+        if (!("deleteOlderTasks" in $$source)) {
+            this["deleteOlderTasks"] = false;
+        }
+        if (!("deleteOlderDiskFiles" in $$source)) {
+            this["deleteOlderDiskFiles"] = false;
+        }
+        if (!("olderThanDays" in $$source)) {
+            this["olderThanDays"] = 0;
+        }
+        if (!("deleteDuplicates" in $$source)) {
+            this["deleteDuplicates"] = false;
+        }
+        if (!("deleteMissingTasks" in $$source)) {
+            this["deleteMissingTasks"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupExecuteOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CleanupExecuteOptions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CleanupExecuteOptions($$parsedSource as Partial<CleanupExecuteOptions>);
+    }
+}
+
+/**
+ * CleanupExecuteResult returns the summary of the cleanup execution.
+ */
+export class CleanupExecuteResult {
+    "deletedTaskCount": number;
+    "deletedFileCount": number;
+    "freedBytes": number;
+    "errors"?: string[];
+
+    /** Creates a new CleanupExecuteResult instance. */
+    constructor($$source: Partial<CleanupExecuteResult> = {}) {
+        if (!("deletedTaskCount" in $$source)) {
+            this["deletedTaskCount"] = 0;
+        }
+        if (!("deletedFileCount" in $$source)) {
+            this["deletedFileCount"] = 0;
+        }
+        if (!("freedBytes" in $$source)) {
+            this["freedBytes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupExecuteResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CleanupExecuteResult {
+        const $$createField3_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("errors" in $$parsedSource) {
+            $$parsedSource["errors"] = $$createField3_0($$parsedSource["errors"]);
+        }
+        return new CleanupExecuteResult($$parsedSource as Partial<CleanupExecuteResult>);
+    }
+}
+
+/**
+ * CleanupScanOptions specifies filters for scanning cleanable tasks and files.
+ */
+export class CleanupScanOptions {
+    "olderThanDays": number;
+    "deleteOlderDiskFiles": boolean;
+    "checkDuplicates": boolean;
+    "checkMissingFiles": boolean;
+
+    /** Creates a new CleanupScanOptions instance. */
+    constructor($$source: Partial<CleanupScanOptions> = {}) {
+        if (!("olderThanDays" in $$source)) {
+            this["olderThanDays"] = 0;
+        }
+        if (!("deleteOlderDiskFiles" in $$source)) {
+            this["deleteOlderDiskFiles"] = false;
+        }
+        if (!("checkDuplicates" in $$source)) {
+            this["checkDuplicates"] = false;
+        }
+        if (!("checkMissingFiles" in $$source)) {
+            this["checkMissingFiles"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupScanOptions instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CleanupScanOptions {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CleanupScanOptions($$parsedSource as Partial<CleanupScanOptions>);
+    }
+}
+
+/**
+ * CleanupScanResult contains the preview results of cleanable items and authoritative totals.
+ */
+export class CleanupScanResult {
+    "olderTasks": (task$0.Task | null)[];
+    "olderFilesBytes": number;
+    "duplicateGroups": CleanupDuplicateGroup[];
+    "duplicateFilesBytes": number;
+    "missingTasks": (task$0.Task | null)[];
+
+    /**
+     * TotalCleanableTasks is the deduplicated count of tasks that would be removed.
+     */
+    "totalCleanableTasks": number;
+
+    /**
+     * TotalCleanableFiles is the count of distinct disk files that would be deleted.
+     */
+    "totalCleanableFiles": number;
+
+    /**
+     * TotalFreedBytes is the total disk bytes freed without double-counting.
+     */
+    "totalFreedBytes": number;
+
+    /** Creates a new CleanupScanResult instance. */
+    constructor($$source: Partial<CleanupScanResult> = {}) {
+        if (!("olderTasks" in $$source)) {
+            this["olderTasks"] = [];
+        }
+        if (!("olderFilesBytes" in $$source)) {
+            this["olderFilesBytes"] = 0;
+        }
+        if (!("duplicateGroups" in $$source)) {
+            this["duplicateGroups"] = [];
+        }
+        if (!("duplicateFilesBytes" in $$source)) {
+            this["duplicateFilesBytes"] = 0;
+        }
+        if (!("missingTasks" in $$source)) {
+            this["missingTasks"] = [];
+        }
+        if (!("totalCleanableTasks" in $$source)) {
+            this["totalCleanableTasks"] = 0;
+        }
+        if (!("totalCleanableFiles" in $$source)) {
+            this["totalCleanableFiles"] = 0;
+        }
+        if (!("totalFreedBytes" in $$source)) {
+            this["totalFreedBytes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupScanResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CleanupScanResult {
+        const $$createField0_0 = $$createType2;
+        const $$createField2_0 = $$createType5;
+        const $$createField4_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("olderTasks" in $$parsedSource) {
+            $$parsedSource["olderTasks"] = $$createField0_0($$parsedSource["olderTasks"]);
+        }
+        if ("duplicateGroups" in $$parsedSource) {
+            $$parsedSource["duplicateGroups"] = $$createField2_0($$parsedSource["duplicateGroups"]);
+        }
+        if ("missingTasks" in $$parsedSource) {
+            $$parsedSource["missingTasks"] = $$createField4_0($$parsedSource["missingTasks"]);
+        }
+        return new CleanupScanResult($$parsedSource as Partial<CleanupScanResult>);
+    }
+}
+
+/**
  * ConsistencyResult reports whether an updated URL is consistent with original task file.
  */
 export class ConsistencyResult {
@@ -90,9 +323,9 @@ export class HLSProbe {
      * Creates a new HLSProbe instance from a string or object.
      */
     static createFrom($$source: any = {}): HLSProbe {
-        const $$createField2_0 = $$createType1;
-        const $$createField3_0 = $$createType3;
-        const $$createField4_0 = $$createType5;
+        const $$createField2_0 = $$createType7;
+        const $$createField3_0 = $$createType9;
+        const $$createField4_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("variants" in $$parsedSource) {
             $$parsedSource["variants"] = $$createField2_0($$parsedSource["variants"]);
@@ -156,8 +389,8 @@ export class ProbeResult {
      * Creates a new ProbeResult instance from a string or object.
      */
     static createFrom($$source: any = {}): ProbeResult {
-        const $$createField7_0 = $$createType7;
-        const $$createField8_0 = $$createType9;
+        const $$createField7_0 = $$createType1;
+        const $$createField8_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
             $$parsedSource["duplicateTask"] = $$createField7_0($$parsedSource["duplicateTask"]);
@@ -170,13 +403,17 @@ export class ProbeResult {
 }
 
 // Private type creation functions
-const $$createType0 = hls$0.Variant.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = hls$0.VariantOption.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = hls$0.Source.createFrom;
-const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = task$0.Task.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = HLSProbe.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
+const $$createType0 = task$0.Task.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $Create.Array($Create.Any);
+const $$createType4 = CleanupDuplicateGroup.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = hls$0.Variant.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = hls$0.VariantOption.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = hls$0.Source.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = HLSProbe.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);

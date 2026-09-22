@@ -568,6 +568,22 @@ func (a *App) ListTasks() ([]*task.Task, error) {
 	return a.manager.List(a.ctx)
 }
 
+// ScanCleanup scans cleanable tasks and files according to options.
+func (a *App) ScanCleanup(opts engine.CleanupScanOptions) (*engine.CleanupScanResult, error) {
+	if a.manager == nil {
+		return nil, fmt.Errorf("manager not initialized")
+	}
+	return a.manager.ScanCleanup(a.ctx, opts)
+}
+
+// ExecuteCleanup executes deletion of selected cleanable items.
+func (a *App) ExecuteCleanup(opts engine.CleanupExecuteOptions) (*engine.CleanupExecuteResult, error) {
+	if a.manager == nil {
+		return nil, fmt.Errorf("manager not initialized")
+	}
+	return a.manager.ExecuteCleanup(a.ctx, opts)
+}
+
 // OpenFile opens the downloaded file with system default application after verifying existence
 func (a *App) OpenFile(filePath string) error {
 	if _, err := os.Stat(filePath); err != nil {

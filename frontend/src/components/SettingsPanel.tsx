@@ -36,7 +36,9 @@ import {
   Pipette,
   FolderOpen,
   ExternalLink,
+  Sparkles,
 } from 'lucide-react';
+import { CleanupModal } from './CleanupModal';
 import { Badge } from './ui/Badge';
 import { normalizeExtensions } from '../lib/category';
 import { motion, Reorder, useDragControls } from 'motion/react';
@@ -386,6 +388,7 @@ function CustomCategoryItem({
 export function SettingsPanel() {
   const { settings, storageInfo, updateSettings } = useSettingsStore();
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const [customColor, setCustomColor] = useState('');
   const colorInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1440,7 +1443,21 @@ export function SettingsPanel() {
         {/* Tab 3: Download & Network (下载与网络) */}
         {activeTab === 'download' && (
           <div className="space-y-5">
-            <SettingSection title="存储路径" description="本地下载目标与分块临时缓存目录">
+            <SettingSection
+              title="存储路径"
+              description="本地下载目标与分块临时缓存目录"
+              action={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setCleanupOpen(true)}
+                  className="h-7 gap-1 px-2.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                  <span>清理历史与文件</span>
+                </Button>
+              }
+            >
               <SettingRow label="默认保存位置" description="新建下载任务时默认使用的本地存储路径">
                 <div className="flex max-w-md min-w-[280px] items-center gap-1.5">
                   <Input
@@ -2087,6 +2104,7 @@ export function SettingsPanel() {
           </div>
         )}
       </div>
+      <CleanupModal open={cleanupOpen} onOpenChange={setCleanupOpen} />
     </div>
   );
 }

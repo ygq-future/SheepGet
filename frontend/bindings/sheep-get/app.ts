@@ -105,11 +105,20 @@ export function DeleteTask(id: string, deleteDiskFile: boolean): $CancellablePro
 }
 
 /**
+ * ExecuteCleanup executes deletion of selected cleanable items.
+ */
+export function ExecuteCleanup(opts: engine$0.CleanupExecuteOptions): $CancellablePromise<engine$0.CleanupExecuteResult | null> {
+    return $Call.ByID(130478972, opts).then(($result: any) => {
+        return $$createType6($result);
+    });
+}
+
+/**
  * GetActiveFileInfo returns the active item currently shown in the FileInfo window.
  */
 export function GetActiveFileInfo(): $CancellablePromise<window$0.FileInfoItem | null> {
     return $Call.ByID(1899710323).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType8($result);
     });
 }
 
@@ -125,7 +134,7 @@ export function GetDefaultDownloadDir(): $CancellablePromise<string> {
  */
 export function GetFileInfoQueueItems(): $CancellablePromise<(window$0.FileInfoItem | null)[]> {
     return $Call.ByID(1664868488).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType9($result);
     });
 }
 
@@ -141,7 +150,7 @@ export function GetFileInfoQueueLength(): $CancellablePromise<number> {
  */
 export function GetServerStatus(): $CancellablePromise<server$0.Status> {
     return $Call.ByID(880383150).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType10($result);
     });
 }
 
@@ -150,7 +159,7 @@ export function GetServerStatus(): $CancellablePromise<server$0.Status> {
  */
 export function GetSettings(): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType11($result);
     });
 }
 
@@ -159,7 +168,7 @@ export function GetSettings(): $CancellablePromise<config$0.Settings> {
  */
 export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }> {
     return $Call.ByID(3330596760).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType12($result);
     });
 }
 
@@ -189,7 +198,7 @@ export function IsProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> {
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
     return $Call.ByID(3109076673).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType13($result);
     });
 }
 
@@ -255,7 +264,7 @@ export function OpenFolder(folderPath: string): $CancellablePromise<void> {
  */
 export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(3018225713).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType15($result);
     });
 }
 
@@ -295,7 +304,7 @@ export function ProbeMediaDuration(urlStr: string, filename: string, totalBytes:
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {
-        return $$createType15($result);
+        return $$createType17($result);
     });
 }
 
@@ -314,7 +323,7 @@ export function ResetAndDownloadWithNewURL(taskID: string, newURL: string, heade
  */
 export function ResolveDestination(filename: string): $CancellablePromise<$models.DestinationInfo> {
     return $Call.ByID(177293617, filename).then(($result: any) => {
-        return $$createType16($result);
+        return $$createType18($result);
     });
 }
 
@@ -334,7 +343,7 @@ export function ResolveDuplicate(taskID: string, strategy: string, dir: string, 
  */
 export function ResolveDuplicateDecision(urlStr: string, dir: string, filename: string): $CancellablePromise<duplicate$0.Decision> {
     return $Call.ByID(687526930, urlStr, dir, filename).then(($result: any) => {
-        return $$createType17($result);
+        return $$createType19($result);
     });
 }
 
@@ -374,6 +383,15 @@ export function RetryTask(id: string): $CancellablePromise<void> {
 export function ReuseExistingFile(existingTaskID: string, targetDir: string, targetFilename: string): $CancellablePromise<task$0.Task | null> {
     return $Call.ByID(3163272336, existingTaskID, targetDir, targetFilename).then(($result: any) => {
         return $$createType1($result);
+    });
+}
+
+/**
+ * ScanCleanup scans cleanable tasks and files according to options.
+ */
+export function ScanCleanup(opts: engine$0.CleanupScanOptions): $CancellablePromise<engine$0.CleanupScanResult | null> {
+    return $Call.ByID(1154903260, opts).then(($result: any) => {
+        return $$createType21($result);
     });
 }
 
@@ -464,7 +482,7 @@ export function SubmitFileInfo(sub: window$0.FileInfoSubmission): $CancellablePr
  */
 export function SwitchFileInfoActive(index: number): $CancellablePromise<window$0.FileInfoItem | null> {
     return $Call.ByID(2168286885, index).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType8($result);
     });
 }
 
@@ -480,7 +498,7 @@ export function ToggleProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> 
  */
 export function TriggerDownload(req: window$0.DownloadRequest): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(2473743423, req).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType15($result);
     });
 }
 
@@ -489,7 +507,7 @@ export function TriggerDownload(req: window$0.DownloadRequest): $CancellableProm
  */
 export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2894041249, s).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType11($result);
     });
 }
 
@@ -515,16 +533,20 @@ const $$createType1 = $Create.Nullable($$createType0);
 const $$createType2 = $models.FileConflictResult.createFrom;
 const $$createType3 = engine$0.ConsistencyResult.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = window$0.FileInfoItem.createFrom;
+const $$createType5 = engine$0.CleanupExecuteResult.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = server$0.Status.createFrom;
-const $$createType9 = config$0.Settings.createFrom;
-const $$createType10 = $Create.Map($Create.Any, $Create.Any);
-const $$createType11 = $Create.Array($$createType1);
-const $$createType12 = window$0.DownloadResponse.createFrom;
-const $$createType13 = $Create.Nullable($$createType12);
-const $$createType14 = engine$0.ProbeResult.createFrom;
+const $$createType7 = window$0.FileInfoItem.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = server$0.Status.createFrom;
+const $$createType11 = config$0.Settings.createFrom;
+const $$createType12 = $Create.Map($Create.Any, $Create.Any);
+const $$createType13 = $Create.Array($$createType1);
+const $$createType14 = window$0.DownloadResponse.createFrom;
 const $$createType15 = $Create.Nullable($$createType14);
-const $$createType16 = $models.DestinationInfo.createFrom;
-const $$createType17 = duplicate$0.Decision.createFrom;
+const $$createType16 = engine$0.ProbeResult.createFrom;
+const $$createType17 = $Create.Nullable($$createType16);
+const $$createType18 = $models.DestinationInfo.createFrom;
+const $$createType19 = duplicate$0.Decision.createFrom;
+const $$createType20 = engine$0.CleanupScanResult.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);

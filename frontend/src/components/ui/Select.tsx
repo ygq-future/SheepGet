@@ -14,6 +14,7 @@ interface SelectProps<T extends string | number> {
   placeholder?: string;
   className?: string;
   clearable?: boolean;
+  disabled?: boolean;
 }
 
 export function Select<T extends string | number>({
@@ -23,6 +24,7 @@ export function Select<T extends string | number>({
   placeholder = '请选择',
   className = '',
   clearable = false,
+  disabled = false,
 }: SelectProps<T>) {
   const selectedOption = options.find((opt) => opt.value === value);
   const hasValue = value !== '' && value !== undefined && value !== null;
@@ -39,7 +41,8 @@ export function Select<T extends string | number>({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          className={`flex w-full items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] shadow-xs transition-all duration-150 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--border-focus)]/40 focus:outline-hidden ${
+          disabled={disabled}
+          className={`flex w-full items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] shadow-xs transition-all duration-150 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--border-focus)]/40 focus:outline-hidden disabled:pointer-events-none disabled:opacity-50 ${
             className || 'h-8 py-1.5'
           }`}
         >
