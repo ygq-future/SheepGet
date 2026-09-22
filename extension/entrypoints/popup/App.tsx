@@ -229,6 +229,11 @@ export default function App() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <img
+            src="/icons/48.png"
+            alt="SheepGet"
+            style={{ width: '20px', height: '20px', borderRadius: '4px', display: 'block' }}
+          />
           <span
             style={{
               fontWeight: 600,
