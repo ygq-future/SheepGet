@@ -305,14 +305,15 @@ func (s *Server) startWithListenerLocked(ln net.Listener) error {
 	mux.HandleFunc("POST /api/v1/media/probe", s.authMiddleware(s.handleMediaProbe))
 	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
 
-	s.httpServer = &http.Server{
+	srv := &http.Server{
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
+	s.httpServer = srv
 
 	go func() {
-		_ = s.httpServer.Serve(ln)
+		_ = srv.Serve(ln)
 	}()
 
 	s.lastErr = ""
