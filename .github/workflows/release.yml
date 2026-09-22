@@ -55,6 +55,9 @@ jobs:
 
       - run: node scripts/bootstrap.mjs --ci
 
+      - name: Run Quality Gate Check
+        run: node scripts/quality-gate.mjs
+
       - name: Build frontend
         run: bun run --cwd frontend build
 
