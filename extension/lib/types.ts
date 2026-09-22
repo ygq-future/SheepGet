@@ -81,6 +81,12 @@ export interface KeyStateMessage {
 export interface ResetKeysMessage {
   type: 'RESET_KEYS';
 }
+export interface ShortcutClickMessage {
+  type: 'SHORTCUT_CLICKED';
+  keyMask: number;
+  url?: string;
+  timestamp: number;
+}
 
 export interface GetTabMediaMessage {
   type: 'GET_TAB_MEDIA';
@@ -181,4 +187,5 @@ export type ExtensionMessage =
   | GetMediaProbeMessage
   | GetStatusMessage
   | ReconnectMessage
-  | SetTargetPortMessage;
+  | SetTargetPortMessage
+  | ShortcutClickMessage;

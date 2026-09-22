@@ -46,3 +46,61 @@ export function isKeyPressed(mask: number, targetShortcutName: string): boolean 
   const bit = KEY_MASKS[norm];
   return (mask & bit) !== 0;
 }
+
+/** 快捷键在用户松开或失焦后的宽限保留时间（毫秒），平滑网络延迟与切标签页导致的按键状态丢失 */
+export const SHORTCUT_GRACE_PERIOD_MS = 3000;
+
+export interface ShortcutClickIntent {
+  keyMask: number;
+  url?: string;
+  timestamp: number;
+}
+
+/**
+ * 比对点击意图记录的目标链接与下载项真实 URL。
+ * 协议与域名相同时，忽略 hash 与末尾斜杠；若点击意图未记录具体 URL（如脚本触发下载），直接视为匹配。
+ */
+export function urlsMatch(clickUrl: string | undefined, downloadUrl: string | undefined): boolean {
+  if (!clickUrl || !downloadUrl) return true;
+  if (clickUrl === downloadUrl) return true;
+  try {
+    const c = new URL(clickUrl);
+    const d = new URL(downloadUrl);
+    if (c.origin === d.origin && c.pathname.replace(/\/$/, '') === d.pathname.replace(/\/$/, '')) {
+      return true;
+    }
+  } catch {
+    // 非标准 URL 容错
+  }
+  return false;
+}
+
+/**
+ * 综合即时按键掩码、按键释放宽限掩码与近期点击意图，计算出对当前下载有效的按键掩码。
+ */
+export function resolveEffectiveKeyMask(
+  currentMask: number,
+  recentReleaseMask: number,
+  recentReleaseTime: number,
+  recentClicks: readonly ShortcutClickIntent[],
+  downloadUrl?: string,
+  now = Date.now(),
+): number {
+  let effective = currentMask;
+
+  // 1. 最近按键释放宽限期（若在宽限期内，保留被释放的按键位）
+  if (recentReleaseMask > 0 && now - recentReleaseTime <= SHORTCUT_GRACE_PERIOD_MS) {
+    effective |= recentReleaseMask;
+  }
+
+  // 2. 检查是否有最近的快捷键点击意图（3 秒内）
+  for (const click of recentClicks) {
+    if (now - click.timestamp <= SHORTCUT_GRACE_PERIOD_MS) {
+      if (urlsMatch(click.url, downloadUrl)) {
+        effective |= click.keyMask;
+      }
+    }
+  }
+
+  return effective;
+}

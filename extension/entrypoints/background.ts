@@ -14,7 +14,13 @@ import {
   type MediaResource,
 } from '../lib/media';
 import { decideTakeover, type TakeoverDecision } from '../lib/rules';
-import { updateKeyMask } from '../lib/shortcuts';
+import {
+  KEY_MASKS,
+  SHORTCUT_GRACE_PERIOD_MS,
+  resolveEffectiveKeyMask,
+  type ShortcutClickIntent,
+  updateKeyMask,
+} from '../lib/shortcuts';
 import { addResourceOnce, resolveTabId } from '../lib/tabmedia';
 import {
   DEFAULT_TAKEOVER_CONFIG,
@@ -38,6 +44,28 @@ import type {
 
 let currentConfig: TakeoverConfigSync = DEFAULT_TAKEOVER_CONFIG;
 let currentKeyMask = 0;
+let recentReleaseMask = 0;
+let recentReleaseTime = 0;
+const recentShortcutClicks: ShortcutClickIntent[] = [];
+
+function recordShortcutRelease(mask: number) {
+  if (mask > 0) {
+    recentReleaseMask |= mask;
+    recentReleaseTime = Date.now();
+  }
+}
+
+function recordShortcutClick(click: ShortcutClickIntent) {
+  const now = Date.now();
+  while (
+    recentShortcutClicks.length > 0 &&
+    recentShortcutClicks[0] &&
+    now - recentShortcutClicks[0].timestamp > SHORTCUT_GRACE_PERIOD_MS
+  ) {
+    recentShortcutClicks.shift();
+  }
+  recentShortcutClicks.push(click);
+}
 
 // 与桌面端的链路。桌面端每次启动都换 loopback 端口，所以「连过」不等于「还连着」：
 // linkOnline 只在真实 ping 成功或事件长连接打开时置位，在 ping 失败、长连接关闭、
@@ -195,8 +223,19 @@ export default defineBackground(() => {
   // 2. Listen for messages from content scripts & popup (shortcuts, blur, media requests)
   chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendResponse) => {
     if (msg?.type === 'KEY_STATE_CHANGED') {
+      const bit = KEY_MASKS[msg.key];
       currentKeyMask = updateKeyMask(currentKeyMask, msg.key, msg.isDown);
+      if (!msg.isDown && bit) {
+        recordShortcutRelease(bit);
+      }
+    } else if (msg?.type === 'SHORTCUT_CLICKED') {
+      recordShortcutClick({
+        keyMask: msg.keyMask,
+        url: msg.url,
+        timestamp: msg.timestamp || Date.now(),
+      });
     } else if (msg?.type === 'RESET_KEYS') {
+      recordShortcutRelease(currentKeyMask);
       currentKeyMask = 0;
     } else if (msg?.type === 'GET_TAB_MEDIA') {
       // content script 不知道自己所在标签页的编号，退回发送者标签页；
@@ -272,10 +311,12 @@ export default defineBackground(() => {
 
   // 4. Reset keys on tab switch or window blur (prevent stuck key states)
   chrome.tabs.onActivated.addListener(() => {
+    recordShortcutRelease(currentKeyMask);
     currentKeyMask = 0;
   });
   if (chrome.windows?.onFocusChanged) {
     chrome.windows.onFocusChanged.addListener(() => {
+      recordShortcutRelease(currentKeyMask);
       currentKeyMask = 0;
     });
   }
@@ -849,15 +890,29 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   // Check takeover rules
   // `item.mime` 是这次响应真实的 Content-Type：后缀命中但内容其实是页面/脚本时
   // （`.ts` 的 TypeScript 源码、签名过期后返回 HTML 错误页的 `.mp4`），规则会否决接管。
+  const effectiveKeyMask = resolveEffectiveKeyMask(
+    currentKeyMask,
+    recentReleaseMask,
+    recentReleaseTime,
+    recentShortcutClicks,
+    url,
+  );
   const decision = decideTakeover(
     url,
     filename,
     item.referrer,
     currentConfig,
-    currentKeyMask,
+    effectiveKeyMask,
     item.mime,
   );
-  logDownloadDecision(item.id, url, filename, responseFilename !== undefined, decision);
+  logDownloadDecision(
+    item.id,
+    url,
+    filename,
+    responseFilename !== undefined,
+    decision,
+    effectiveKeyMask,
+  );
 
   if (!decision.takeover) {
     return;
@@ -930,6 +985,7 @@ function logDownloadDecision(
   filename: string,
   fromResponseHeader: boolean,
   decision: TakeoverDecision,
+  effectiveKeyMask = 0,
 ): void {
   console.info(
     '[SheepGet] download decision',
@@ -941,6 +997,7 @@ function logDownloadDecision(
       filenameSource: fromResponseHeader ? 'response-header' : 'download-item',
       takeover: decision.takeover,
       reason: decision.reason,
+      effectiveKeyMask,
       configVersion: currentConfig.version,
       excludedSites: currentConfig.excludedSites,
       linkOnline,

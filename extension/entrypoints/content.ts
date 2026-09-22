@@ -1,8 +1,13 @@
 import { MediaBarManager } from '../lib/mediabar';
 import { inferPageTitle, type MediaResource } from '../lib/media';
 import { safeSendMessage } from '../lib/runtime';
-import { normalizeKeyName } from '../lib/shortcuts';
-import type { ExtensionMessage, KeyStateMessage, ResetKeysMessage } from '../lib/types';
+import { KEY_MASKS, normalizeKeyName, updateKeyMask } from '../lib/shortcuts';
+import type {
+  ExtensionMessage,
+  KeyStateMessage,
+  ResetKeysMessage,
+  ShortcutClickMessage,
+} from '../lib/types';
 export default defineContentScript({
   matches: ['*://*/*'],
   runAt: 'document_start',
@@ -11,18 +16,30 @@ export default defineContentScript({
   allFrames: true,
   matchAboutBlank: true,
   main() {
+    let localKeyMask = 0;
+
     function cleanUpKeyListeners() {
       window.removeEventListener('keydown', handleKeyEvent, true);
       window.removeEventListener('keyup', handleKeyEvent, true);
+      window.removeEventListener('click', handleClickEvent, true);
+      window.removeEventListener('auxclick', handleClickEvent, true);
       window.removeEventListener('blur', handleBlur);
+    }
+
+    function isEditableElement(target: EventTarget | null): boolean {
+      if (!target || !(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || target.isContentEditable;
     }
 
     function handleKeyEvent(e: KeyboardEvent) {
       if (e.repeat) return;
+      if (isEditableElement(e.target)) return;
       const norm = normalizeKeyName(e.key);
       if (!norm) return;
 
       const isDown = e.type === 'keydown';
+      localKeyMask = updateKeyMask(localKeyMask, norm, isDown);
       const msg: KeyStateMessage = {
         type: 'KEY_STATE_CHANGED',
         key: norm,
@@ -33,16 +50,47 @@ export default defineContentScript({
       });
     }
 
+    function handleClickEvent(e: MouseEvent) {
+      let clickMask = localKeyMask;
+      if (e.altKey) clickMask |= KEY_MASKS.Alt;
+      if (e.ctrlKey) clickMask |= KEY_MASKS.Control;
+      if (e.shiftKey) clickMask |= KEY_MASKS.Shift;
+      if (clickMask === 0) return;
+
+      let targetUrl: string | undefined;
+      let el: Element | null = e.target instanceof Element ? e.target : null;
+      while (el && el !== document.body) {
+        if (el instanceof HTMLAnchorElement && el.href) {
+          targetUrl = el.href;
+          break;
+        }
+        el = el.parentElement;
+      }
+
+      const msg: ShortcutClickMessage = {
+        type: 'SHORTCUT_CLICKED',
+        keyMask: clickMask,
+        url: targetUrl,
+        timestamp: Date.now(),
+      };
+      safeSendMessage(msg, undefined, {
+        onContextInvalidated: cleanUpKeyListeners,
+      });
+    }
+
     function handleBlur() {
+      localKeyMask = 0;
       const msg: ResetKeysMessage = { type: 'RESET_KEYS' };
       safeSendMessage(msg, undefined, {
         onContextInvalidated: cleanUpKeyListeners,
       });
     }
 
-    // Capture phase listeners (IDM style) to intercept keys before page handlers
+    // Capture phase listeners (IDM style) to intercept keys and clicks before page handlers
     window.addEventListener('keydown', handleKeyEvent, true);
     window.addEventListener('keyup', handleKeyEvent, true);
+    window.addEventListener('click', handleClickEvent, true);
+    window.addEventListener('auxclick', handleClickEvent, true);
     window.addEventListener('blur', handleBlur);
 
     // 上报页面真实标题与 URL：HLS 清单的 URL 末段往往是 index.m3u8，真正的视频名
