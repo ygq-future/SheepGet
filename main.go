@@ -2,11 +2,9 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
-
-	appevents "sheep-get/internal/events"
 )
 
 //go:embed all:frontend/dist
@@ -29,6 +27,12 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
+		Linux: application.LinuxOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
 		OnShutdown: func() {
 			app.Shutdown()
 		},
@@ -36,82 +40,24 @@ func main() {
 
 	app.setApplication(wailsApp)
 
-	// Create main window (Name: "main")
-	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:      winNameMain,
-		Title:     "sheep-get",
-		Width:     800,
-		Height:    520,
-		MinWidth:  800,
-		MinHeight: 520,
-		BackgroundColour: application.RGBA{
-			Red:   27,
-			Green: 38,
-			Blue:  54,
-			Alpha: 255,
-		},
-		URL: "/",
-	})
-
-	// Closing main window hides it to system tray instead of exiting application
-	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		event.Cancel()
-		mainWindow.Hide()
-	})
-
-	// Pre-create independent FileInfo window (Name: "fileinfo")
-	fileInfoWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:           winNameFileInfo,
-		Title:          "新建下载 - SheepGet",
-		Width:          fileInfoWindowWidth,
-		Height:         300,
-		Frameless:      true,
-		BackgroundType: application.BackgroundTypeTransparent,
-		DisableResize:  true,
-		Hidden:         true,
-		URL:            "/?window=fileinfo",
-	})
-	// Closing fileinfo window cancels current active item and advances queue
-	fileInfoWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		event.Cancel()
-		_ = app.CancelCurrentFileInfo()
-	})
-	// Pre-create independent Progress window (Name: "progress")
-	var (
-		progX       = 0
-		progY       = 0
-		progInitPos = application.WindowCentered
-	)
-	if primary := wailsApp.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
-		progX = primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
-		progY = primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
-		progInitPos = application.WindowXY
+	st := app.GetSettings()
+	isSilent := st.General.SilentStartup
+	for _, arg := range os.Args[1:] {
+		if arg == "--silent" || arg == "-s" {
+			isSilent = true
+			break
+		}
 	}
-	progressWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:            winNameProgress,
-		Title:           "下载进度 - SheepGet",
-		Width:           progressWindowWidth,
-		Height:          progressWindowHeight,
-		MinWidth:        progressWindowMinWidth,
-		MaxWidth:        progressWindowMaxWidth,
-		MinHeight:       progressWindowMinH,
-		MaxHeight:       progressWindowMaxH,
-		InitialPosition: progInitPos,
-		X:               progX,
-		Y:               progY,
-		Frameless:       true,
-		BackgroundType:  application.BackgroundTypeTransparent,
-		DisableResize:   false,
-		Hidden:          true,
-		URL:             "/?window=progress",
-	})
-	// Closing progress window hides it instead of terminating
-	progressWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		event.Cancel()
-		progressWindow.Hide()
-		wailsApp.Event.Emit(appevents.ProgressClearViewed)
-	})
 
+	// 主窗口生命周期策略：
+	// 若处于静默启动且开启了轻量模式，则启动时不创建主窗口 WebView 渲染进程；
+	// 若非静默启动，则立即创建并展示主窗口；
+	// 若静默启动但未开启轻量模式，则创建主窗口但初始保持隐藏。
+	if !isSilent {
+		app.ShowMainWindow()
+	} else if !st.General.LightweightMode {
+		app.ensureMainWindow(true)
+	}
 	// Configure cross-platform system tray
 	systemTray := wailsApp.SystemTray.New()
 	systemTray.SetTooltip("SheepGet 下载管理器")
@@ -119,16 +65,15 @@ func main() {
 		systemTray.SetIcon(appIcon)
 	}
 	systemTray.OnClick(func() {
-		showAndRaise(mainWindow)
+		app.ShowMainWindow()
 	})
 
 	trayMenu := wailsApp.NewMenu()
 	trayMenu.Add("显示主窗口").OnClick(func(_ *application.Context) {
-		showAndRaise(mainWindow)
+		app.ShowMainWindow()
 	})
 	trayMenu.Add("偏好设置").OnClick(func(_ *application.Context) {
-		showAndRaise(mainWindow)
-		wailsApp.Event.Emit(appevents.AppOpenSettings)
+		app.OpenSettingsWindow()
 	})
 	trayMenu.Add("新建下载").OnClick(func(_ *application.Context) {
 		_, _ = app.OpenNewDownload()

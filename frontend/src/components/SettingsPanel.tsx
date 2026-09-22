@@ -459,6 +459,33 @@ export function SettingsPanel() {
       showToast(`设置开机启动失败: ${String(err)}`, 'error');
     }
   };
+  const handleSilentStartupChange = async (checked: boolean) => {
+    try {
+      await updateSettings({
+        general: new configModels.GeneralConfig({
+          ...general,
+          silentStartup: checked,
+        }),
+      });
+      showToast(checked ? '已开启静默启动' : '已关闭静默启动', 'success');
+    } catch (err) {
+      showToast(`设置静默启动失败: ${String(err)}`, 'error');
+    }
+  };
+
+  const handleLightweightModeChange = async (checked: boolean) => {
+    try {
+      await updateSettings({
+        general: new configModels.GeneralConfig({
+          ...general,
+          lightweightMode: checked,
+        }),
+      });
+      showToast(checked ? '已开启轻量模式' : '已关闭轻量模式', 'success');
+    } catch (err) {
+      showToast(`设置轻量模式失败: ${String(err)}`, 'error');
+    }
+  };
 
   const serverPort = serverPortDraft ?? String(general.serverPort || DEFAULT_SERVER_PORT);
 
@@ -1168,6 +1195,29 @@ export function SettingsPanel() {
                   checked={general.launchAtStartup}
                   onCheckedChange={(checked) => {
                     void handleLaunchAtStartupChange(checked);
+                  }}
+                />
+              </SettingRow>
+              <SettingRow
+                label="静默启动"
+                description="启动应用时不自动显示主窗口，仅在系统托盘静默就绪"
+              >
+                <Switch
+                  checked={general.silentStartup}
+                  onCheckedChange={(checked) => {
+                    void handleSilentStartupChange(checked);
+                  }}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="轻量模式"
+                description="主窗口关闭或隐藏时销毁 UI 渲染进程以释放内存，唤起主窗口时按需重建"
+              >
+                <Switch
+                  checked={general.lightweightMode}
+                  onCheckedChange={(checked) => {
+                    void handleLightweightModeChange(checked);
                   }}
                 />
               </SettingRow>

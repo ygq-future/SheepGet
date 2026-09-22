@@ -65,7 +65,10 @@ interface ServerStatusState {
 
 export function App() {
   const [tasks, setTasks] = useState<task.Task[]>([]);
-  const [filter, setFilter] = useState<'all' | 'paused' | 'completed' | 'settings'>('all');
+  const [filter, setFilter] = useState<'all' | 'paused' | 'completed' | 'settings'>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('open') === 'settings' ? 'settings' : 'all';
+  });
   const [deletingTask, setDeletingTask] = useState<task.Task | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [isBatchDeleting, setIsBatchDeleting] = useState<boolean>(false);

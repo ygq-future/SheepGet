@@ -58,9 +58,14 @@ describe('settings models and defaults', () => {
   });
 
   it('instantiates General, Proxy, Takeover, and Clipboard configs correctly', () => {
-    const general = new configModels.GeneralConfig({ launchAtStartup: true });
+    const general = new configModels.GeneralConfig({
+      launchAtStartup: true,
+      silentStartup: true,
+      lightweightMode: true,
+    });
     expect(general.launchAtStartup).toBe(true);
-
+    expect(general.silentStartup).toBe(true);
+    expect(general.lightweightMode).toBe(true);
     const proxy = new configModels.ProxyConfig({
       mode: configModels.ProxyMode.ProxyModeCustom,
       customAddr: 'http://127.0.0.1:7890',

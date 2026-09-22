@@ -206,12 +206,20 @@ export enum DuplicateURLPolicy {
  */
 export class GeneralConfig {
     "launchAtStartup": boolean;
+    "silentStartup": boolean;
+    "lightweightMode": boolean;
     "serverPort": number;
 
     /** Creates a new GeneralConfig instance. */
     constructor($$source: Partial<GeneralConfig> = {}) {
         if (!("launchAtStartup" in $$source)) {
             this["launchAtStartup"] = false;
+        }
+        if (!("silentStartup" in $$source)) {
+            this["silentStartup"] = false;
+        }
+        if (!("lightweightMode" in $$source)) {
+            this["lightweightMode"] = false;
         }
         if (!("serverPort" in $$source)) {
             this["serverPort"] = 0;

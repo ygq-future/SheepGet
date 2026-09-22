@@ -1,5 +1,7 @@
 package main
 
+import "github.com/wailsapp/wails/v3/pkg/application"
+
 // 窗口名与窗口几何的单一命名来源。main.go 预创建窗口、app.go 动态操作窗口时
 // 共用这些常量，避免同一标识散落成多处字符串/数字字面量。
 
@@ -8,6 +10,18 @@ const (
 	winNameMain     = "main"
 	winNameFileInfo = "fileinfo"
 	winNameProgress = "progress"
+)
+
+// 主窗口几何。
+const (
+	mainWindowWidth  = 800
+	mainWindowHeight = 520
+)
+
+// 主窗口默认背景色（与前端暗色/亮色基调 #09090b / #f8fafc 完全统一，避免深蓝模板色与黑白主题割裂）。
+var (
+	mainWindowDarkBackgroundColour  = application.RGBA{Red: 9, Green: 9, Blue: 11, Alpha: 255}
+	mainWindowLightBackgroundColour = application.RGBA{Red: 248, Green: 250, Blue: 252, Alpha: 255}
 )
 
 // 进度窗口几何。main.go 预创建与 app.go 动态重建/调整时共用，保证两处尺寸一致。
@@ -30,7 +44,8 @@ const (
 
 // 文件信息窗口几何。
 const (
-	fileInfoWindowWidth = 460
-	fileInfoWindowMinH  = 240
-	fileInfoWindowMaxH  = 700
+	fileInfoWindowWidth  = 460
+	fileInfoWindowHeight = 300
+	fileInfoWindowMinH   = 240
+	fileInfoWindowMaxH   = 700
 )

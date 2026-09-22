@@ -113,6 +113,8 @@ const DefaultServerPort = 9248
 // GeneralConfig specifies general application settings like autostart and server port.
 type GeneralConfig struct {
 	LaunchAtStartup bool `json:"launchAtStartup"`
+	SilentStartup   bool `json:"silentStartup"`
+	LightweightMode bool `json:"lightweightMode"`
 	ServerPort      int  `json:"serverPort"`
 }
 
@@ -322,6 +324,8 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 	return Settings{
 		General: GeneralConfig{
 			LaunchAtStartup: false,
+			SilentStartup:   false,
+			LightweightMode: false,
 			ServerPort:      DefaultServerPort,
 		},
 		Appearance: AppearanceConfig{

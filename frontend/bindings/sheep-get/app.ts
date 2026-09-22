@@ -253,6 +253,13 @@ export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse
 }
 
 /**
+ * OpenSettingsWindow ensures the main window is open and switched to the preferences tab.
+ */
+export function OpenSettingsWindow(): $CancellablePromise<void> {
+    return $Call.ByID(3185921024);
+}
+
+/**
  * PauseTask pauses an active or queued task
  */
 export function PauseTask(id: string): $CancellablePromise<void> {
@@ -399,7 +406,7 @@ export function SetProgressWindowHeight(height: number): $CancellablePromise<voi
 }
 
 /**
- * ShowMainWindow makes the main window visible and brings it to focus.
+ * ShowMainWindow makes the main window visible and brings it to focus, creating it if needed.
  */
 export function ShowMainWindow(): $CancellablePromise<void> {
     return $Call.ByID(3189675457);

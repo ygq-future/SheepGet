@@ -56,37 +56,84 @@ type App struct {
 }
 
 type wailsWindowView struct {
-	getApp func() *application.App
-	name   string
+	app        *App
+	name       string
+	destroying bool
 }
 
 func (w *wailsWindowView) Show() {
-	if app := w.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(w.name); ok {
-			showAndRaise(win)
-		}
+	if w.app == nil {
+		return
+	}
+	wailsApp := w.app.getApp()
+	if wailsApp == nil {
+		return
+	}
+	if win, ok := wailsApp.Window.GetByName(w.name); ok {
+		showAndRaise(win)
+		return
+	}
+	if w.name == winNameFileInfo {
+		fileInfoWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name:           winNameFileInfo,
+			Title:          "新建下载 - SheepGet",
+			Width:          fileInfoWindowWidth,
+			Height:         fileInfoWindowHeight,
+			Frameless:      true,
+			BackgroundType: application.BackgroundTypeTransparent,
+			DisableResize:  true,
+			URL:            "/?window=fileinfo",
+		})
+		fileInfoWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+			if w.destroying {
+				return
+			}
+			event.Cancel()
+			_ = w.app.CancelCurrentFileInfo()
+		})
+		showAndRaise(fileInfoWindow)
 	}
 }
 
 func (w *wailsWindowView) Hide() {
-	if app := w.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(w.name); ok {
+	if w.app == nil {
+		return
+	}
+	wailsApp := w.app.getApp()
+	if wailsApp == nil {
+		return
+	}
+	if win, ok := wailsApp.Window.GetByName(w.name); ok {
+		st := w.app.GetSettings()
+		if w.name == winNameFileInfo && st.General.LightweightMode {
+			w.destroying = true
+			win.Close()
+			w.destroying = false
+		} else {
 			win.Hide()
 		}
 	}
 }
 
 func (w *wailsWindowView) Focus() {
-	if app := w.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(w.name); ok {
+	if w.app == nil {
+		return
+	}
+	wailsApp := w.app.getApp()
+	if wailsApp != nil {
+		if win, ok := wailsApp.Window.GetByName(w.name); ok {
 			raiseWindow(win)
 		}
 	}
 }
 
 func (w *wailsWindowView) Emit(event string, data any) {
-	if app := w.getApp(); app != nil {
-		app.Event.Emit(event, data)
+	if w.app == nil {
+		return
+	}
+	wailsApp := w.app.getApp()
+	if wailsApp != nil {
+		wailsApp.Event.Emit(event, data)
 	}
 }
 
@@ -139,8 +186,8 @@ func NewApp() *App {
 	app.manager = mgr
 
 	winView := &wailsWindowView{
-		getApp: app.getApp,
-		name:   winNameFileInfo,
+		app:  app,
+		name: winNameFileInfo,
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	adapter := &loopbackServerAdapter{app: app}
@@ -259,6 +306,24 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 	}
 	if app := a.getApp(); app != nil {
 		app.Event.Emit(appevents.SettingsUpdated, s)
+	}
+	if app := a.getApp(); app != nil && s != nil {
+		if mainWin, ok := app.Window.GetByName(winNameMain); ok {
+			bg := mainWindowDarkBackgroundColour
+			if s.Appearance.Theme == config.ThemeLight {
+				bg = mainWindowLightBackgroundColour
+			}
+			mainWin.SetBackgroundColour(bg)
+		}
+	}
+	if app := a.getApp(); app != nil && s != nil && s.General.LightweightMode {
+		if mainWin, ok := app.Window.GetByName(winNameMain); ok && !mainWin.IsVisible() {
+			mainWin.Close()
+		}
+		if progWin, ok := app.Window.GetByName(winNameProgress); ok && !progWin.IsVisible() {
+			a.progressPositioned = false
+			progWin.Close()
+		}
 	}
 	return nil
 }
@@ -1034,12 +1099,69 @@ func (a *App) SwitchFileInfoActive(index int) (*window.FileInfoItem, error) {
 	return a.windowQueue.SwitchActive(index)
 }
 
-// ShowMainWindow makes the main window visible and brings it to focus.
-func (a *App) ShowMainWindow() {
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameMain); ok {
-			showAndRaise(win)
+// ensureMainWindow returns the main window, creating it if it doesn't exist yet.
+func (a *App) ensureMainWindow(hidden bool, urlPath ...string) application.Window {
+	app := a.getApp()
+	if app == nil {
+		return nil
+	}
+	if win, ok := app.Window.GetByName(winNameMain); ok {
+		return win
+	}
+	targetURL := "/"
+	if len(urlPath) > 0 && urlPath[0] != "" {
+		targetURL = urlPath[0]
+	}
+	bg := mainWindowDarkBackgroundColour
+	if a.settings != nil && a.settings.Get().Appearance.Theme == config.ThemeLight {
+		bg = mainWindowLightBackgroundColour
+	}
+	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             winNameMain,
+		Title:            "sheep-get",
+		Width:            mainWindowWidth,
+		Height:           mainWindowHeight,
+		MinWidth:         mainWindowWidth,
+		MinHeight:        mainWindowHeight,
+		Hidden:           hidden,
+		BackgroundColour: bg,
+		URL:              targetURL,
+	})
+	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+		st := a.GetSettings()
+		if st.General.LightweightMode {
+			// 在轻量模式下不拦截关闭事件，允许 Wails 销毁窗口与 WebView 渲染进程
+			return
 		}
+		// 默认模式下拦截并隐藏到托盘
+		event.Cancel()
+		mainWindow.Hide()
+	})
+	return mainWindow
+}
+
+// ShowMainWindow makes the main window visible and brings it to focus, creating it if needed.
+func (a *App) ShowMainWindow() {
+	if win := a.ensureMainWindow(false); win != nil {
+		showAndRaise(win)
+	}
+}
+
+// OpenSettingsWindow ensures the main window is open and switched to the preferences tab.
+func (a *App) OpenSettingsWindow() {
+	app := a.getApp()
+	if app == nil {
+		return
+	}
+	if win, ok := app.Window.GetByName(winNameMain); ok {
+		showAndRaise(win)
+		app.Event.Emit(appevents.AppOpenSettings)
+		return
+	}
+	win := a.ensureMainWindow(false, "/?open=settings")
+	if win != nil {
+		showAndRaise(win)
+		app.Event.Emit(appevents.AppOpenSettings)
 	}
 }
 
@@ -1103,23 +1225,46 @@ func (a *App) ShowProgressWindow(taskID string) {
 			}
 			return
 		}
+
+		var (
+			progX       = 0
+			progY       = 0
+			progInitPos = application.WindowCentered
+		)
+		if primary := app.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
+			progX = primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
+			progY = primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
+			progInitPos = application.WindowXY
+		}
+
 		progWin := app.Window.NewWithOptions(application.WebviewWindowOptions{
-			Name:           winNameProgress,
-			Title:          "下载进度 - SheepGet",
-			Width:          progressWindowWidth,
-			Height:         progressWindowHeight,
-			MinWidth:       progressWindowMinWidth,
-			MaxWidth:       progressWindowMaxWidth,
-			MinHeight:      progressWindowMinH,
-			MaxHeight:      progressWindowMaxH,
-			Frameless:      true,
-			AlwaysOnTop:    a.progressAlwaysOnTop,
-			BackgroundType: application.BackgroundTypeTransparent,
-			URL:            fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
+			Name:            winNameProgress,
+			Title:           "下载进度 - SheepGet",
+			Width:           progressWindowWidth,
+			Height:          progressWindowHeight,
+			MinWidth:        progressWindowMinWidth,
+			MaxWidth:        progressWindowMaxWidth,
+			MinHeight:       progressWindowMinH,
+			MaxHeight:       progressWindowMaxH,
+			InitialPosition: progInitPos,
+			X:               progX,
+			Y:               progY,
+			Frameless:       true,
+			AlwaysOnTop:     a.progressAlwaysOnTop,
+			BackgroundType:  application.BackgroundTypeTransparent,
+			URL:             fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
 		})
+		a.progressPositioned = true
 		progWin.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+			st := a.GetSettings()
+			if st.General.LightweightMode {
+				a.progressPositioned = false
+				app.Event.Emit(appevents.ProgressClearViewed)
+				return
+			}
 			event.Cancel()
 			progWin.Hide()
+			app.Event.Emit(appevents.ProgressClearViewed)
 		})
 		showAndRaise(progWin)
 		if taskID != "" {
@@ -1142,7 +1287,13 @@ func (a *App) MinimiseProgressWindow() {
 func (a *App) HideProgressWindow() {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			win.Hide()
+			st := a.GetSettings()
+			if st.General.LightweightMode {
+				a.progressPositioned = false
+				win.Close()
+			} else {
+				win.Hide()
+			}
 			app.Event.Emit(appevents.ProgressClearViewed)
 		}
 	}

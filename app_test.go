@@ -104,8 +104,8 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	loopbackSrv := server.NewServer(filepath.Join(tmpDir, "session.json"), adapter, adapter)
 	app.loopbackServer = loopbackSrv
 	winView := &wailsWindowView{
-		getApp: app.getApp,
-		name:   "fileinfo",
+		app:  app,
+		name: winNameFileInfo,
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
