@@ -1,15 +1,15 @@
 {
 	"fixed": {
-		"file_version": "{{.Info.ProductVersion}}"
+		"file_version": "1.0.0"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "{{.Info.ProductVersion}}",
-			"CompanyName": "{{.Info.CompanyName}}",
-			"FileDescription": "{{.Info.ProductName}}",
-			"LegalCopyright": "{{.Info.Copyright}}",
-			"ProductName": "{{.Info.ProductName}}",
-			"Comments": "{{.Info.Comments}}"
+			"ProductVersion": "1.0.0",
+			"CompanyName": "SheepGet",
+			"FileDescription": "SheepGet",
+			"LegalCopyright": "Copyright © 2026 SheepGet",
+			"ProductName": "SheepGet",
+			"Comments": "Modern Desktop Download Manager"
 		}
 	}
 }

@@ -23,7 +23,18 @@ const isLinux = !isWin && !isMac;
 const platformName = isWin ? 'windows' : isMac ? 'darwin' : 'linux';
 const arch = process.arch;
 const archLabel = arch === 'arm64' ? 'arm64' : 'x64';
-const version = '0.1.0';
+// Read version and metadata from build/config.yml under the `info:` block as Single Source of Truth (SSOT)
+const buildConfigRaw = readFileSync(join(root, 'build', 'config.yml'), 'utf-8');
+const infoBlockMatch = buildConfigRaw.match(/info:\s*([\s\S]*?)(?:\n\w+:|$)/);
+const infoBlock = infoBlockMatch ? infoBlockMatch[1] : buildConfigRaw;
+const versionMatch = infoBlock.match(/^\s*version:\s*['"]?([^'"\s]+)['"]?/m);
+const version = versionMatch ? versionMatch[1] : '1.0.0';
+const productNameMatch = infoBlock.match(/^\s*productName:\s*['"]?([^'"\s]+)['"]?/m);
+const productName = productNameMatch ? productNameMatch[1] : 'SheepGet';
+const companyNameMatch = infoBlock.match(/^\s*companyName:\s*['"]?([^'"\s]+)['"]?/m);
+const companyName = companyNameMatch ? companyNameMatch[1] : 'SheepGet';
+const descMatch = infoBlock.match(/^\s*description:\s*['"]?([^'"\r\n]+)['"]?/m);
+const productDescription = descMatch ? descMatch[1] : 'Modern Desktop Download Manager';
 
 const ext = isWin ? '.exe' : '';
 const binDir = join(root, 'build', 'bin');
@@ -106,17 +117,63 @@ async function main() {
   // 1. Build main desktop application
   const mainExe = join(binDir, 'SheepGet' + ext);
   console.log('[Package] Building main desktop application...');
+  const sysoTarget = isWin
+    ? join(root, `resource_windows_${arch === 'arm64' ? 'arm64' : 'amd64'}.syso`)
+    : null;
+  const tempInfoTarget = isWin
+    ? join(toolsDir, `info_windows_${arch === 'arm64' ? 'arm64' : 'amd64'}.json`)
+    : null;
+  if (isWin) {
+    const infoPayload = {
+      fixed: {
+        file_version: version,
+      },
+      info: {
+        '0000': {
+          ProductVersion: version,
+          CompanyName: companyName,
+          FileDescription: productName,
+          LegalCopyright: `Copyright © ${new Date().getFullYear()} ${companyName}`,
+          ProductName: productName,
+          Comments: productDescription,
+        },
+      },
+    };
+    writeFileSync(tempInfoTarget, JSON.stringify(infoPayload, null, 2), 'utf-8');
+    run('wails3', [
+      'generate',
+      'syso',
+      '-arch',
+      arch === 'arm64' ? 'arm64' : 'amd64',
+      '-icon',
+      'build/windows/icon.ico',
+      '-info',
+      tempInfoTarget,
+      '-manifest',
+      'build/windows/wails.exe.manifest',
+      '-out',
+      sysoTarget,
+    ]);
+  }
   const mainLdflags = isWin ? '-w -s -H=windowsgui' : '-w -s';
-  run('go', [
-    'build',
-    '-tags=production',
-    '-trimpath',
-    `-ldflags=${mainLdflags}`,
-    '-o',
-    mainExe,
-    '.',
-  ]);
-
+  try {
+    run('go', [
+      'build',
+      '-tags=production',
+      '-trimpath',
+      `-ldflags=${mainLdflags}`,
+      '-o',
+      mainExe,
+      '.',
+    ]);
+  } finally {
+    if (sysoTarget && existsSync(sysoTarget)) {
+      rmSync(sysoTarget, { force: true });
+    }
+    if (tempInfoTarget && existsSync(tempInfoTarget)) {
+      rmSync(tempInfoTarget, { force: true });
+    }
+  }
   // 2. Build browser extension
   console.log('[Package] Building browser extension...');
   run('bun', ['run', 'build'], { cwd: join(root, 'extension'), quiet: true });

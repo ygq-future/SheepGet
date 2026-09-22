@@ -19,7 +19,7 @@ func main() {
 
 	// Create application with options
 	wailsApp := application.New(application.Options{
-		Name:        "sheep-get",
+		Name:        "SheepGet",
 		Description: "Modern Desktop Download Manager",
 		Services: []application.Service{
 			application.NewService(app),

@@ -1,6 +1,10 @@
 # SheepGet
 
 <p align="center">
+  <img src="build/appicon.png" alt="SheepGet Logo" width="128" height="128" />
+</p>
+
+<p align="center">
   <strong>专为桌面用户打造的现代轻量、高性能下载管理器</strong>
 </p>
 
@@ -95,9 +99,9 @@ bun run package
 
 ```text
 dist/
-├── SheepGet_0.1.0_x64-setup.exe                  # Windows x64 NSIS 安装程序（带向导与快捷方式）
-├── SheepGet_0.1.0_windows-x64-portable.zip       # Windows x64 绿色免安装便携包（即拷即用）
-├── SheepGet_0.1.0_x64_en-US.msi                  # Windows x64 MSI 企业静默安装包
+├── SheepGet_1.0.0_x64-setup.exe                  # Windows x64 NSIS 安装程序（带向导与快捷方式）
+├── SheepGet_1.0.0_windows-x64-portable.zip       # Windows x64 绿色免安装便携包（即拷即用）
+├── SheepGet_1.0.0_x64_en-US.msi                  # Windows x64 MSI 企业静默安装包
 ├── SHA256SUMS.txt                                 # 所有分发资产的 SHA-256 校验和
 └── extension/                                     # 预编译配套浏览器扩展目录
 ```

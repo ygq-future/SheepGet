@@ -20,7 +20,6 @@ import { TaskItem } from './components/TaskItem';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import {
   Plus,
-  DownloadCloud,
   Layers,
   CheckCircle2,
   PauseCircle,
@@ -32,6 +31,7 @@ import {
   CheckCheck,
   X,
 } from 'lucide-react';
+import logoUrl from './assets/images/logo-universal.png';
 import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
@@ -449,7 +449,7 @@ export function App() {
         <div className="w-full space-y-4">
           {/* Brand Header */}
           <div
-            className={`flex h-9 items-center ${
+            className={`flex h-10 items-center ${
               sidebarCollapsed ? 'justify-center' : 'gap-2.5 px-1'
             }`}
           >
@@ -457,13 +457,17 @@ export function App() {
               type="button"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-              className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center text-[var(--accent)] transition-transform hover:scale-105 active:scale-95"
+              className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center transition-transform hover:scale-105 active:scale-95"
             >
-              <DownloadCloud className="h-5 w-5" />
+              <img
+                src={logoUrl}
+                alt="SheepGet"
+                className="h-8 w-8 rounded-lg object-contain drop-shadow-xs"
+              />
             </button>
 
             {!sidebarCollapsed && (
-              <span className="text-sm font-semibold tracking-tight text-[var(--text-primary)]">
+              <span className="text-base font-semibold tracking-tight text-[var(--text-primary)]">
                 SheepGet
               </span>
             )}

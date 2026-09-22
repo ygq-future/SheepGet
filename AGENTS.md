@@ -90,6 +90,22 @@
 - URL 中的令牌、Cookie、认证 Header 等按敏感请求上下文处理，不写入普通日志或无关界面。
 - 首期不扩展至 Safari、系统级拦截其他应用下载、复杂站点专项解析、直播录制、DRM、重新编码或任意媒体格式兼容。
 
+### 版本协同与发版核对红线（全链路版本一致性）
+
+在版本迭代、更新版本号或发布新版本前，必须严格核验并确保以下配置与常量中的版本号完全一致，严禁出现前后端版本脱节或元数据滞后：
+
+1. **唯一事实来源（SSOT）**：
+   - `build/config.yml` (`info.version`) 为桌面端核心版本的单一事实来源。`scripts/package.mjs` 在打包时会自动动态读取该版本，并向下自动注入生成 Windows PE Version Info (`.syso`)、NSIS (`INFO_PRODUCTVERSION`) 以及 WiX MSI (`ProductVersion`)，严禁脱节。
+2. **必须同步手动维护与核验的清单（发版检查点）**：
+   - **项目根配置**：`package.json` 中的 `"version"`（必须与 `build/config.yml` 保持一致）；
+   - **Windows 兜底配置**：`build/windows/info.json` 中的 `"ProductVersion"` 与 `"file_version"`（提供非 package 脚本单编时的基准对齐）；
+   - **浏览器扩展**：`extension/package.json` 中的 `"version"` 与 `extension/wxt.config.ts` 中的 `manifest.version`（扩展独立打包发布，版本升级时必须核验对齐）；
+   - **发布流水线**：`.github/workflows/release.yml` 中的 workflow_dispatch 默认 tag（如 `default: 'v1.0.0'`）；
+   - **用户文档与分发规范**：`README.md` 中的安装包产物命名示例（如 `SheepGet_1.0.0_x64-setup.exe`）。
+3. **发版验收硬指标**：
+   - 发布前必须在 Windows 下检查生成的 `SheepGet.exe`“属性 -> 详细信息”中的“产品版本”与“文件版本”，确认已与目标版本号严格一致，严禁残留模板占位符；
+   - 开启自启动后验证 Windows“设置 -> 启动应用”管理面板中的产品名称（`SheepGet`）与发布者（`SheepGet`）显示正常，严禁出现未解析模板宏。
+
 ## 代码质量约束
 
 - 优先简单、清晰的实现，避免过度设计和无意义抽象；

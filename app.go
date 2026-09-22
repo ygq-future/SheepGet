@@ -1134,7 +1134,7 @@ func (a *App) ensureMainWindow(hidden bool, urlPath ...string) application.Windo
 	}
 	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             winNameMain,
-		Title:            "sheep-get",
+		Title:            "SheepGet",
 		Width:            mainWindowWidth,
 		Height:           mainWindowHeight,
 		MinWidth:         mainWindowWidth,

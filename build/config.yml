@@ -5,7 +5,7 @@ info:
   productName: 'SheepGet'
   productIdentifier: 'com.sheepget.app'
   description: 'Modern Desktop Download Manager'
-  version: '0.1.0'
+  version: '1.0.0'
 
 dev_mode:
   root_path: .
