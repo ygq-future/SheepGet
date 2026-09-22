@@ -104,7 +104,7 @@ async function main() {
   }
 
   // 1. Build main desktop application
-  const mainExe = join(binDir, 'sheep-get' + ext);
+  const mainExe = join(binDir, 'SheepGet' + ext);
   console.log('[Package] Building main desktop application...');
   const mainLdflags = isWin ? '-w -s -H=windowsgui' : '-w -s';
   run('go', [
@@ -133,13 +133,13 @@ async function main() {
   console.log('[Package] Assembling portable distribution bundle...');
 
   const portableDirName = isWin
-    ? `sheep-get_${version}_windows-${archLabel}-portable`
-    : `sheep-get_${version}_${platformName}-${archLabel}-portable`;
+    ? `SheepGet_${version}_windows-${archLabel}-portable`
+    : `SheepGet_${version}_${platformName}-${archLabel}-portable`;
   const portableStage = join(distDir, portableDirName);
   rmSync(portableStage, { recursive: true, force: true });
   mkdirSync(portableStage, { recursive: true });
 
-  cpSync(mainExe, join(portableStage, 'sheep-get' + ext));
+  cpSync(mainExe, join(portableStage, 'SheepGet' + ext));
   cpSync(extTargetDir, join(portableStage, 'extension'), { recursive: true });
   cpSync(join(root, 'README.md'), join(portableStage, 'README.md'));
 
@@ -148,18 +148,18 @@ async function main() {
 
   if (isWin) {
     // Create zip for Windows portable
-    const portableZipName = `sheep-get_${version}_windows-${archLabel}-portable.zip`;
+    const portableZipName = `SheepGet_${version}_windows-${archLabel}-portable.zip`;
     const portableZipPath = join(distDir, portableZipName);
     run('tar', ['-a', '-c', '-f', portableZipPath, '-C', distDir, portableDirName]);
     artifacts.push({ name: portableZipName, path: portableZipPath, type: 'Portable Zip' });
   } else {
     if (isLinux) {
       cpSync(
-        join(root, 'build', 'linux', 'sheep-get.desktop'),
-        join(portableStage, 'sheep-get.desktop'),
+        join(root, 'build', 'linux', 'SheepGet.desktop'),
+        join(portableStage, 'SheepGet.desktop'),
       );
     }
-    const portableTarName = `sheep-get_${version}_${platformName}-${archLabel}.tar.gz`;
+    const portableTarName = `SheepGet_${version}_${platformName}-${archLabel}.tar.gz`;
     const portableTarPath = join(distDir, portableTarName);
     run('tar', ['-czf', portableTarPath, '-C', distDir, portableDirName]);
     artifacts.push({ name: portableTarName, path: portableTarPath, type: 'Portable tar.gz' });
@@ -172,17 +172,17 @@ async function main() {
     if (existsSync(nsisExe) && existsSync(nsisScript)) {
       console.log('[Package] Building Windows NSIS setup installer (.exe)...');
       run(nsisExe, [
-        '-DINFO_PROJECTNAME=sheep-get',
+        '-DINFO_PROJECTNAME=SheepGet',
         '-DINFO_PRODUCTNAME=SheepGet',
         '-DINFO_COMPANYNAME=SheepGet',
         `-DINFO_PRODUCTVERSION=${version}`,
-        '-DPRODUCT_EXECUTABLE=sheep-get.exe',
+        '-DPRODUCT_EXECUTABLE=SheepGet.exe',
         `-DARG_WAILS_AMD64_BINARY=${mainExe}`,
         nsisScript,
       ]);
 
-      const nsisOut = join(binDir, 'sheep-get-amd64-installer.exe');
-      const setupExeName = `sheep-get_${version}_${archLabel}-setup.exe`;
+      const nsisOut = join(binDir, 'SheepGet-amd64-installer.exe');
+      const setupExeName = `SheepGet_${version}_${archLabel}-setup.exe`;
       const setupExePath = join(distDir, setupExeName);
       if (existsSync(nsisOut)) {
         cpSync(nsisOut, setupExePath);
@@ -207,7 +207,7 @@ async function main() {
         wixScript,
       ]);
 
-      const msiName = `sheep-get_${version}_${archLabel}_en-US.msi`;
+      const msiName = `SheepGet_${version}_${archLabel}_en-US.msi`;
       const msiPath = join(distDir, msiName);
       run(wixLight, [
         '-nologo',
@@ -220,7 +220,7 @@ async function main() {
         wixObj,
       ]);
       rmSync(wixObj, { force: true });
-      rmSync(join(distDir, `sheep-get_${version}_${archLabel}_en-US.wixpdb`), { force: true });
+      rmSync(join(distDir, `SheepGet_${version}_${archLabel}_en-US.wixpdb`), { force: true });
 
       if (existsSync(msiPath)) {
         artifacts.push({ name: msiName, path: msiPath, type: 'MSI Installer' });

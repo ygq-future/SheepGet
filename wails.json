@@ -1,5 +1,5 @@
 {
-  "name": "sheep-get",
+  "name": "SheepGet",
   "frontend": {
     "dir": "./frontend",
     "install": "bun install",

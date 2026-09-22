@@ -105,9 +105,9 @@ bun run package
 
 ```text
 dist/
-├── sheep-get_0.1.0_x64-setup.exe                  # Windows x64 NSIS 安装程序（带向导与快捷方式）
-├── sheep-get_0.1.0_windows-x64-portable.zip       # Windows x64 绿色免安装便携包（即拷即用）
-├── sheep-get_0.1.0_x64_en-US.msi                  # Windows x64 MSI 企业静默安装包
+├── SheepGet_0.1.0_x64-setup.exe                  # Windows x64 NSIS 安装程序（带向导与快捷方式）
+├── SheepGet_0.1.0_windows-x64-portable.zip       # Windows x64 绿色免安装便携包（即拷即用）
+├── SheepGet_0.1.0_x64_en-US.msi                  # Windows x64 MSI 企业静默安装包
 ├── SHA256SUMS.txt                                 # 所有分发资产的 SHA-256 校验和
 └── extension/                                     # 预编译配套浏览器扩展目录
 ```

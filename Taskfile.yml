@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  APP_NAME: 'sheep-get'
+  APP_NAME: 'SheepGet'
   BIN_DIR: 'build/bin'
 
 tasks:

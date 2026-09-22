@@ -22,7 +22,7 @@ SheepGet 需要同时满足普通桌面用户的标准安装体验与极客/离�
    - 若未检测到便携标志，则判定为**安装模式**，按各操作系统标准目录组织：
      - Windows: `%APPDATA%\SheepGet`
      - macOS: `~/Library/Application Support/SheepGet`
-     - Linux: `$XDG_DATA_HOME/sheepget`（回退为 `~/.local/share/sheepget`）
+     - Linux: `$XDG_DATA_HOME/SheepGet`（回退为 `~/.local/share/SheepGet`）
 3. **数据目录布局**：
    - `DataDir/config.json`：配置中心全局持久化配置。
    - `DataDir/tasks.db`（或 JSON 数据库）：下载任务元数据与分块状态。

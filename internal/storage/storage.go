@@ -129,12 +129,12 @@ func getStandardUserDir() (string, error) {
 		// Linux / other Unix
 		xdgData := os.Getenv("XDG_DATA_HOME")
 		if xdgData != "" {
-			return filepath.Join(xdgData, "sheepget"), nil
+			return filepath.Join(xdgData, "SheepGet"), nil
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, ".local", "share", "sheepget"), nil
+		return filepath.Join(home, ".local", "share", "SheepGet"), nil
 	}
 }

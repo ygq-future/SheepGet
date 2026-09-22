@@ -69,12 +69,12 @@ jobs:
         run: node scripts/native-build.mjs
       - name: Archive application
         shell: bash
-        run: tar -czf sheep-get.tar.gz -C build/bin .
+        run: tar -czf SheepGet.tar.gz -C build/bin .
       - name: Upload application
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: sheep-get-${{ runner.os }}-${{ runner.arch }}
-          path: sheep-get.tar.gz
+          name: SheepGet-${{ runner.os }}-${{ runner.arch }}
+          path: SheepGet.tar.gz
           if-no-files-found: error
           retention-days: 14
   required:

@@ -36,13 +36,13 @@
         <Shortcut Id="ApplicationStartMenuShortcut"
                   Name="SheepGet"
                   Description="Modern Desktop Download Manager"
-                  Target="[INSTALLFOLDER]sheep-get.exe"
+                  Target="[INSTALLFOLDER]SheepGet.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <Shortcut Id="ApplicationDesktopShortcut"
                   Directory="DesktopFolder"
                   Name="SheepGet"
                   Description="Modern Desktop Download Manager"
-                  Target="[INSTALLFOLDER]sheep-get.exe"
+                  Target="[INSTALLFOLDER]SheepGet.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\SheepGet\SheepGet" Name="installed" Type="integer" Value="1" KeyPath="yes" />
@@ -53,7 +53,7 @@
   <Fragment>
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable" Guid="3E46C1A4-0B9F-4D0C-A925-9988D4E2F7C1" Win64="yes">
-        <File Id="SheepGetEXE" Source="$(var.SourceDir)\sheep-get.exe" KeyPath="yes" />
+        <File Id="SheepGetEXE" Source="$(var.SourceDir)\SheepGet.exe" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>
