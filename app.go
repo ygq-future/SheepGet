@@ -21,6 +21,7 @@ import (
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,18 +54,22 @@ type App struct {
 	progressAlwaysOnTop bool
 	clipboardWatcher    *clipboard.Watcher
 	loopbackServer      *server.Server
+	windowTimerLock     sync.Mutex
+	fileInfoTimer       *time.Timer
+	progressTimer       *time.Timer
+	destroyingWindows   map[string]bool
 }
 
 type wailsWindowView struct {
-	app        *App
-	name       string
-	destroying bool
+	app  *App
+	name string
 }
 
 func (w *wailsWindowView) Show() {
 	if w.app == nil {
 		return
 	}
+	w.app.cancelWindowIdleDestroy(w.name)
 	wailsApp := w.app.getApp()
 	if wailsApp == nil {
 		return
@@ -85,7 +90,7 @@ func (w *wailsWindowView) Show() {
 			URL:            "/?window=fileinfo",
 		})
 		fileInfoWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-			if w.destroying {
+			if w.app.isWindowDestroying(winNameFileInfo) {
 				return
 			}
 			event.Cancel()
@@ -104,13 +109,9 @@ func (w *wailsWindowView) Hide() {
 		return
 	}
 	if win, ok := wailsApp.Window.GetByName(w.name); ok {
-		st := w.app.GetSettings()
-		if w.name == winNameFileInfo && st.General.LightweightMode {
-			w.destroying = true
-			win.Close()
-			w.destroying = false
-		} else {
-			win.Hide()
+		win.Hide()
+		if w.name == winNameFileInfo {
+			w.app.scheduleWindowIdleDestroy(w.name)
 		}
 	}
 }
@@ -271,6 +272,8 @@ func (a *App) Shutdown() {
 	if exitFile := os.Getenv("SHEEP_GET_DEV_EXIT_FILE"); exitFile != "" {
 		_ = os.WriteFile(exitFile, []byte("exit"), 0600)
 	}
+	a.cancelWindowIdleDestroy(winNameFileInfo)
+	a.cancelWindowIdleDestroy(winNameProgress)
 }
 
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
@@ -1041,9 +1044,6 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 	if t != nil && a.settings != nil {
 		st := a.settings.Get()
 		if st.Download.ShowProgressWindow {
-			if app := a.getApp(); app != nil {
-				app.Event.Emit(appevents.ProgressClearViewed)
-			}
 			a.ShowProgressWindow(t.ID)
 			if a.GetFileInfoQueueLength() > 0 {
 				if app := a.getApp(); app != nil {
@@ -1208,9 +1208,12 @@ func (a *App) SetProgressWindowHeight(height int) {
 
 // ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
 func (a *App) ShowProgressWindow(taskID string) {
+	a.cancelWindowIdleDestroy(winNameProgress)
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			if !a.progressPositioned {
+			a.windowTimerLock.Lock()
+			positioned := a.progressPositioned
+			if !positioned {
 				if primary := app.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
 					x := primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
 					y := primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
@@ -1218,6 +1221,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 				}
 				a.progressPositioned = true
 			}
+			a.windowTimerLock.Unlock()
 			showAndRaise(win)
 			if taskID != "" {
 				app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
@@ -1254,17 +1258,17 @@ func (a *App) ShowProgressWindow(taskID string) {
 			BackgroundType:  application.BackgroundTypeTransparent,
 			URL:             fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
 		})
+		a.windowTimerLock.Lock()
 		a.progressPositioned = true
+		a.windowTimerLock.Unlock()
 		progWin.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-			st := a.GetSettings()
-			if st.General.LightweightMode {
-				a.progressPositioned = false
-				app.Event.Emit(appevents.ProgressClearViewed)
+			if a.isWindowDestroying(winNameProgress) {
 				return
 			}
 			event.Cancel()
 			progWin.Hide()
 			app.Event.Emit(appevents.ProgressClearViewed)
+			a.scheduleWindowIdleDestroy(winNameProgress)
 		})
 		showAndRaise(progWin)
 		if taskID != "" {
@@ -1287,15 +1291,100 @@ func (a *App) MinimiseProgressWindow() {
 func (a *App) HideProgressWindow() {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			st := a.GetSettings()
-			if st.General.LightweightMode {
-				a.progressPositioned = false
-				win.Close()
-			} else {
-				win.Hide()
-			}
+			win.Hide()
 			app.Event.Emit(appevents.ProgressClearViewed)
+			a.scheduleWindowIdleDestroy(winNameProgress)
 		}
+	}
+}
+
+func (a *App) isWindowDestroying(name string) bool {
+	a.windowTimerLock.Lock()
+	defer a.windowTimerLock.Unlock()
+	return a.destroyingWindows[name]
+}
+
+func (a *App) setWindowDestroying(name string, destroying bool) {
+	a.windowTimerLock.Lock()
+	defer a.windowTimerLock.Unlock()
+	if a.destroyingWindows == nil {
+		a.destroyingWindows = make(map[string]bool)
+	}
+	if destroying {
+		a.destroyingWindows[name] = true
+	} else {
+		delete(a.destroyingWindows, name)
+	}
+}
+
+func (a *App) cancelWindowIdleDestroy(name string) {
+	a.windowTimerLock.Lock()
+	defer a.windowTimerLock.Unlock()
+	switch name {
+	case winNameFileInfo:
+		if a.fileInfoTimer != nil {
+			a.fileInfoTimer.Stop()
+			a.fileInfoTimer = nil
+		}
+	case winNameProgress:
+		if a.progressTimer != nil {
+			a.progressTimer.Stop()
+			a.progressTimer = nil
+		}
+	}
+}
+
+func (a *App) scheduleWindowIdleDestroy(name string) {
+	st := a.GetSettings()
+	if !st.General.LightweightMode {
+		return
+	}
+
+	a.windowTimerLock.Lock()
+	defer a.windowTimerLock.Unlock()
+
+	switch name {
+	case winNameFileInfo:
+		if a.fileInfoTimer != nil {
+			a.fileInfoTimer.Stop()
+		}
+		a.fileInfoTimer = time.AfterFunc(windowIdleDestroyGracePeriod, func() {
+			a.windowTimerLock.Lock()
+			a.fileInfoTimer = nil
+			a.windowTimerLock.Unlock()
+
+			if a.GetFileInfoQueueLength() == 0 {
+				if app := a.getApp(); app != nil {
+					if win, ok := app.Window.GetByName(winNameFileInfo); ok && !win.IsVisible() {
+						a.setWindowDestroying(winNameFileInfo, true)
+						win.Close()
+						a.setWindowDestroying(winNameFileInfo, false)
+					}
+				}
+			}
+		})
+
+	case winNameProgress:
+		if a.progressTimer != nil {
+			a.progressTimer.Stop()
+		}
+		a.progressTimer = time.AfterFunc(windowIdleDestroyGracePeriod, func() {
+			a.windowTimerLock.Lock()
+			a.progressTimer = nil
+			a.windowTimerLock.Unlock()
+
+			if app := a.getApp(); app != nil {
+				if win, ok := app.Window.GetByName(winNameProgress); ok && !win.IsVisible() {
+					a.windowTimerLock.Lock()
+					a.progressPositioned = false
+					a.windowTimerLock.Unlock()
+
+					a.setWindowDestroying(winNameProgress, true)
+					win.Close()
+					a.setWindowDestroying(winNameProgress, false)
+				}
+			}
+		})
 	}
 }
 

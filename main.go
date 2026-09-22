@@ -29,6 +29,7 @@ func main() {
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
+			AdditionalBrowserArgs:         windowsAdditionalBrowserArgs,
 		},
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,

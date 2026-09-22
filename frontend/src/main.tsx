@@ -1,9 +1,7 @@
-import React from 'react';
+import type { ComponentType } from 'react';
+import React, { Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
-import App from './App';
-import { FileInfoView } from './views/FileInfoView';
-import { ProgressView } from './views/ProgressView';
 import { initSettingsListener, useSettingsStore } from './stores/settings';
 
 // Ensure all windows subscribe to live settings updates
@@ -21,17 +19,25 @@ const root = createRoot(container!);
 const params = new URLSearchParams(window.location.search);
 const windowType = params.get('window');
 
-let ViewComponent = App;
+let ViewComponent: ComponentType;
 if (windowType === 'fileinfo') {
   document.documentElement.classList.add('window-fileinfo');
-  ViewComponent = FileInfoView;
+  ViewComponent = lazy(() =>
+    import('./views/FileInfoView').then((m) => ({ default: m.FileInfoView })),
+  );
 } else if (windowType === 'progress') {
   document.documentElement.classList.add('window-progress');
-  ViewComponent = ProgressView;
+  ViewComponent = lazy(() =>
+    import('./views/ProgressView').then((m) => ({ default: m.ProgressView })),
+  );
+} else {
+  ViewComponent = lazy(() => import('./App'));
 }
 
 root.render(
   <React.StrictMode>
-    <ViewComponent />
+    <Suspense fallback={null}>
+      <ViewComponent />
+    </Suspense>
   </React.StrictMode>,
 );

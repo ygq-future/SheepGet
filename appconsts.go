@@ -1,6 +1,10 @@
 package main
 
-import "github.com/wailsapp/wails/v3/pkg/application"
+import (
+	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+)
 
 // 窗口名与窗口几何的单一命名来源。main.go 预创建窗口、app.go 动态操作窗口时
 // 共用这些常量，避免同一标识散落成多处字符串/数字字面量。
@@ -23,6 +27,16 @@ var (
 	mainWindowDarkBackgroundColour  = application.RGBA{Red: 9, Green: 9, Blue: 11, Alpha: 255}
 	mainWindowLightBackgroundColour = application.RGBA{Red: 248, Green: 250, Blue: 252, Alpha: 255}
 )
+
+// Windows 平台 WebView2 启动加速参数（裁剪非桌面必要服务，缩短内核冷启动耗时）。
+var windowsAdditionalBrowserArgs = []string{
+	"--disable-features=RendererCodeIntegrity,msEdgeTranslate,Translate,OptimizationHints,MediaRouter",
+	"--disable-component-update",
+	"--disable-extensions",
+	"--disable-default-apps",
+	"--no-default-browser-check",
+	"--disable-sync",
+}
 
 // 进度窗口几何。main.go 预创建与 app.go 动态重建/调整时共用，保证两处尺寸一致。
 const (
@@ -49,3 +63,7 @@ const (
 	fileInfoWindowMinH   = 240
 	fileInfoWindowMaxH   = 700
 )
+
+// 独立浮动窗口（新建下载与进度窗口）在轻量模式下的闲置销毁宽限期。
+// 连续操作期间保持热备秒开；空闲超过此宽限期且无活动任务时才在后台安全销毁 WebView 渲染进程。
+const windowIdleDestroyGracePeriod = 60 * time.Second

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import * as task from '../bindings/sheep-get/internal/task/models';
 import {
@@ -33,10 +33,12 @@ import {
   X,
 } from 'lucide-react';
 import { useSettingsStore, initSettingsListener } from './stores/settings';
-import { SettingsPanel } from './components/SettingsPanel';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
 import { matchTaskCategory } from './lib/category';
+const SettingsPanel = lazy(() =>
+  import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })),
+);
 
 function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
   return (list || []).filter((t): t is task.Task => t !== null);
@@ -703,7 +705,9 @@ export function App() {
         {/* Main Content Area */}
         <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-3">
           {filter === 'settings' ? (
-            <SettingsPanel />
+            <Suspense fallback={null}>
+              <SettingsPanel />
+            </Suspense>
           ) : filteredTasks.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 10 }}
