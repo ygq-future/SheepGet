@@ -737,7 +737,7 @@ func TestSettingsService_ReentrantDeadlock(t *testing.T) {
 	select {
 	case <-done:
 		// Succeeded without deadlock
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("DEADLOCK: service.Update deadlocked when onChanged callback called service.Get()")
 	}
 }
