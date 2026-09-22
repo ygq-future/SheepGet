@@ -433,6 +433,7 @@ export default function App() {
                       display: 'flex',
                       alignItems: 'center',
                       gap: '6px',
+                      minWidth: 0,
                     }}
                   >
                     <span
@@ -447,6 +448,8 @@ export default function App() {
                         color: item.isHls ? '#c084fc' : '#34d399',
                         textTransform: 'uppercase',
                         letterSpacing: '0.02em',
+                        flexShrink: 0,
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       {item.isHls ? 'HLS' : '直链'}
@@ -460,6 +463,8 @@ export default function App() {
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
+                        flex: 1,
+                        minWidth: 0,
                       }}
                     >
                       {item.filename}
