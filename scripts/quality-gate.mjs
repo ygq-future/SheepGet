@@ -159,7 +159,7 @@ const stages = {
     try {
       run('go', ['build', '-mod=readonly', '-o', target, '.']);
     } finally {
-      rmSync('build/bin', { recursive: true, force: true });
+      rmSync(target, { force: true });
     }
   },
   infrastructure() {
