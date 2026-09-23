@@ -80,28 +80,28 @@ const SETTINGS_TABS: TabMeta[] = [
     label: '常规',
     icon: Sliders,
     title: '常规与系统',
-    description: '开机启动、剪贴板监控与本地存储模式',
+    description: '开机启动、剪贴板监听与存储模式',
   },
   {
     id: 'appearance',
     label: '外观',
     icon: Palette,
     title: '外观与个性化',
-    description: '界面主题明暗与品牌高亮强调色',
+    description: '界面明暗主题与品牌高亮强调色',
   },
   {
     id: 'download',
     label: '下载',
     icon: Zap,
     title: '下载与网络',
-    description: '存储路径、传输并发性能、下载策略与网络代理',
+    description: '路径、并发性能、下载策略与网络代理',
   },
   {
     id: 'rules',
     label: '接管与规则',
     icon: FolderTree,
     title: '接管与分类规则',
-    description: '浏览器扩展通信、页面接管控制与自动分类保存规则',
+    description: '扩展通信、页面接管与分类规则',
   },
 ];
 
@@ -1169,21 +1169,23 @@ export function SettingsPanel() {
   return (
     <div className="flex h-full w-full min-w-0 flex-col font-sans">
       {/* Dynamic Header & Tab Navigation */}
-      <div className="mb-5 flex items-center justify-between border-b border-[var(--border-subtle)] pb-4">
-        <div>
+      <div className="mb-4 flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-3">
+        <div className="min-w-0 flex-1">
           <h2 className="text-base font-semibold text-[var(--text-primary)]">
             {currentTabMeta.title}
           </h2>
-          <p className="mt-0.5 text-xs text-[var(--text-muted)]">{currentTabMeta.description}</p>
+          <p className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
+            {currentTabMeta.description}
+          </p>
         </div>
 
         {/* Tab Navigation with smooth motion pill and accent color */}
-        <div className="flex flex-wrap gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 shadow-xs">
+        <div className="flex shrink-0 items-center gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1 shadow-xs">
           {SETTINGS_TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              className="group relative flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors select-none"
+              className="group relative flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors select-none"
             >
               {activeTab === id && (
                 <motion.div
@@ -1193,7 +1195,7 @@ export function SettingsPanel() {
                 />
               )}
               <span
-                className={`relative z-10 flex items-center gap-1.5 transition-colors ${
+                className={`relative z-10 flex items-center gap-1 transition-colors ${
                   activeTab === id
                     ? 'font-semibold text-[var(--accent)]'
                     : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
@@ -1212,10 +1214,7 @@ export function SettingsPanel() {
         {activeTab === 'general' && (
           <div className="space-y-5">
             <SettingSection title="系统行为" description="桌面启动常驻与系统剪贴板监听">
-              <SettingRow
-                label="开机自动启动"
-                description="开机登录系统时自动启动并在后台托盘就绪。关闭主窗口后常驻托盘，可在托盘右键彻底退出。"
-              >
+              <SettingRow label="开机自动启动" description="开机登录时自动启动并在后台托盘就绪">
                 <Switch
                   checked={general.launchAtStartup}
                   onCheckedChange={(checked) => {
@@ -1223,10 +1222,7 @@ export function SettingsPanel() {
                   }}
                 />
               </SettingRow>
-              <SettingRow
-                label="静默启动"
-                description="启动应用时不自动显示主窗口，仅在系统托盘静默就绪"
-              >
+              <SettingRow label="静默启动" description="启动时不显示主窗口，仅托盘就绪">
                 <Switch
                   checked={general.silentStartup}
                   onCheckedChange={(checked) => {
@@ -1235,10 +1231,7 @@ export function SettingsPanel() {
                 />
               </SettingRow>
 
-              <SettingRow
-                label="轻量模式"
-                description="主窗口关闭或隐藏时销毁 UI 渲染进程以释放内存，唤起主窗口时按需重建"
-              >
+              <SettingRow label="轻量模式" description="主窗口关闭时释放渲染进程内存">
                 <Switch
                   checked={general.lightweightMode}
                   onCheckedChange={(checked) => {
@@ -1247,10 +1240,7 @@ export function SettingsPanel() {
                 />
               </SettingRow>
 
-              <SettingRow
-                label="监视剪贴板链接"
-                description="复制匹配下载分类后缀的文件下载链接时，自动弹出新建任务确认窗口"
-              >
+              <SettingRow label="监视剪贴板链接" description="复制支持的文件链接时自动弹出新建任务">
                 <Switch
                   checked={clipboardConfig.enabled}
                   onCheckedChange={(checked) => {
@@ -1340,17 +1330,18 @@ export function SettingsPanel() {
               </div>
             </SettingSection>
 
-            <SettingSection
-              title="强调色"
-              description="用于高亮按钮、进度条指示与焦点的品牌强调颜色"
-            >
-              <SettingRow
-                label="主题强调色"
-                description="从精选预设色板中挑选，或自由指定 Hex 颜色代码"
-              >
-                <div className="flex flex-wrap items-center gap-2">
+            <SettingSection title="强调色" description="按钮、进度条指示与焦点的品牌强调颜色">
+              <div className="space-y-3 p-4 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40">
+                <div>
+                  <div className="font-medium text-[var(--text-primary)]">主题强调色</div>
+                  <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                    精选预设色彩或输入自定义 Hex 颜色
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
                   {/* Preset Swatches */}
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     {PRESET_ACCENTS.map((preset) => {
                       const isSelected =
                         appearance.accentColor?.toLowerCase() === preset.hex.toLowerCase();
@@ -1435,7 +1426,7 @@ export function SettingsPanel() {
                     </div>
                   </div>
                 </div>
-              </SettingRow>
+              </div>
             </SettingSection>
           </div>
         )}
@@ -1445,7 +1436,7 @@ export function SettingsPanel() {
           <div className="space-y-5">
             <SettingSection
               title="存储路径"
-              description="本地下载目标与分块临时缓存目录"
+              description="下载保存位置与分块缓存目录"
               action={
                 <Button
                   variant="secondary"
@@ -1458,8 +1449,8 @@ export function SettingsPanel() {
                 </Button>
               }
             >
-              <SettingRow label="默认保存位置" description="新建下载任务时默认使用的本地存储路径">
-                <div className="flex max-w-md min-w-[280px] items-center gap-1.5">
+              <SettingRow label="默认保存位置" description="新建任务时的默认本地存储路径">
+                <div className="flex max-w-sm min-w-[200px] flex-1 items-center gap-1.5">
                   <Input
                     type="text"
                     value={dirInput}
@@ -1486,11 +1477,8 @@ export function SettingsPanel() {
                 </div>
               </SettingRow>
 
-              <SettingRow
-                label="临时缓存目录"
-                description="分块下载与未完成数据的临时暂存路径，下载完成后自动安全转存"
-              >
-                <div className="flex max-w-md min-w-[280px] items-center gap-1.5">
+              <SettingRow label="临时缓存目录" description="分块下载临时暂存路径，完成后自动转存">
+                <div className="flex max-w-sm min-w-[200px] flex-1 items-center gap-1.5">
                   <Input
                     type="text"
                     value={tempDirInput}
@@ -1521,7 +1509,7 @@ export function SettingsPanel() {
             <SettingSection title="传输并发性能" description="并发调度上限与多连接分块参数">
               <SettingRow
                 label="全局并发任务上限"
-                description="同时处于下载传输状态的最大任务数 (1 ~ 32)"
+                description="同时处于传输状态的最大任务数 (1 ~ 32)"
               >
                 <div className="flex w-52 items-center gap-3">
                   <div className="flex-1">
@@ -1540,7 +1528,7 @@ export function SettingsPanel() {
 
               <SettingRow
                 label="单任务分块连接数"
-                description="支持多线程分块下载时的默认连接数 (1 ~ 32)"
+                description="多连接分块下载的默认线程数 (1 ~ 32)"
               >
                 <div className="flex w-52 items-center gap-3">
                   <div className="flex-1">
@@ -1559,10 +1547,7 @@ export function SettingsPanel() {
             </SettingSection>
 
             <SettingSection title="下载策略与反馈" description="重复任务、提前下载与进度窗口行为">
-              <SettingRow
-                label="重复链接处理策略"
-                description="检测到已存在相同 URL 任务时的全局默认行为"
-              >
+              <SettingRow label="重复链接处理策略" description="已存在相同链接任务时的默认处理方式">
                 <div className="w-48">
                   <Select
                     value={
@@ -1592,10 +1577,7 @@ export function SettingsPanel() {
                 </div>
               </SettingRow>
 
-              <SettingRow
-                label="提前下载"
-                description="打开新建确认窗口时立即在后台发起连接并下载数据"
-              >
+              <SettingRow label="提前下载" description="新建任务确认时立即在后台发起连接下载">
                 <Switch
                   checked={!!download.preDownload}
                   onCheckedChange={(checked) => void handlePreDownloadChange(checked)}
@@ -1604,7 +1586,7 @@ export function SettingsPanel() {
 
               <SettingRow
                 label="使用服务器修改时间"
-                description="下载完成后将本地文件修改时间设置为服务器提供的修改时间，未提供则使用完成时间"
+                description="下载完成后同步服务器的文件修改时间"
               >
                 <Switch
                   checked={!!download.useServerFileTime}
@@ -1614,7 +1596,7 @@ export function SettingsPanel() {
 
               <SettingRow
                 label="自动显示下载进度窗口"
-                description="开始下载任务时自动唤起共享下载进度悬浮窗口"
+                description="开始下载任务时自动弹出进度悬浮窗口"
               >
                 <Switch
                   checked={download.showProgressWindow ?? true}
@@ -1622,10 +1604,7 @@ export function SettingsPanel() {
                 />
               </SettingRow>
 
-              <SettingRow
-                label="保留完成信息"
-                description="任务下载完成后在进度窗口顶部保留该条完成记录与操作"
-              >
+              <SettingRow label="保留完成信息" description="下载完成后在进度窗口保留完成记录">
                 <Switch
                   checked={download.keepCompletedInfo ?? true}
                   onCheckedChange={(checked) => void handleKeepCompletedInfoChange(checked)}
@@ -1634,7 +1613,7 @@ export function SettingsPanel() {
 
               <SettingRow
                 label="打开后自动移除完成信息"
-                description="在进度窗口点击打开文件或文件夹后，自动移除该条完成信息"
+                description="打开文件或文件夹后自动移除该完成记录"
               >
                 <Switch
                   checked={!!download.autoRemoveCompletedOnOpen}
@@ -1644,11 +1623,8 @@ export function SettingsPanel() {
             </SettingSection>
 
             {/* Network Proxy Integrated Section */}
-            <SettingSection
-              title="网络代理"
-              description="配置客户端下载与元数据探测的网络代理，新任务及继续任务将应用最新设置"
-            >
-              <SettingRow label="代理模式" description="选择直连、遵循系统代理或手动指定代理服务器">
+            <SettingSection title="网络代理" description="配置客户端下载与元数据探测的网络代理">
+              <SettingRow label="代理模式" description="选择直连、遵循系统代理或手动指定代理">
                 <div className="w-52">
                   <Select
                     value={selectedProxyMode}
@@ -1677,7 +1653,7 @@ export function SettingsPanel() {
               {selectedProxyMode === configModels.ProxyMode.ProxyModeCustom && (
                 <SettingRow
                   label="自定义代理地址"
-                  description="支持 HTTP/HTTPS 代理及 SOCKS5 代理 (如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080)"
+                  description="支持 HTTP/HTTPS 与 SOCKS5 代理协议"
                   align="top"
                 >
                   <div className="flex flex-col items-end gap-1.5">
@@ -1726,7 +1702,7 @@ export function SettingsPanel() {
             >
               <div className="space-y-3 p-4">
                 <div className="flex items-center justify-between gap-2.5">
-                  <div className="text-xs font-semibold text-[var(--text-primary)]">
+                  <div className="shrink-0 text-xs font-semibold text-[var(--text-primary)]">
                     配套扩展快速安装
                   </div>
                   <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -1734,7 +1710,7 @@ export function SettingsPanel() {
                       variant="secondary"
                       size="sm"
                       onClick={() => void handleOpenExtensionFolder()}
-                      className="h-7 gap-1.5 px-2.5 text-xs font-medium"
+                      className="h-7 gap-1 px-2 text-xs font-medium"
                       title="在系统文件管理器中打开并高亮扩展文件夹"
                     >
                       <FolderOpen className="h-3.5 w-3.5" />
@@ -1744,21 +1720,21 @@ export function SettingsPanel() {
                       variant="secondary"
                       size="sm"
                       onClick={() => void handlePrepareExtensionPage('chrome')}
-                      className="h-7 gap-1.5 px-2 text-xs"
+                      className="h-7 gap-1 px-2 text-xs"
                       title="唤起 Chrome，并把扩展管理页地址写入剪贴板"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
-                      <span>打开 Chrome 并复制地址</span>
+                      <span>Chrome 扩展</span>
                     </Button>
                     <Button
                       variant="secondary"
                       size="sm"
                       onClick={() => void handlePrepareExtensionPage('edge')}
-                      className="h-7 gap-1.5 px-2 text-xs"
+                      className="h-7 gap-1 px-2 text-xs"
                       title="唤起 Edge，并把扩展管理页地址写入剪贴板"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
-                      <span>打开 Edge 并复制地址</span>
+                      <span>Edge 扩展</span>
                     </Button>
                   </div>
                 </div>
@@ -1772,26 +1748,26 @@ export function SettingsPanel() {
                   </div>
                   <ol className="list-inside list-decimal space-y-1 pl-0.5 leading-relaxed text-[var(--text-secondary)]">
                     <li>
-                      点击「<strong>打开 Chrome 并复制地址</strong>」，到浏览器地址栏按{' '}
-                      <strong>Ctrl+V</strong>、<strong>回车</strong>进入扩展管理页，开启右上角「
+                      点击「<strong>Chrome / Edge 扩展</strong>」，到地址栏按{' '}
+                      <strong>Ctrl+V</strong>、<strong>回车</strong>并在扩展页开启「
                       <strong>开发者模式</strong>」。
                     </li>
                     <li>
                       点击「<strong>定位扩展目录</strong>」，系统将自动打开并高亮配套扩展文件夹。
                     </li>
                     <li>
-                      将高亮的扩展文件夹直接<strong>拖入浏览器扩展页面</strong>，即可完成加载。
+                      将高亮的扩展文件夹直接<strong>拖入浏览器扩展页面</strong>完成加载。
                     </li>
                   </ol>
                   <p className="pl-0.5 leading-relaxed text-[var(--text-muted)]">
-                    扩展管理页属于浏览器特权页面，只能由用户在地址栏粘贴进入，程序无法代为打开。
+                    扩展管理页属于浏览器特权页面，需在地址栏粘贴进入，程序无法直接打开。
                   </p>
                 </div>
               </div>
 
               <SettingRow
                 label="本地 HTTP 服务端口"
-                description="浏览器扩展通信监听端口（默认 9248，修改后点击重启服务立即生效）"
+                description="扩展通信监听端口，默认 9248，修改后需重启"
               >
                 <div className="flex items-center gap-2">
                   <Input
@@ -1814,16 +1790,19 @@ export function SettingsPanel() {
                 </div>
               </SettingRow>
 
-              <SettingRow
-                label="排除页面站点"
-                description="以下站点及其子域名中发起的下载保留在浏览器中进行，不触发自动接管"
-                align="top"
-              >
-                <div className="flex max-w-sm flex-wrap items-center justify-end gap-1.5">
+              <div className="space-y-2.5 p-4 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40">
+                <div>
+                  <div className="font-medium text-[var(--text-primary)]">排除页面站点</div>
+                  <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                    指定站点及其子域名不触发自动接管，保留浏览器下载
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
                   {(takeover.excludedSites || []).map((site) => (
                     <span
                       key={site}
-                      className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                      className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
                     >
                       <span>{site}</span>
                       <button
@@ -1838,7 +1817,7 @@ export function SettingsPanel() {
                   ))}
 
                   {isAddingExcludedSite ? (
-                    <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+                    <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-2 py-0.5">
                       <input
                         autoFocus
                         type="text"
@@ -1854,7 +1833,7 @@ export function SettingsPanel() {
                         }}
                         onBlur={() => void handleCommitNewExcludedSite()}
                         placeholder="如 *.github.com"
-                        className="w-28 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                        className="w-32 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
                       />
                     </span>
                   ) : (
@@ -1864,20 +1843,20 @@ export function SettingsPanel() {
                         setIsAddingExcludedSite(true);
                         setNewExcludedSiteVal('');
                       }}
-                      className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                      className="inline-flex items-center gap-1 rounded-md border border-dashed border-[var(--border-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
                     >
                       <Plus className="h-3 w-3" />
                       <span>添加站点</span>
                     </button>
                   )}
                 </div>
-              </SettingRow>
+              </div>
 
-              <SettingRow label="临时接管快捷键" description="按住按键临时改变接管策略，松开即恢复">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5">
+              <SettingRow label="临时接管快捷键" description="按住按键临时反转接管策略，松开恢复">
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1">
                     <span className="text-[11px] text-[var(--text-muted)]">暂停:</span>
-                    <div className="w-32">
+                    <div className="w-28">
                       <Select
                         value={takeover.pauseShortcut || 'Delete'}
                         onChange={(val) => void handlePauseShortcutChange(val)}
@@ -1885,9 +1864,9 @@ export function SettingsPanel() {
                       />
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1">
                     <span className="text-[11px] text-[var(--text-muted)]">强制:</span>
-                    <div className="w-32">
+                    <div className="w-28">
                       <Select
                         value={takeover.forceShortcut || 'Insert'}
                         onChange={(val) => void handleForceShortcutChange(val)}
