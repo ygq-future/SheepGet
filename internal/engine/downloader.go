@@ -362,11 +362,20 @@ func extractFilenameFromURL(urlStr string) string {
 	return DefaultFilename
 }
 
-// ProgressFunc reports updated downloaded bytes.
-type ProgressFunc func(downloaded int64, chunkIndex int, chunkDownloaded int64)
+// TransferSink 是一次传输期间的唯一对外出口。
+//
+// 传输期间任务的可变对象只属于传输侧：分片在工作协程里持续被改写，而对外读它的地方（落盘、
+// 事件广播）会在另一条 goroutine 上序列化整个结构——共享同一个对象就是一次真正的数据竞争。
+// 因此对外发布的一律是自有副本：调用方先问「要不要」，传输侧再在自己的锁内拷一份交出去。
+type TransferSink interface {
+	// WantsSnapshot 报告调用方此刻是否需要一份快照；节流节奏由调用方决定，这里只回答是与否。
+	WantsSnapshot() bool
+	// PublishSnapshot 接收一份此后不会再被改写的任务副本，由调用方决定落盘与广播的时机。
+	PublishSnapshot(*task.Task)
+}
 
 // Download executes download for a task, handling single-connection or multi-connection range download.
-func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, onProgress ProgressFunc) error {
+func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, sink TransferSink) error {
 	destPath := filepath.Join(t.Directory, t.Filename)
 	partPath := d.GetPartPath(t)
 
@@ -381,13 +390,26 @@ func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, onProgress 
 
 	// If the resource is not resumable or total size is unknown, fallback to single-stream download
 	if !t.Resumable || t.TotalBytes <= 0 {
-		return d.downloadSingleStream(ctx, t, partPath, destPath, onProgress, client)
+		return d.downloadSingleStream(ctx, t, partPath, destPath, sink, client)
 	}
 
-	return d.downloadChunks(ctx, t, partPath, destPath, onProgress, client)
+	return d.downloadChunks(ctx, t, partPath, destPath, sink, client)
 }
 
-func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc, client *http.Client) error {
+// publishProgress 把当前进度作为一份自有副本交给调用方。它只在传输侧独占任务对象时调用：
+// 单流路径的读写都在同一协程上，分片路径则必须持有 coord.mu（见 publishLocked）。
+func publishProgress(t *task.Task, downloaded int64, sink TransferSink) {
+	if sink == nil {
+		return
+	}
+	t.Downloaded = downloaded
+	if !sink.WantsSnapshot() {
+		return
+	}
+	sink.PublishSnapshot(t.Clone())
+}
+
+func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, sink TransferSink, client *http.Client) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
 	if err != nil {
@@ -430,9 +452,7 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 				return wErr
 			}
 			downloaded += int64(n)
-			if onProgress != nil {
-				onProgress(downloaded, 0, downloaded)
-			}
+			publishProgress(t, downloaded, sink)
 		}
 		if rErr != nil {
 			if errors.Is(rErr, io.EOF) {
@@ -481,23 +501,28 @@ type chunkTracker struct {
 
 type chunkCoordinator struct {
 	mu         sync.Mutex
-	progressMu sync.Mutex
 	t          *task.Task
 	file       *os.File
 	fileMu     sync.Mutex
 	totalDown  int64
 	trackers   map[int]*chunkTracker
-	onProgress ProgressFunc
+	sink       TransferSink
 	downloader *HTTPDownloader
 	client     *http.Client
 }
 
-func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, client *http.Client, onProgress ProgressFunc) *chunkCoordinator {
+// publishLocked 在持锁状态下把当前进度交出去。必须在持有 coord.mu 时调用：快照要与分片状态
+// 取自同一时刻，否则交出去的就是一份内部互相矛盾的分片列表。
+func (coord *chunkCoordinator) publishLocked(downloaded int64) {
+	publishProgress(coord.t, downloaded, coord.sink)
+}
+
+func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, client *http.Client, sink TransferSink) *chunkCoordinator {
 	coord := &chunkCoordinator{
 		t:          t,
 		file:       file,
 		trackers:   make(map[int]*chunkTracker),
-		onProgress: onProgress,
+		sink:       sink,
 		downloader: downloader,
 		client:     client,
 	}
@@ -882,11 +907,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 			}
 			done := chunk.Completed
 
-			if coord.onProgress != nil {
-				coord.progressMu.Lock()
-				coord.onProgress(currTotal, chunkIdx, chunk.Downloaded)
-				coord.progressMu.Unlock()
-			}
+			coord.publishLocked(currTotal)
 
 			coord.mu.Unlock()
 
@@ -912,7 +933,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	return nil
 }
 
-func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, onProgress ProgressFunc, client *http.Client) error {
+func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partPath, destPath string, sink TransferSink, client *http.Client) error {
 	if t.MaxConcurrency <= 0 {
 		d.mu.RLock()
 		t.MaxConcurrency = d.defaultConcurrency
@@ -931,7 +952,7 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 		return fmt.Errorf("failed to truncate part file: %w", err)
 	}
 
-	coord := newChunkCoordinator(t, file, d, client, onProgress)
+	coord := newChunkCoordinator(t, file, d, client, sink)
 
 	numWorkers := t.MaxConcurrency
 	if int64(numWorkers) > t.TotalBytes/MinChunkSize && t.TotalBytes < MinChunkSize*2 {

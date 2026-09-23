@@ -271,7 +271,7 @@ func (m *Manager) removeSegmentDir(t *task.Task) {
 //
 // 断点续传按分片粒度实现（见 hls.Download）：暂停后继续、处理失败重试、重启后继续都只补
 // 缺失的分片，已经完整落盘的分片不会再取一遍。
-func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, onProgress ProgressFunc) (*hls.Inputs, error) {
+func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, sink TransferSink) (*hls.Inputs, error) {
 	if t.Media == nil {
 		return nil, errors.New("任务缺少 HLS 来源")
 	}
@@ -330,13 +330,13 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, onProgress P
 			copy(segmentDone[base:base+len(done)], done)
 			t.SegmentsTotal = totalSegments
 			t.SegmentsDone = segmentsDone + completed
-			if downloaded <= reported {
-				return
+			if downloaded > reported {
+				reported = downloaded
 			}
-			reported = downloaded
-			if onProgress != nil {
-				onProgress(reported, completed, reported)
-			}
+			// 这里由清单的分片工作协程调用，且被 hls 侧的锁串行化：任务对象此刻没有第二个
+			// 写方，因此可以直接按当前状态取一份自有副本交出去。字节数没有前进时也要汇报——
+			// 分片计数在变，界面靠它显示「分片 N/M」。
+			publishProgress(t, reported, sink)
 		})
 		segmentsDone += len(pl.Segments)
 		if part != nil {

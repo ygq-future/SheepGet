@@ -103,6 +103,30 @@ func (t *Task) IsHLS() bool {
 	return t != nil && t.Media != nil
 }
 
+// Clone returns a copy that shares nothing mutable with the original: the slices written during
+// a transfer (Chunks, SegmentDone) and the request credentials are duplicated.
+//
+// 传输期间任务对象仍在被改写（分片由工作协程并发更新），而持久化与事件广播都会读出整个结构，
+// 因此跨模块交出任务之前一律先 Clone：调用方拿到的是自有副本，此后谁也改不动它。
+func (t *Task) Clone() *Task {
+	if t == nil {
+		return nil
+	}
+	cloned := *t
+	if len(t.Chunks) > 0 {
+		cloned.Chunks = make([]Chunk, len(t.Chunks))
+		copy(cloned.Chunks, t.Chunks)
+	}
+	if len(t.SegmentDone) > 0 {
+		cloned.SegmentDone = make([]bool, len(t.SegmentDone))
+		copy(cloned.SegmentDone, t.SegmentDone)
+	}
+	if t.RequestHeaders != nil {
+		cloned.RequestHeaders = t.RequestHeaders.Clone()
+	}
+	return &cloned
+}
+
 // TaskStore defines the storage interface for persisting and querying tasks.
 type TaskStore interface {
 	Save(ctx context.Context, t *Task) error

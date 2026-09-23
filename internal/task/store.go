@@ -103,16 +103,8 @@ func (s *FileTaskStore) Save(_ context.Context, t *Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Clone task to avoid data race
-	cloned := *t
-	if len(t.Chunks) > 0 {
-		cloned.Chunks = make([]Chunk, len(t.Chunks))
-		copy(cloned.Chunks, t.Chunks)
-	}
-	if t.RequestHeaders != nil {
-		cloned.RequestHeaders = t.RequestHeaders.Clone()
-	}
-	s.tasks[t.ID] = &cloned
+	// 存进来的是调用方的对象，它之后还可能被改写；库里只放副本。
+	s.tasks[t.ID] = t.Clone()
 	return s.persistLocked()
 }
 
@@ -124,11 +116,7 @@ func (s *FileTaskStore) Get(_ context.Context, id string) (*Task, error) {
 	if !exists {
 		return nil, ErrTaskNotFound
 	}
-	cloned := *t
-	if t.RequestHeaders != nil {
-		cloned.RequestHeaders = t.RequestHeaders.Clone()
-	}
-	return &cloned, nil
+	return t.Clone(), nil
 }
 
 func (s *FileTaskStore) List(_ context.Context) ([]*Task, error) {
@@ -137,11 +125,7 @@ func (s *FileTaskStore) List(_ context.Context) ([]*Task, error) {
 
 	list := make([]*Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
-		cloned := *t
-		if t.RequestHeaders != nil {
-			cloned.RequestHeaders = t.RequestHeaders.Clone()
-		}
-		list = append(list, &cloned)
+		list = append(list, t.Clone())
 	}
 
 	sort.SliceStable(list, func(i, j int) bool {

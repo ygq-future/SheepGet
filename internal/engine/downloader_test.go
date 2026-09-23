@@ -18,6 +18,20 @@ import (
 	"sheep-get/internal/task"
 )
 
+// countingSnapshotSink 统计发布次数：进度汇报的契约就是「每次交出一份自有副本」，
+// 因此这里只需要每次都说要、并在收到时记一笔。
+type countingSnapshotSink struct {
+	onSnapshot func()
+}
+
+func (s *countingSnapshotSink) WantsSnapshot() bool {
+	return true
+}
+
+func (s *countingSnapshotSink) PublishSnapshot(*task.Task) {
+	s.onSnapshot()
+}
+
 func TestHTTPDownloader_ProbeAndDownload(t *testing.T) {
 	// Prepare test payload
 	fileSize := 1024 * 1024 // 1MB
@@ -111,9 +125,8 @@ func TestHTTPDownloader_ProbeAndDownload(t *testing.T) {
 	}
 
 	var progressCalls int
-	err = downloader.Download(ctx, dlTask, func(downloaded int64, chunkIndex int, chunkDownloaded int64) {
-		progressCalls++
-	})
+	sink := &countingSnapshotSink{onSnapshot: func() { progressCalls++ }}
+	err = downloader.Download(ctx, dlTask, sink)
 	if err != nil {
 		t.Fatalf("Download failed: %v", err)
 	}

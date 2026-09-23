@@ -233,9 +233,22 @@ func (m *Manager) AddListener(l TaskListener) {
 	m.listeners = append(m.listeners, l)
 }
 
+// notify 广播一次任务变化。
+//
+// 交给监听者的一律是自有副本：事件载荷会被另一条 goroutine 序列化（Wails 的 mailbox 派发），
+// 而发出事件的这一方随后还会继续改写自己的任务对象（状态、错误信息、分片进度）。共享同一个
+// 对象就是一次数据竞争——监听者读到正在被改写的结构，还可能收到自相矛盾的载荷。
 func (m *Manager) notify(t *task.Task) {
+	m.notifyPayload(t.Clone())
+}
+
+// notifyPayload 广播一份已经确定不会再被改写的载荷；调用方负责保证这一点。
+func (m *Manager) notifyPayload(payload *task.Task) {
+	if payload == nil {
+		return
+	}
 	for _, l := range m.listeners {
-		l.OnTaskUpdated(t)
+		l.OnTaskUpdated(payload)
 	}
 }
 
@@ -1332,40 +1345,19 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	_ = m.store.Save(bgCtx, t)
 	m.notify(t)
 
-	var lastSavedDownloaded int64
-	var lastSaveTime time.Time
-	var lastNotifyTime time.Time
-
-	progressCb := func(downloaded int64, chunkIndex int, chunkDownloaded int64) {
-		m.mu.Lock()
-		delta := downloaded - t.Downloaded
-		if delta > 0 {
-			m.speedSamples[taskID] += delta
-		}
-		t.Downloaded = downloaded
-		t.Speed = m.taskSpeed[taskID]
-		m.mu.Unlock()
-
-		now := time.Now()
-		// Throttle persistence to disk (at most once every 500ms or 1MB)
-		if now.Sub(lastSaveTime) > 500*time.Millisecond || (downloaded-lastSavedDownloaded) > 1024*1024 {
-			lastSaveTime = now
-			lastSavedDownloaded = downloaded
-			_ = m.store.Save(bgCtx, t)
-		}
-
-		// Throttle UI progress notifications to ~16 FPS (60ms) to ensure smooth reorder animations
-		if now.Sub(lastNotifyTime) >= 60*time.Millisecond {
-			lastNotifyTime = now
-			m.notify(t)
-		}
-	}
+	sink := newProgressSink(bgCtx, m, taskID)
 
 	// TransferDone 是「分片已经全部就绪」这一事实的记录。处理失败重试时它让任务直接进入
 	// 处理阶段，不必再为取一次清单把网络走一遍（ADR-0004：两条失败路径各自恢复）。
 	var transferErr error
 	if !t.TransferDone {
-		transferErr = m.runTransfer(ctx, t, progressCb)
+		// 传输期间任务的可变对象只属于传输侧：交出去的是工作副本，这里手上的那份不再被改写，
+		// 所有对外发布都经 sink 走副本。传输结束后以工作副本为准合并——分片进度、ETag、
+		// 大小这些由传输侧写出的全部事实都在里面，因此失败与暂停路径保存的也是最新状态，
+		// 断点续传不受影响。
+		work := t.Clone()
+		transferErr = m.runTransfer(ctx, work, sink)
+		*t = *work
 		if transferErr == nil {
 			t.TransferDone = true
 			_ = m.store.Save(bgCtx, t)
@@ -1440,11 +1432,12 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 }
 
 // runTransfer 执行任务的传输阶段：HLS 任务下载分片，其余任务走 HTTP 传输。
-func (m *Manager) runTransfer(ctx context.Context, t *task.Task, onProgress ProgressFunc) error {
+// t 是这次传输的工作副本，sink 是它对外发布的唯一出口。
+func (m *Manager) runTransfer(ctx context.Context, t *task.Task, sink TransferSink) error {
 	if !t.IsHLS() {
-		return m.downloader.Download(ctx, t, onProgress)
+		return m.downloader.Download(ctx, t, sink)
 	}
-	inputs, err := m.runHLSTransfer(ctx, t, onProgress)
+	inputs, err := m.runHLSTransfer(ctx, t, sink)
 	if err != nil {
 		return err
 	}
