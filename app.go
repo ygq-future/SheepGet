@@ -17,6 +17,7 @@ import (
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	appevents "sheep-get/internal/events"
+	"sheep-get/internal/logging"
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/sys"
@@ -24,6 +25,7 @@ import (
 	"sheep-get/internal/window"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,6 +58,8 @@ type App struct {
 	progressAlwaysOnTop bool
 	clipboardWatcher    *clipboard.Watcher
 	loopbackServer      *server.Server
+	logger              atomic.Pointer[logging.Logger]
+	logError            error
 	windowTimerLock     sync.Mutex
 	fileInfoTimer       *time.Timer
 	progressTimer       *time.Timer
@@ -65,6 +69,53 @@ type App struct {
 type wailsWindowView struct {
 	app  *App
 	name string
+}
+
+// log 返回日志出口；尚未接上日志（测试直接构造 App）时丢弃日志。
+func (a *App) log() *logging.Logger {
+	if logger := a.logger.Load(); logger != nil {
+		return logger
+	}
+	return logging.Discard()
+}
+
+// applyLogging 按设置开关日志文件。默认关闭：关闭时不打开、不创建文件；开启时按需打开，
+// 并把出口换到引擎上。打开失败（目录只读、磁盘满）只影响日志，不影响下载。
+//
+// 出口用原子指针存放：开关随用户操作在设置线程上切换，而读它的地方分散在启动、退出与
+// 环回服务的回调里，不该靠「谁先谁后」来保证不出竞争。
+func (a *App) applyLogging(enabled bool) {
+	current := a.logger.Load()
+	if !enabled {
+		if current != nil && current.Path() != "" {
+			_ = current.Close()
+		}
+		a.logger.Store(logging.Discard())
+		a.logError = nil
+		if a.manager != nil {
+			a.manager.SetLogger(logging.Discard().Logger)
+		}
+		return
+	}
+
+	if current != nil && current.Path() != "" {
+		return // 已经在记录
+	}
+	if a.storage == nil {
+		return
+	}
+
+	logger, err := logging.New(a.storage.LogsDir())
+	if err != nil {
+		a.logError = err
+		fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", err)
+		return
+	}
+	a.logger.Store(logger)
+	a.logError = nil
+	if a.manager != nil {
+		a.manager.SetLogger(logger.Logger)
+	}
 }
 
 func (w *wailsWindowView) Show() {
@@ -188,6 +239,19 @@ func NewApp() *App {
 	})
 	app.manager = mgr
 
+	// 日志默认关闭：正常使用不落盘，只有打开开关才写文件（写不出来时降级为丢弃，不拦下载）。
+	app.applyLogging(activeSettings.General.EnableLogging)
+	startupFields := []any{
+		"mode", string(storeDir.Mode),
+		"dataDir", storeDir.DataDir,
+		"log", app.log().Path(),
+	}
+	logger := app.log()
+	if logErr := app.logError; logErr != nil {
+		startupFields = append(startupFields, "logError", logErr.Error())
+	}
+	logger.Info("应用启动", startupFields...)
+
 	winView := &wailsWindowView{
 		app:  app,
 		name: winNameFileInfo,
@@ -246,9 +310,11 @@ func (a *App) startup(ctx context.Context) {
 	a.manager.AddListener(a)
 	if a.loopbackServer != nil {
 		if err := a.loopbackServer.Start(); err != nil {
+			a.log().Warn("环回服务启动失败", "error", err.Error())
 			fmt.Fprintf(os.Stderr, "failed to start loopback server: %v\n", err)
 		} else {
 			actualPort := a.loopbackServer.Port()
+			a.log().Info("环回服务已启动", "port", actualPort)
 			if actualPort > 0 && a.settings != nil {
 				st := a.settings.Get()
 				if st.General.ServerPort != actualPort {
@@ -262,6 +328,7 @@ func (a *App) startup(ctx context.Context) {
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
 func (a *App) Shutdown() {
+	a.log().Info("应用退出")
 	if a.clipboardWatcher != nil {
 		a.clipboardWatcher.Stop()
 	}
@@ -276,6 +343,7 @@ func (a *App) Shutdown() {
 	}
 	a.cancelWindowIdleDestroy(winNameFileInfo)
 	a.cancelWindowIdleDestroy(winNameProgress)
+	_ = a.log().Close()
 }
 
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
@@ -302,6 +370,9 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		if err := a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr); err != nil {
 			return err
 		}
+	}
+	if s != nil {
+		a.applyLogging(s.General.EnableLogging)
 	}
 	if a.loopbackServer != nil && s != nil {
 		a.loopbackServer.BroadcastTakeoverConfig(takeoverSyncFromSettings(s))
@@ -575,7 +646,17 @@ func (a *App) ScanCleanup(opts engine.CleanupScanOptions) (*engine.CleanupScanRe
 	if a.manager == nil {
 		return nil, fmt.Errorf("manager not initialized")
 	}
+	a.fillLogCleanupTarget(&opts.LogDir, &opts.ActiveLogPath)
 	return a.manager.ScanCleanup(a.ctx, opts)
+}
+
+// fillLogCleanupTarget 把「日志在哪、哪一份正在写」交给引擎：目录与存储模式由应用决定，
+// 「多旧算旧、哪些文件算日志」由引擎判定。
+func (a *App) fillLogCleanupTarget(dir *string, active *string) {
+	if a.storage != nil {
+		*dir = a.storage.LogsDir()
+	}
+	*active = a.log().Path()
 }
 
 // ExecuteCleanup executes deletion of selected cleanable items.
@@ -583,6 +664,7 @@ func (a *App) ExecuteCleanup(opts engine.CleanupExecuteOptions) (*engine.Cleanup
 	if a.manager == nil {
 		return nil, fmt.Errorf("manager not initialized")
 	}
+	a.fillLogCleanupTarget(&opts.LogDir, &opts.ActiveLogPath)
 	return a.manager.ExecuteCleanup(a.ctx, opts)
 }
 

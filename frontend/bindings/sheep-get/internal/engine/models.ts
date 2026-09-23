@@ -66,6 +66,13 @@ export class CleanupExecuteOptions {
     "deleteDuplicates": boolean;
     "deleteMissingTasks": boolean;
 
+    /**
+     * DeleteOldLogs 删除超过 OlderThanDays 的历史日志文件；正在写入的那一份始终保留。
+     */
+    "deleteOldLogs": boolean;
+    "logDir"?: string;
+    "activeLogPath"?: string;
+
     /** Creates a new CleanupExecuteOptions instance. */
     constructor($$source: Partial<CleanupExecuteOptions> = {}) {
         if (!("deleteOlderTasks" in $$source)) {
@@ -82,6 +89,9 @@ export class CleanupExecuteOptions {
         }
         if (!("deleteMissingTasks" in $$source)) {
             this["deleteMissingTasks"] = false;
+        }
+        if (!("deleteOldLogs" in $$source)) {
+            this["deleteOldLogs"] = false;
         }
 
         Object.assign(this, $$source);
@@ -134,6 +144,42 @@ export class CleanupExecuteResult {
 }
 
 /**
+ * CleanupLogFile 是一个可清理的历史日志文件。
+ */
+export class CleanupLogFile {
+    "path": string;
+    "name": string;
+    "size": number;
+    "modTime": string;
+
+    /** Creates a new CleanupLogFile instance. */
+    constructor($$source: Partial<CleanupLogFile> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("size" in $$source)) {
+            this["size"] = 0;
+        }
+        if (!("modTime" in $$source)) {
+            this["modTime"] = "0001-01-01T00:00:00.000Z";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupLogFile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): CleanupLogFile {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CleanupLogFile($$parsedSource as Partial<CleanupLogFile>);
+    }
+}
+
+/**
  * CleanupScanOptions specifies filters for scanning cleanable tasks and files.
  */
 export class CleanupScanOptions {
@@ -141,6 +187,14 @@ export class CleanupScanOptions {
     "deleteOlderDiskFiles": boolean;
     "checkDuplicates": boolean;
     "checkMissingFiles": boolean;
+
+    /**
+     * CheckOldLogs 打开后才扫描日志文件。LogDir 与 ActiveLogPath 由调用方给出：
+     * 引擎不猜数据目录长什么样，但「哪些文件算日志、多旧才算旧」这类规则留在引擎里统一判定。
+     */
+    "checkOldLogs": boolean;
+    "logDir"?: string;
+    "activeLogPath"?: string;
 
     /** Creates a new CleanupScanOptions instance. */
     constructor($$source: Partial<CleanupScanOptions> = {}) {
@@ -155,6 +209,9 @@ export class CleanupScanOptions {
         }
         if (!("checkMissingFiles" in $$source)) {
             this["checkMissingFiles"] = false;
+        }
+        if (!("checkOldLogs" in $$source)) {
+            this["checkOldLogs"] = false;
         }
 
         Object.assign(this, $$source);
@@ -178,6 +235,8 @@ export class CleanupScanResult {
     "duplicateGroups": CleanupDuplicateGroup[];
     "duplicateFilesBytes": number;
     "missingTasks": (task$0.Task | null)[];
+    "oldLogFiles": CleanupLogFile[];
+    "oldLogFilesBytes": number;
 
     /**
      * TotalCleanableTasks is the deduplicated count of tasks that would be removed.
@@ -211,6 +270,12 @@ export class CleanupScanResult {
         if (!("missingTasks" in $$source)) {
             this["missingTasks"] = [];
         }
+        if (!("oldLogFiles" in $$source)) {
+            this["oldLogFiles"] = [];
+        }
+        if (!("oldLogFilesBytes" in $$source)) {
+            this["oldLogFilesBytes"] = 0;
+        }
         if (!("totalCleanableTasks" in $$source)) {
             this["totalCleanableTasks"] = 0;
         }
@@ -231,6 +296,7 @@ export class CleanupScanResult {
         const $$createField0_0 = $$createType2;
         const $$createField2_0 = $$createType5;
         const $$createField4_0 = $$createType2;
+        const $$createField5_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("olderTasks" in $$parsedSource) {
             $$parsedSource["olderTasks"] = $$createField0_0($$parsedSource["olderTasks"]);
@@ -240,6 +306,9 @@ export class CleanupScanResult {
         }
         if ("missingTasks" in $$parsedSource) {
             $$parsedSource["missingTasks"] = $$createField4_0($$parsedSource["missingTasks"]);
+        }
+        if ("oldLogFiles" in $$parsedSource) {
+            $$parsedSource["oldLogFiles"] = $$createField5_0($$parsedSource["oldLogFiles"]);
         }
         return new CleanupScanResult($$parsedSource as Partial<CleanupScanResult>);
     }
@@ -323,9 +392,9 @@ export class HLSProbe {
      * Creates a new HLSProbe instance from a string or object.
      */
     static createFrom($$source: any = {}): HLSProbe {
-        const $$createField2_0 = $$createType7;
-        const $$createField3_0 = $$createType9;
-        const $$createField4_0 = $$createType11;
+        const $$createField2_0 = $$createType9;
+        const $$createField3_0 = $$createType11;
+        const $$createField4_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("variants" in $$parsedSource) {
             $$parsedSource["variants"] = $$createField2_0($$parsedSource["variants"]);
@@ -390,7 +459,7 @@ export class ProbeResult {
      */
     static createFrom($$source: any = {}): ProbeResult {
         const $$createField7_0 = $$createType1;
-        const $$createField8_0 = $$createType13;
+        const $$createField8_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
             $$parsedSource["duplicateTask"] = $$createField7_0($$parsedSource["duplicateTask"]);
@@ -409,11 +478,13 @@ const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = $Create.Array($Create.Any);
 const $$createType4 = CleanupDuplicateGroup.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = hls$0.Variant.createFrom;
+const $$createType6 = CleanupLogFile.createFrom;
 const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = hls$0.VariantOption.createFrom;
+const $$createType8 = hls$0.Variant.createFrom;
 const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = hls$0.Source.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = HLSProbe.createFrom;
+const $$createType10 = hls$0.VariantOption.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = hls$0.Source.createFrom;
 const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = HLSProbe.createFrom;
+const $$createType15 = $Create.Nullable($$createType14);

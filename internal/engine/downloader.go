@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,8 +20,13 @@ import (
 	"time"
 
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/logging"
+	"sheep-get/internal/stallwatch"
 	"sheep-get/internal/task"
 )
+
+// discardLog 是「没有日志出口」时的兜底：调用方不必处处判空。
+var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 const (
 	MinChunkSize           = 256 * 1024      // 256KB
@@ -29,7 +35,34 @@ const (
 	SplitWarmupDuration    = 1 * time.Second // 新块开始下载后的预热观察期
 	SplitStallThreshold    = 2 * time.Second // 超过此时间无数据到达视为卡滞（Stall）
 	UserAgentChrome        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+	// DefaultStallTimeout 是分片连接「连续多久没有读到任何字节」的判定上限。
+	// 用空闲而不是总时长作判据：慢速服务器仍在发字节，本就不该被打断；真正无药可救的是
+	// 对端保持连接却不发数据——它不产生错误，没有这道看门狗就会一直阻塞下去。
+	DefaultStallTimeout = 30 * time.Second
+
+	// retryBaseDelay / retryMaxDelay 是传输失败后重试的退避区间：指数增长并封顶。
+	// 固定小间隔会把被限速的站点越推越远（429 只会更多），封顶则保证网络恢复后能及时续上。
+	retryBaseDelay = 300 * time.Millisecond
+	retryMaxDelay  = 10 * time.Second
+	// retryMaxShift 限制指数增长的位移，避免移位溢出；到达它之后退避停在 retryMaxDelay。
+	retryMaxShift = 6
 )
+
+// retryBackoff 返回第 attempt 次（从 0 起）重试前的等待时长。
+func retryBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt > retryMaxShift {
+		attempt = retryMaxShift
+	}
+	delay := retryBaseDelay << attempt
+	if delay > retryMaxDelay {
+		return retryMaxDelay
+	}
+	return delay
+}
 
 var (
 	ErrRangeNotSupported = errors.New("range not supported")
@@ -57,6 +90,41 @@ type HTTPDownloader struct {
 	proxyMode          string
 	customProxyAddr    string
 	minSplitETA        time.Duration
+	stallTimeout       time.Duration
+	logger             atomic.Pointer[slog.Logger]
+}
+
+// SetLogger 设定传输日志出口。未设定时丢弃全部日志。
+func (d *HTTPDownloader) SetLogger(logger *slog.Logger) {
+	if logger == nil {
+		d.logger.Store(discardLog)
+		return
+	}
+	d.logger.Store(logger)
+}
+
+func (d *HTTPDownloader) log() *slog.Logger {
+	if logger := d.logger.Load(); logger != nil {
+		return logger
+	}
+	return discardLog
+}
+
+// SetStallTimeout 设定「连续多久没有读到字节就重连」的上限，供测试与调优使用。
+func (d *HTTPDownloader) SetStallTimeout(timeout time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stallTimeout = timeout
+}
+
+// stallTimeoutOrDefault 返回空闲判定上限。
+func (d *HTTPDownloader) stallTimeoutOrDefault() time.Duration {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.stallTimeout <= 0 {
+		return DefaultStallTimeout
+	}
+	return d.stallTimeout
 }
 
 // SetMinSplitETA updates the minimum ETA threshold for dynamic chunk splitting.
@@ -411,7 +479,10 @@ func publishProgress(t *task.Task, downloaded int64, sink TransferSink) {
 
 func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, sink TransferSink, client *http.Client) error {
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.URL, nil)
+	reqCtx, watch := stallwatch.New(ctx, d.stallTimeoutOrDefault())
+	defer watch.Stop()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.URL, nil)
 	if err != nil {
 		return err
 	}
@@ -427,16 +498,20 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	}
 	defer func() { _ = file.Close() }()
 
+	logger := d.log()
+	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return watch.Err(ctx, logging.SafeError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
+	watch.Touch()
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned error status: %s", resp.Status)
 	}
 
+	body := watch.Reader(resp.Body)
 	buf := make([]byte, 64*1024)
 	var downloaded int64
 	for {
@@ -446,7 +521,7 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 		default:
 		}
 
-		n, rErr := resp.Body.Read(buf)
+		n, rErr := body.Read(buf)
 		if n > 0 {
 			if _, wErr := file.Write(buf[:n]); wErr != nil {
 				return wErr
@@ -458,7 +533,8 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 			if errors.Is(rErr, io.EOF) {
 				break
 			}
-			return rErr
+			// 单流没有断点可续，停摆只归类不重试：交给任务层按失败处理。
+			return fmt.Errorf("single stream aborted at %d bytes: %w", downloaded, watch.Err(ctx, rErr))
 		}
 	}
 
@@ -466,6 +542,8 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	if t.LastModified == "" && resp.Header.Get("Last-Modified") != "" {
 		t.LastModified = resp.Header.Get("Last-Modified")
 	}
+	logger.Info("single stream transfer done",
+		"task", t.ID, "url", logging.SafeURL(t.URL), "bytes", downloaded, "ms", time.Since(started).Milliseconds())
 	return d.commitCompletedFile(partPath, destPath, t)
 }
 
@@ -509,6 +587,9 @@ type chunkCoordinator struct {
 	sink       TransferSink
 	downloader *HTTPDownloader
 	client     *http.Client
+	// requests 统计这次传输真正发出去的 HTTP 请求数（含重试与拆分出来的子块）。
+	// 它是「慢」与「碎」的度量：同样的字节数下请求数暴涨，说明是在跟一个不配合的服务器死磕。
+	requests atomic.Int64
 }
 
 // publishLocked 在持锁状态下把当前进度交出去。必须在持有 coord.mu 时调用：快照要与分片状态
@@ -580,10 +661,14 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 		}
 
 		// 3. Try to assist a slow chunk by dynamically splitting its remaining range
-		splitIdx := coord.trySplitSlowChunkLocked()
-		if splitIdx != -1 {
+		split := coord.trySplitSlowChunkLocked()
+		if split.newIdx != -1 {
 			coord.mu.Unlock()
-			return splitIdx
+			// 日志是文件 I/O，放在锁外：拆分很频繁，锁内写日志会让所有工作协程一起等它。
+			coord.downloader.log().Info("split slow chunk",
+				"chunk", split.fromIdx, "remaining", split.remaining,
+				"speedBps", split.speedBps, "newChunk", split.newIdx)
+			return split.newIdx
 		}
 
 		// 4. Check if any workers are still active
@@ -608,7 +693,16 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 	}
 }
 
-func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
+// splitResult 是一次慢块拆分的记录。拆分在分片锁内发生，而日志要走文件 I/O，
+// 因此这里把事实带出锁外，由调用方记一行。
+type splitResult struct {
+	newIdx    int // -1 表示这次没有拆分
+	fromIdx   int
+	remaining int64
+	speedBps  int64
+}
+
+func (coord *chunkCoordinator) trySplitSlowChunkLocked() splitResult {
 	hasCompletedChunk := false
 	for _, c := range coord.t.Chunks {
 		if c.Completed {
@@ -644,7 +738,7 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
 			}
 		}
 		if allSlowAndUniform {
-			return -1
+			return splitResult{newIdx: -1}
 		}
 	}
 
@@ -706,7 +800,7 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
 		}
 	}
 	if bestIdx == -1 {
-		return -1
+		return splitResult{newIdx: -1}
 	}
 
 	// Split the remaining range in half
@@ -743,7 +837,7 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() int {
 		lastUpdate: now,
 	}
 
-	return newIdx
+	return splitResult{newIdx: newIdx, fromIdx: bestIdx, remaining: remaining, speedBps: trk.speed}
 }
 
 func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx int) error {
@@ -756,6 +850,9 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		coord.mu.Unlock()
 	}()
 
+	logger := coord.downloader.log()
+	attempt := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -767,6 +864,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		c := &coord.t.Chunks[chunkIdx]
 		chunkStart := c.Start + c.Downloaded
 		chunkEnd := c.End
+		downloadedBefore := c.Downloaded
 		if chunkStart > chunkEnd {
 			c.Completed = true
 			coord.mu.Unlock()
@@ -774,6 +872,8 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		}
 		coord.mu.Unlock()
 
+		coord.requests.Add(1)
+		requestStart := time.Now()
 		chunkErr := coord.downloadChunkStream(ctx, chunkIdx, chunkStart, chunkEnd)
 		if chunkErr == nil {
 			coord.mu.Lock()
@@ -782,6 +882,9 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 				c.Completed = true
 			}
 			coord.mu.Unlock()
+			logger.Info("chunk request done",
+				"chunk", chunkIdx, "range", fmt.Sprintf("%d-%d", chunkStart, chunkEnd),
+				"ms", time.Since(requestStart).Milliseconds())
 			return nil
 		}
 
@@ -790,11 +893,26 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			return chunkErr
 		}
 
-		// Transient network drop or 429 rate limit: back off and retry
+		// 这次尝试有进展就把退避拉回起点：能读到字节说明连接是活的，不该越等越久。
+		coord.mu.Lock()
+		gained := coord.t.Chunks[chunkIdx].Downloaded - downloadedBefore
+		coord.mu.Unlock()
+		if gained > 0 {
+			attempt = 0
+		}
+
+		delay := retryBackoff(attempt)
+		attempt++
+		logger.Warn("chunk request failed, retrying",
+			"chunk", chunkIdx, "attempt", attempt, "backoffMs", delay.Milliseconds(),
+			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
+			"ms", time.Since(requestStart).Milliseconds(), "error", logging.SafeError(chunkErr).Error())
+
+		// Transient network drop, stall or 429 rate limit: back off and retry.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(delay):
 		}
 	}
 }
@@ -804,7 +922,11 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coord.t.URL, nil)
+	// 看门狗只在这次请求上生效：对端静默挂住时主动斩断，调用方据 ErrStalled 从当前偏移重连。
+	reqCtx, watch := stallwatch.New(ctx, coord.downloader.stallTimeoutOrDefault())
+	defer watch.Stop()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, coord.t.URL, nil)
 	if err != nil {
 		return err
 	}
@@ -822,9 +944,11 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 
 	resp, err := coord.client.Do(req)
 	if err != nil {
-		return err
+		// *url.Error 会带上完整地址（含查询串里的令牌）；这里统一脱敏，日志与任务错误信息都不落明文。
+		return watch.Err(ctx, logging.SafeError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
+	watch.Touch()
 
 	if resp.StatusCode == http.StatusPreconditionFailed {
 		return ErrVersionMismatch
@@ -849,6 +973,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 		return ErrVersionMismatch
 	}
 
+	body := watch.Reader(resp.Body)
 	buf := make([]byte, 64*1024)
 	offset := start
 	for {
@@ -858,7 +983,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 		default:
 		}
 
-		n, rErr := resp.Body.Read(buf)
+		n, rErr := body.Read(buf)
 		if n > 0 {
 			coord.mu.Lock()
 			chunk := &coord.t.Chunks[chunkIdx]
@@ -926,7 +1051,8 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 				coord.mu.Unlock()
 				break
 			}
-			return rErr
+			// 停摆归类比原样返回错误更重要：调用方据此知道该从当前偏移重连而不是放弃。
+			return watch.Err(ctx, rErr)
 		}
 	}
 
@@ -953,6 +1079,11 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 	}
 
 	coord := newChunkCoordinator(t, file, d, client, sink)
+	logger := d.log()
+	started := time.Now()
+	logger.Info("chunked transfer start",
+		"task", t.ID, "url", logging.SafeURL(t.URL),
+		"totalBytes", t.TotalBytes, "concurrency", t.MaxConcurrency, "chunks", len(t.Chunks))
 
 	numWorkers := t.MaxConcurrency
 	if int64(numWorkers) > t.TotalBytes/MinChunkSize && t.TotalBytes < MinChunkSize*2 {
@@ -1012,7 +1143,22 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 	}
 
 	_ = file.Close()
+	logger.Info("chunked transfer done",
+		"task", t.ID, "bytes", atomic.LoadInt64(&coord.totalDown),
+		"requests", coord.requests.Load(), "chunks", len(t.Chunks),
+		"assisted", countAssistedChunks(t.Chunks), "ms", time.Since(started).Milliseconds())
 	return d.commitCompletedFile(partPath, destPath, t)
+}
+
+// countAssistedChunks 数出这次传输为协助慢块而拆分出来的子块数量。
+func countAssistedChunks(chunks []task.Chunk) int {
+	count := 0
+	for _, c := range chunks {
+		if c.Assisted {
+			count++
+		}
+	}
+	return count
 }
 
 func splitChunks(totalBytes int64, concurrency int) []task.Chunk {

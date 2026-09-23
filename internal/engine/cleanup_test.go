@@ -470,3 +470,90 @@ func TestCleanup_CombinedDeletions(t *testing.T) {
 		t.Errorf("expected %d freed bytes, got %d", len(content)*2, execRes.FreedBytes)
 	}
 }
+
+// 历史日志清理：按「多少天以前」判定，正在写入的那一份永不参与，目录里的其它文件也不碰。
+func TestCleanup_OldLogs(t *testing.T) {
+	mgr, _, tmpDir := setupTestManager(t)
+	ctx := context.Background()
+
+	logDir := filepath.Join(tmpDir, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("failed to create log dir: %v", err)
+	}
+
+	oldLog := filepath.Join(logDir, "sheepget.2.log")
+	oldRotated := filepath.Join(logDir, "sheepget.1.log")
+	activeLog := filepath.Join(logDir, "sheepget.log")
+	unrelated := filepath.Join(logDir, "notes.txt")
+	for _, path := range []string{oldLog, oldRotated, activeLog, unrelated} {
+		if err := os.WriteFile(path, []byte("0123456789"), 0o644); err != nil {
+			t.Fatalf("failed to write %s: %v", path, err)
+		}
+	}
+	// 三个日志文件都是 40 天前的；无关文件同样老旧，但它不属于日志，不能被当成清理对象。
+	stale := time.Now().AddDate(0, 0, -40)
+	for _, path := range []string{oldLog, oldRotated, unrelated} {
+		if err := os.Chtimes(path, stale, stale); err != nil {
+			t.Fatalf("failed to age %s: %v", path, err)
+		}
+	}
+
+	scanOpts := engine.CleanupScanOptions{
+		OlderThanDays: 30,
+		CheckOldLogs:  true,
+		LogDir:        logDir,
+		ActiveLogPath: activeLog,
+	}
+	scan, err := mgr.ScanCleanup(ctx, scanOpts)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if len(scan.OldLogFiles) != 2 {
+		t.Fatalf("expected 2 cleanable log files (active excluded), got %d: %+v", len(scan.OldLogFiles), scan.OldLogFiles)
+	}
+	if scan.OldLogFilesBytes != 20 {
+		t.Fatalf("expected 20 bytes of logs, got %d", scan.OldLogFilesBytes)
+	}
+	if scan.TotalCleanableFiles != 2 || scan.TotalFreedBytes != 20 {
+		t.Fatalf("expected the totals to include logs, got files=%d bytes=%d", scan.TotalCleanableFiles, scan.TotalFreedBytes)
+	}
+
+	result, err := mgr.ExecuteCleanup(ctx, engine.CleanupExecuteOptions{
+		OlderThanDays: 30,
+		DeleteOldLogs: true,
+		LogDir:        logDir,
+		ActiveLogPath: activeLog,
+	})
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if result.DeletedFileCount != 2 || result.FreedBytes != 20 {
+		t.Fatalf("expected 2 files and 20 bytes freed, got files=%d bytes=%d", result.DeletedFileCount, result.FreedBytes)
+	}
+	for _, path := range []string{oldLog, oldRotated} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("expected %s to be removed", filepath.Base(path))
+		}
+	}
+	for _, path := range []string{activeLog, unrelated} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("expected %s to be kept: %v", filepath.Base(path), statErr)
+		}
+	}
+}
+
+// 没有打开日志开关（没有日志目录）时，清理扫描必须照常工作，只是没有日志可清。
+func TestCleanup_OldLogsWithoutLogDir(t *testing.T) {
+	mgr, _, _ := setupTestManager(t)
+	scan, err := mgr.ScanCleanup(context.Background(), engine.CleanupScanOptions{
+		OlderThanDays: 30,
+		CheckOldLogs:  true,
+		LogDir:        filepath.Join(t.TempDir(), "missing-logs"),
+	})
+	if err != nil {
+		t.Fatalf("scan must tolerate a missing log dir: %v", err)
+	}
+	if len(scan.OldLogFiles) != 0 {
+		t.Fatalf("expected no log files, got %+v", scan.OldLogFiles)
+	}
+}

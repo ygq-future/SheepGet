@@ -12,6 +12,7 @@ export interface CleanupConfigState {
   deleteOlderFiles: boolean;
   duplicatesEnabled: boolean;
   missingTasksEnabled: boolean;
+  oldLogsEnabled: boolean;
 }
 
 export const DEFAULT_CLEANUP_CONFIG: CleanupConfigState = {
@@ -20,6 +21,7 @@ export const DEFAULT_CLEANUP_CONFIG: CleanupConfigState = {
   deleteOlderFiles: true,
   duplicatesEnabled: true,
   missingTasksEnabled: true,
+  oldLogsEnabled: true,
 };
 
 export interface CleanupSummary {

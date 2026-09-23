@@ -115,7 +115,10 @@ type GeneralConfig struct {
 	LaunchAtStartup bool `json:"launchAtStartup"`
 	SilentStartup   bool `json:"silentStartup"`
 	LightweightMode bool `json:"lightweightMode"`
-	ServerPort      int  `json:"serverPort"`
+	// EnableLogging 控制是否把运行日志写进数据目录的 logs/。默认关闭：正常使用不落盘，
+	// 需要排查时才打开（滚动上限见 internal/logging）。
+	EnableLogging bool `json:"enableLogging"`
+	ServerPort    int  `json:"serverPort"`
 }
 
 // ProxyMode specifies the proxy strategy.
@@ -326,6 +329,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			LaunchAtStartup: false,
 			SilentStartup:   false,
 			LightweightMode: false,
+			EnableLogging:   false,
 			ServerPort:      DefaultServerPort,
 		},
 		Appearance: AppearanceConfig{

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"sheep-get/internal/logging"
 	"sheep-get/internal/task"
 )
 
@@ -21,6 +22,20 @@ type CleanupScanOptions struct {
 	DeleteOlderDiskFiles bool `json:"deleteOlderDiskFiles"`
 	CheckDuplicates      bool `json:"checkDuplicates"`
 	CheckMissingFiles    bool `json:"checkMissingFiles"`
+
+	// CheckOldLogs 打开后才扫描日志文件。LogDir 与 ActiveLogPath 由调用方给出：
+	// 引擎不猜数据目录长什么样，但「哪些文件算日志、多旧才算旧」这类规则留在引擎里统一判定。
+	CheckOldLogs  bool   `json:"checkOldLogs"`
+	LogDir        string `json:"logDir,omitempty"`
+	ActiveLogPath string `json:"activeLogPath,omitempty"`
+}
+
+// CleanupLogFile 是一个可清理的历史日志文件。
+type CleanupLogFile struct {
+	Path    string    `json:"path"`
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"modTime"`
 }
 
 // CleanupDuplicateGroup represents a group of completed tasks pointing to files with identical size and MD5 hash.
@@ -38,6 +53,8 @@ type CleanupScanResult struct {
 	DuplicateGroups     []CleanupDuplicateGroup `json:"duplicateGroups"`
 	DuplicateFilesBytes int64                   `json:"duplicateFilesBytes"`
 	MissingTasks        []*task.Task            `json:"missingTasks"`
+	OldLogFiles         []CleanupLogFile        `json:"oldLogFiles"`
+	OldLogFilesBytes    int64                   `json:"oldLogFilesBytes"`
 
 	// TotalCleanableTasks is the deduplicated count of tasks that would be removed.
 	TotalCleanableTasks int `json:"totalCleanableTasks"`
@@ -56,6 +73,11 @@ type CleanupExecuteOptions struct {
 	DeleteDuplicates bool `json:"deleteDuplicates"`
 
 	DeleteMissingTasks bool `json:"deleteMissingTasks"`
+
+	// DeleteOldLogs 删除超过 OlderThanDays 的历史日志文件；正在写入的那一份始终保留。
+	DeleteOldLogs bool   `json:"deleteOldLogs"`
+	LogDir        string `json:"logDir,omitempty"`
+	ActiveLogPath string `json:"activeLogPath,omitempty"`
 }
 
 // CleanupExecuteResult returns the summary of the cleanup execution.
@@ -299,6 +321,26 @@ func (m *Manager) ScanCleanup(ctx context.Context, opts CleanupScanOptions) (*Cl
 		}
 	}
 
+	// 历史日志：只按「多少天以前」判定，且正在写入的那一份永不参与。
+	if opts.CheckOldLogs && opts.OlderThanDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -opts.OlderThanDays)
+		logs, logErr := logging.ListLogFiles(opts.LogDir)
+		if logErr != nil {
+			return nil, fmt.Errorf("failed to list log files: %w", logErr)
+		}
+		for _, file := range logs {
+			if opts.ActiveLogPath != "" && SamePath(file.Path, opts.ActiveLogPath) {
+				continue
+			}
+			if !file.ModTime.Before(cutoff) {
+				continue
+			}
+			result.OldLogFiles = append(result.OldLogFiles, CleanupLogFile(file))
+			result.OldLogFilesBytes += file.Size
+			distinctFilesFreed[pathKey(file.Path)] = file.Size
+		}
+	}
+
 	result.TotalCleanableTasks = len(allCleanableTasks)
 	result.TotalCleanableFiles = len(distinctFilesFreed)
 	for _, bytes := range distinctFilesFreed {
@@ -402,6 +444,9 @@ func (m *Manager) ExecuteCleanup(ctx context.Context, opts CleanupExecuteOptions
 		DeleteOlderDiskFiles: opts.DeleteOlderDiskFiles,
 		CheckDuplicates:      opts.DeleteDuplicates,
 		CheckMissingFiles:    opts.DeleteMissingTasks,
+		CheckOldLogs:         opts.DeleteOldLogs,
+		LogDir:               opts.LogDir,
+		ActiveLogPath:        opts.ActiveLogPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan cleanable items: %w", err)
@@ -490,6 +535,21 @@ func (m *Manager) ExecuteCleanup(ctx context.Context, opts CleanupExecuteOptions
 			} else {
 				result.Errors = append(result.Errors, fmt.Sprintf("failed to delete task %s: %v", oldTask.ID, delErr))
 			}
+		}
+	}
+
+	// D. Delete Old Logs（只删扫描出来的历史文件；正在写入的那一份永远不在其中）
+	if opts.DeleteOldLogs {
+		for _, logFile := range scanRes.OldLogFiles {
+			if opts.ActiveLogPath != "" && SamePath(logFile.Path, opts.ActiveLogPath) {
+				continue
+			}
+			if rmErr := os.Remove(logFile.Path); rmErr != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("failed to delete log %s: %v", logFile.Name, rmErr))
+				continue
+			}
+			result.DeletedFileCount++
+			result.FreedBytes += logFile.Size
 		}
 	}
 

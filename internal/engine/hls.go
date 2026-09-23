@@ -14,6 +14,7 @@ import (
 
 	"sheep-get/internal/credentials"
 	"sheep-get/internal/hls"
+	"sheep-get/internal/logging"
 	"sheep-get/internal/media"
 	"sheep-get/internal/task"
 )
@@ -288,6 +289,12 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, sink Transfe
 		concurrency = m.config.DefaultConnectionsPerTask
 	}
 
+	logger := m.log()
+	transferStarted := time.Now()
+	logger.Info("hls transfer start",
+		"task", t.ID, "playlist", logging.SafeURL(t.Media.PlaylistURL),
+		"variant", t.Media.Variant, "concurrency", concurrency)
+
 	// 音视频分离时分两条清单先后下载，各自的字节数都从 0 起算。任务级的进度必须单调，
 	// 否则进度条会往回走；因此这里只报一遍最大值，最后一段音轨下载期间进度停在画面那一侧，
 	// 完成时一次性补到 100%。分片计数则跨两条清单累计：界面用「分片 N/M」展示并发的
@@ -347,6 +354,9 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, sink Transfe
 			return inputs, dlErr
 		}
 	}
+	logger.Info("hls transfer done",
+		"task", t.ID, "segments", totalSegments, "initFiles", len(inputs.Init),
+		"ms", time.Since(transferStarted).Milliseconds())
 	return inputs, nil
 }
 

@@ -11,11 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"sheep-get/internal/atomicfile"
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/logging"
+	"sheep-get/internal/stallwatch"
 )
 
 const (
@@ -40,9 +41,9 @@ var requestTimeout = 45 * time.Second
 var idleTimeout = 15 * time.Second
 
 // ErrStalled 表示响应在读取途中停摆：连续 idleTimeout 没有任何字节到达。
-// 它与 context.Canceled 的区分至关重要——后者意味着暂停或退出，重试逻辑必须放过；
-// 停摆是网络或服务器的故障，按普通失败重试。
-var ErrStalled = errors.New("服务器停止发送数据")
+// 判定本身在 internal/stallwatch：引擎的 HTTP 传输与这里的每个请求用同一套看门狗，
+// 语义（停摆 ≠ 取消）因此只有一处定义。
+var ErrStalled = stallwatch.ErrStalled
 
 // statusError 是服务器返回 4xx/5xx 的错误。4xx 大多是防盗链令牌失效或地址过期，
 // 重试三次也不会变；fetchSegment 对它们不再重试，尽快把真实原因亮给用户。
@@ -73,37 +74,10 @@ func IdleTimeout() time.Duration { return idleTimeout }
 // SetIdleTimeoutForTest 供测试把空闲判定调到毫秒级。
 func SetIdleTimeoutForTest(d time.Duration) { idleTimeout = d }
 
-// idleReader 包住响应体，两次读到字节之间的间隔超过空闲上限时取消请求并标记停摆。
-// 「慢但活跃」的响应（限速服务器）继续传输，只有真正停住的连接被斩断。
-type idleReader struct {
-	r     io.Reader
-	timer *time.Timer
-	fired atomic.Bool
-}
-
-// newIdleReader 挂上一个空闲看门狗。cancel 是这次请求超时 ctx 的取消函数：
-// 空闲到期时取消它，阻塞中的 body 读取立刻以错误返回。
-func newIdleReader(r io.Reader, cancel context.CancelFunc) *idleReader {
-	ir := &idleReader{r: r}
-	ir.timer = time.AfterFunc(idleTimeout, func() {
-		ir.fired.Store(true)
-		cancel()
-	})
-	return ir
-}
-
-func (ir *idleReader) Read(p []byte) (int, error) {
-	// Reset 与看门狗回调分属两个 goroutine，极端交错时可能提前取消一次请求；
-	// 那只是多走一遍分片重试，不影响正确性，为此加锁不值得。
-	ir.timer.Reset(idleTimeout)
-	return ir.r.Read(p)
-}
-
-// Stalled 报告这次响应是否因空闲而被斩断。读到错误后立即查询，据此换用 ErrStalled。
-func (ir *idleReader) Stalled() bool { return ir.fired.Load() }
-
-func (ir *idleReader) stop() {
-	ir.timer.Stop()
+// stallWatch 给一次请求挂上看门狗：从发请求到读完响应体，连续 idleTimeout 没有字节到达就
+// 取消这次请求。空闲判定本身在 internal/stallwatch——引擎的普通 HTTP 传输用的是同一套。
+func stallWatch(ctx context.Context) (context.Context, *stallwatch.Watch) {
+	return stallwatch.New(ctx, idleTimeout)
 }
 
 // Inputs 是一次传输已经落盘的输入：初始化片段与按播放顺序排列的媒体分片。
@@ -395,13 +369,15 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	// 字节流彻底停止时不必等满总超时。
 	ctx, cancel := withRequestTimeout(ctx)
 	defer cancel()
-	resp, err := f.do(ctx, seg.URI, seg.RangeStart, seg.RangeLength)
+	reqCtx, watch := stallWatch(ctx)
+	defer watch.Stop()
+	resp, err := f.do(reqCtx, seg.URI, seg.RangeStart, seg.RangeLength)
 	if err != nil {
-		return 0, err
+		return 0, watch.Err(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body := newIdleReader(resp.Body, cancel)
-	defer body.stop()
+	watch.Touch()
+	body := watch.Reader(resp.Body)
 
 	partPath := dest + ".part"
 	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -412,10 +388,7 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(partPath)
-		if body.Stalled() {
-			return 0, fmt.Errorf("%w（%s 内没有收到任何数据）", ErrStalled, idleTimeout)
-		}
-		return 0, copyErr
+		return 0, watch.Err(ctx, copyErr)
 	}
 	if closeErr != nil {
 		_ = os.Remove(partPath)
@@ -435,18 +408,19 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 func (f *Fetcher) readAll(ctx context.Context, seg Segment) ([]byte, error) {
 	ctx, cancel := withRequestTimeout(ctx)
 	defer cancel()
-	resp, err := f.do(ctx, seg.URI, seg.RangeStart, seg.RangeLength)
+	reqCtx, watch := stallWatch(ctx)
+	defer watch.Stop()
+	resp, err := f.do(reqCtx, seg.URI, seg.RangeStart, seg.RangeLength)
 	if err != nil {
-		return nil, err
+		return nil, watch.Err(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body := newIdleReader(resp.Body, cancel)
-	defer body.stop()
-	data, readErr := io.ReadAll(body)
-	if readErr != nil && body.Stalled() {
-		return nil, fmt.Errorf("%w（%s 内没有收到任何数据）", ErrStalled, idleTimeout)
+	watch.Touch()
+	data, readErr := io.ReadAll(watch.Reader(resp.Body))
+	if readErr != nil {
+		return nil, watch.Err(ctx, readErr)
 	}
-	return data, readErr
+	return data, nil
 }
 
 // fetchKey 取一个密钥并缓存：同一密钥地址在同一次下载里只取一次。
@@ -461,19 +435,17 @@ func (f *Fetcher) fetchKey(ctx context.Context, uri string) ([]byte, error) {
 	key, err := func() ([]byte, error) {
 		ctx, cancel := withRequestTimeout(ctx)
 		defer cancel()
-		resp, err := f.do(ctx, uri, 0, 0)
+		reqCtx, watch := stallWatch(ctx)
+		defer watch.Stop()
+		resp, err := f.do(reqCtx, uri, 0, 0)
 		if err != nil {
-			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", err)
+			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, err))
 		}
 		defer func() { _ = resp.Body.Close() }()
-		body := newIdleReader(resp.Body, cancel)
-		defer body.stop()
-		data, readErr := io.ReadAll(body)
-		if readErr != nil && body.Stalled() {
-			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", fmt.Errorf("%w（%s 内没有收到任何数据）", ErrStalled, idleTimeout))
-		}
+		watch.Touch()
+		data, readErr := io.ReadAll(watch.Reader(resp.Body))
 		if readErr != nil {
-			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", readErr)
+			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, readErr))
 		}
 		return data, nil
 	}()
@@ -502,7 +474,8 @@ func (f *Fetcher) do(ctx context.Context, rawURL string, start, length int64) (*
 
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return nil, err
+		// 请求错误里嵌着完整地址（含令牌类查询参数），脱敏后再往外传：它会进日志，也会写进任务错误信息。
+		return nil, logging.SafeError(err)
 	}
 	if resp.StatusCode >= 400 {
 		_ = resp.Body.Close()

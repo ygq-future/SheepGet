@@ -24,6 +24,10 @@ func TestDefaultSettings(t *testing.T) {
 	if s.Download.PreDownload != false {
 		t.Errorf("expected PreDownload false, got %v", s.Download.PreDownload)
 	}
+	// 日志默认关闭：正常使用不落盘，只有用户打开开关才写。
+	if s.General.EnableLogging {
+		t.Errorf("expected EnableLogging false by default, got true")
+	}
 	if s.Download.MaxConcurrentDownloads != 3 {
 		t.Errorf("expected MaxConcurrentDownloads 3, got %d", s.Download.MaxConcurrentDownloads)
 	}

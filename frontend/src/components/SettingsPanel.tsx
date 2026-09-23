@@ -494,6 +494,20 @@ export function SettingsPanel() {
     }
   };
 
+  const handleEnableLoggingChange = async (checked: boolean) => {
+    try {
+      await updateSettings({
+        general: new configModels.GeneralConfig({
+          ...general,
+          enableLogging: checked,
+        }),
+      });
+      showToast(checked ? '已开启运行日志' : '已关闭运行日志', 'success');
+    } catch (err) {
+      showToast(`设置运行日志失败: ${String(err)}`, 'error');
+    }
+  };
+
   const serverPort = serverPortDraft ?? String(general.serverPort || DEFAULT_SERVER_PORT);
 
   const handleRestartServer = async () => {
@@ -1245,6 +1259,18 @@ export function SettingsPanel() {
                   checked={clipboardConfig.enabled}
                   onCheckedChange={(checked) => {
                     void handleClipboardChange(checked);
+                  }}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="记录运行日志"
+                description="默认关闭；开启后在数据目录 logs/ 下按大小滚动记录传输与任务日志"
+              >
+                <Switch
+                  checked={general.enableLogging}
+                  onCheckedChange={(checked) => {
+                    void handleEnableLoggingChange(checked);
                   }}
                 />
               </SettingRow>

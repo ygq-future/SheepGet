@@ -4,19 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sheep-get/internal/config"
-	"sheep-get/internal/credentials"
-	"sheep-get/internal/hls"
-	"sheep-get/internal/mediainfo"
-	"sheep-get/internal/task"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"sheep-get/internal/config"
+	"sheep-get/internal/credentials"
+	"sheep-get/internal/hls"
+	"sheep-get/internal/logging"
+	"sheep-get/internal/mediainfo"
+	"sheep-get/internal/task"
 )
 
 var (
@@ -194,6 +198,25 @@ type Manager struct {
 	listeners    []TaskListener
 	wg           sync.WaitGroup
 	closed       bool
+	logger       atomic.Pointer[slog.Logger]
+}
+
+// SetLogger 设定任务日志出口，并同步给底层的传输器——两者的日志出口永远是同一个。
+func (m *Manager) SetLogger(logger *slog.Logger) {
+	if logger == nil {
+		logger = discardLog
+	}
+	m.logger.Store(logger)
+	if m.downloader != nil {
+		m.downloader.SetLogger(logger)
+	}
+}
+
+func (m *Manager) log() *slog.Logger {
+	if logger := m.logger.Load(); logger != nil {
+		return logger
+	}
+	return discardLog
 }
 
 // NewManager creates a download manager.
@@ -1332,6 +1355,7 @@ func (m *Manager) schedule() {
 
 func (m *Manager) runTask(ctx context.Context, taskID string) {
 	bgCtx := context.Background()
+	taskStarted := time.Now()
 	t, err := m.store.Get(bgCtx, taskID)
 	if err != nil {
 		m.finishTask(taskID)
@@ -1426,6 +1450,21 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	t.UpdatedAt = time.Now()
 	_ = m.store.Save(bgCtx, t)
 	m.notify(t)
+
+	// 任务收尾记一行：失败了要有原因，完成了要有耗时与请求数——「是网络还是引擎」的答案就在这行。
+	logFields := []any{
+		"task", t.ID, "status", string(t.Status), "phase", string(t.FailurePhase),
+		"bytes", t.Downloaded, "total", t.TotalBytes,
+		"ms", time.Since(taskStarted).Milliseconds(), "url", logging.SafeURL(t.URL),
+	}
+	if t.ErrorMsg != "" {
+		logFields = append(logFields, "error", t.ErrorMsg)
+	}
+	if t.Status == task.StatusError {
+		m.log().Warn("task finished", logFields...)
+	} else {
+		m.log().Info("task finished", logFields...)
+	}
 
 	// Free slot and promote next queued task
 	m.schedule()

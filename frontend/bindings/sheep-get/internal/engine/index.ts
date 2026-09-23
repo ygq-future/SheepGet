@@ -5,6 +5,7 @@ export {
     CleanupDuplicateGroup,
     CleanupExecuteOptions,
     CleanupExecuteResult,
+    CleanupLogFile,
     CleanupScanOptions,
     CleanupScanResult,
     ConsistencyResult,

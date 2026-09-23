@@ -17,6 +17,7 @@ describe('cleanup helpers and summary calculation', () => {
     expect(DEFAULT_CLEANUP_CONFIG.deleteOlderFiles).toBe(true);
     expect(DEFAULT_CLEANUP_CONFIG.duplicatesEnabled).toBe(true);
     expect(DEFAULT_CLEANUP_CONFIG.missingTasksEnabled).toBe(true);
+    expect(DEFAULT_CLEANUP_CONFIG.oldLogsEnabled).toBe(true);
   });
 
   it('returns zeroes when scanResult is null', () => {

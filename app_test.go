@@ -1244,3 +1244,39 @@ func TestApp_GetServerStatus(t *testing.T) {
 		t.Errorf("expected non-negative connected count, got %d", status.ConnectedCount)
 	}
 }
+
+// 日志开关：默认不落盘，打开后写文件，关掉后停止写入并释放文件句柄。
+func TestApp_LoggingSwitch(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+
+	logPath := filepath.Join(tmpDir, "logs", "sheepget.log")
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no log file before enabling logging, stat err = %v", err)
+	}
+
+	app.applyLogging(true)
+	app.log().Info("enabled record")
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected the log file after enabling logging: %v", err)
+	}
+	if !strings.Contains(string(content), "enabled record") {
+		t.Fatalf("expected the record in the log file, got %q", content)
+	}
+	if app.log().Path() != logPath {
+		t.Fatalf("expected the active log path %s, got %s", logPath, app.log().Path())
+	}
+
+	app.applyLogging(false)
+	app.log().Info("disabled record")
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read the log file: %v", err)
+	}
+	if strings.Contains(string(after), "disabled record") {
+		t.Fatal("logging must stop once the switch is off")
+	}
+	if app.log().Path() != "" {
+		t.Fatalf("expected no active log path after disabling, got %s", app.log().Path())
+	}
+}

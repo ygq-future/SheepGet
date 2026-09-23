@@ -208,6 +208,12 @@ export class GeneralConfig {
     "launchAtStartup": boolean;
     "silentStartup": boolean;
     "lightweightMode": boolean;
+
+    /**
+     * EnableLogging 控制是否把运行日志写进数据目录的 logs/。默认关闭：正常使用不落盘，
+     * 需要排查时才打开（滚动上限见 internal/logging）。
+     */
+    "enableLogging": boolean;
     "serverPort": number;
 
     /** Creates a new GeneralConfig instance. */
@@ -220,6 +226,9 @@ export class GeneralConfig {
         }
         if (!("lightweightMode" in $$source)) {
             this["lightweightMode"] = false;
+        }
+        if (!("enableLogging" in $$source)) {
+            this["enableLogging"] = false;
         }
         if (!("serverPort" in $$source)) {
             this["serverPort"] = 0;

@@ -6,6 +6,7 @@ import {
   Clock,
   Copy,
   FileX,
+  FileText,
   Trash2,
   HardDrive,
   AlertTriangle,
@@ -45,10 +46,14 @@ export function CleanupModal({ open, onOpenChange, onCleanupFinished }: CleanupM
     setIsScanning(true);
     try {
       const opts = new CleanupScanOptions({
-        olderThanDays: targetConfig.olderTasksEnabled ? targetConfig.olderThanDays : 0,
+        olderThanDays:
+          targetConfig.olderTasksEnabled || targetConfig.oldLogsEnabled
+            ? targetConfig.olderThanDays
+            : 0,
         deleteOlderDiskFiles: targetConfig.olderTasksEnabled && targetConfig.deleteOlderFiles,
         checkDuplicates: targetConfig.duplicatesEnabled,
         checkMissingFiles: targetConfig.missingTasksEnabled,
+        checkOldLogs: targetConfig.oldLogsEnabled,
       });
       const result = await ScanCleanup(opts);
       setScanResult(result);
@@ -90,9 +95,10 @@ export function CleanupModal({ open, onOpenChange, onCleanupFinished }: CleanupM
       const opts = new CleanupExecuteOptions({
         deleteOlderTasks: config.olderTasksEnabled,
         deleteOlderDiskFiles: config.olderTasksEnabled && config.deleteOlderFiles,
-        olderThanDays: config.olderTasksEnabled ? config.olderThanDays : 0,
+        olderThanDays: config.olderTasksEnabled || config.oldLogsEnabled ? config.olderThanDays : 0,
         deleteDuplicates: config.duplicatesEnabled,
         deleteMissingTasks: config.missingTasksEnabled,
+        deleteOldLogs: config.oldLogsEnabled,
       });
 
       const res = await ExecuteCleanup(opts);
@@ -111,7 +117,10 @@ export function CleanupModal({ open, onOpenChange, onCleanupFinished }: CleanupM
   };
 
   const hasAnyOptionSelected =
-    config.olderTasksEnabled || config.duplicatesEnabled || config.missingTasksEnabled;
+    config.olderTasksEnabled ||
+    config.duplicatesEnabled ||
+    config.missingTasksEnabled ||
+    config.oldLogsEnabled;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -320,6 +329,62 @@ export function CleanupModal({ open, onOpenChange, onCleanupFinished }: CleanupM
                     </span>
                   ) : (
                     <span>正在检查无效任务...</span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Section 4: Old Log Files */}
+            <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-muted)]/30 p-3 transition-colors">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="cleanup-logs"
+                    checked={config.oldLogsEnabled}
+                    onCheckedChange={(checked) => {
+                      setConfig((prev) => ({ ...prev, oldLogsEnabled: Boolean(checked) }));
+                    }}
+                  />
+                  <label
+                    htmlFor="cleanup-logs"
+                    className="flex cursor-pointer items-center gap-1.5 text-xs font-medium text-[var(--text-primary)] select-none"
+                  >
+                    <FileText className="h-3.5 w-3.5 text-[var(--text-muted)]" />
+                    <span>清理历史运行日志</span>
+                  </label>
+                </div>
+
+                <div className="w-32">
+                  <Select
+                    value={String(config.olderThanDays)}
+                    disabled={!config.oldLogsEnabled}
+                    options={CLEANUP_DAYS_OPTIONS.map((opt) => ({
+                      value: String(opt.value),
+                      label: opt.label,
+                    }))}
+                    onChange={(val) => {
+                      setConfig((prev) => ({ ...prev, olderThanDays: Number(val) }));
+                    }}
+                  />
+                </div>
+              </div>
+
+              {config.oldLogsEnabled && (
+                <div className="mt-2.5 border-t border-[var(--border-subtle)]/60 pt-2 pl-6 text-[11px] text-[var(--text-muted)]">
+                  {scanResult ? (
+                    <span>
+                      扫描到{' '}
+                      <strong className="font-semibold text-[var(--text-primary)]">
+                        {scanResult.oldLogFiles?.length ?? 0}
+                      </strong>{' '}
+                      个历史日志文件，占用{' '}
+                      <strong className="font-semibold text-amber-500">
+                        {formatBytes(scanResult.oldLogFilesBytes ?? 0)}
+                      </strong>
+                      <span className="ml-1">（正在写入的那一份始终保留）</span>
+                    </span>
+                  ) : (
+                    <span>正在扫描历史日志...</span>
                   )}
                 </div>
               )}

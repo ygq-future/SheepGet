@@ -286,8 +286,8 @@ export function PauseTask(id: string): $CancellablePromise<void> {
  * PrepareExtensionPage 唤起浏览器并把扩展管理页地址写入剪贴板，返回该地址。
  * 用户在浏览器地址栏粘贴即可进入扩展管理页，随后手动加载扩展目录。
  */
-export function PrepareExtensionPage(browser: string): $CancellablePromise<string> {
-    return $Call.ByID(3095611994, browser);
+export function PrepareExtensionPage(browserName: string): $CancellablePromise<string> {
+    return $Call.ByID(3095611994, browserName);
 }
 
 /**
