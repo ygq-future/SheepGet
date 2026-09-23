@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"sheep-get/internal/config"
-	"sheep-get/internal/events"
+	"sheep-get/internal/protocol"
 )
 
 // recordingWindowView 记录窗口调用的先后次序。blockShow 为真时 Show 会一直阻塞到 release
@@ -167,7 +167,7 @@ func TestQueueController_WindowCallsKeepSubmissionOrder(t *testing.T) {
 	}
 
 	got := view.waitForOps(t, 4)
-	want := []string{"show", "focus", "emit:" + events.FileInfoNext, "hide"}
+	want := []string{"show", "focus", "emit:" + protocol.EventFileInfoNext, "hide"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("window calls out of order: got %v, want %v", got, want)

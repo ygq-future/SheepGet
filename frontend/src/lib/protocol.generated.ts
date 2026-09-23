@@ -1,5 +1,8 @@
-// 前后端共用的事件名，与 Go 侧 internal/events 包保持一致。
-// 改名时两端需同步：这里只维护前端这一份字面量。
+// 由 scripts/protocol.mjs 从 internal/protocol/protocol.go 生成，请勿手改。
+// 改动线上事实请改 Go 侧那个文件，再运行 node scripts/protocol.mjs --write。
+
+export const Ports = { DefaultServer: 9248, FallbackSpan: 5 };
+
 export const Event = {
   TaskUpdated: 'task:updated',
   TaskDeleted: 'task:deleted',

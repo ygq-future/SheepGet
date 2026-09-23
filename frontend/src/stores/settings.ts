@@ -3,7 +3,7 @@ import { GetSettings, UpdateSettings, GetStorageInfo } from '../../bindings/shee
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
-import { Event } from '../lib/events';
+import { Event } from '../lib/protocol.generated';
 
 export interface StorageInfo {
   mode: string;

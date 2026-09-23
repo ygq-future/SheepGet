@@ -6,21 +6,19 @@ import type {
   SessionMetadata,
   TakeoverConfigSync,
 } from './types';
-
-export const DEFAULT_LOOPBACK_PORT = 9248;
-export const PORT_FALLBACK_SPAN = 5;
+import { HeaderNames, Paths, Ports, QueryParams, WsEvents } from './protocol.generated';
 /**
  * 直接通过本地 HTTP 探测桌面端会话。
  * 在便携版未注册 Host 或纯 HTTP 模式下，直接探测可实现秒连且零系统注册表侵入。
  */
 export async function discoverSessionViaHttp(
-  candidatePort: number = DEFAULT_LOOPBACK_PORT,
+  candidatePort: number = Ports.DefaultServer,
   fetchFn: typeof fetch = fetch,
 ): Promise<SessionMetadata | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 600);
   try {
-    const res = await fetchFn(`http://127.0.0.1:${candidatePort}/api/v1/discover`, {
+    const res = await fetchFn(`http://127.0.0.1:${candidatePort}${Paths.Discover}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -62,14 +60,15 @@ export class DesktopClient {
     this.session = session;
   }
 
-  private get baseUrl(): string {
-    return `http://127.0.0.1:${this.session.port}/api/v1`;
+  // 路径本身已经带上了协议前缀（见 internal/protocol），这里只给出回环地址。
+  private get origin(): string {
+    return `http://127.0.0.1:${this.session.port}`;
   }
 
   private get headers(): Record<string, string> {
     return {
       'Content-Type': 'application/json',
-      'X-SheepGet-Token': this.session.sessionToken,
+      [HeaderNames.Token]: this.session.sessionToken,
     };
   }
 
@@ -77,7 +76,7 @@ export class DesktopClient {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(`${this.baseUrl}/ping`, {
+      const res = await fetch(`${this.origin}${Paths.Ping}`, {
         headers: this.headers,
         signal: controller.signal,
       });
@@ -98,12 +97,12 @@ export class DesktopClient {
 
       // Lightweight HEAD check first if currentVersion is provided
       if (currentVersion !== undefined && currentVersion > 0) {
-        const headRes = await fetch(`${this.baseUrl}/config/takeover`, {
+        const headRes = await fetch(`${this.origin}${Paths.TakeoverConfig}`, {
           method: 'HEAD',
           headers: this.headers,
           signal: controller.signal,
         });
-        const serverVersion = headRes.headers.get('X-Config-Version');
+        const serverVersion = headRes.headers.get(HeaderNames.ConfigVersion);
         if (serverVersion && parseInt(serverVersion, 10) === currentVersion) {
           clearTimeout(timer);
           return null; // Version is unchanged
@@ -111,7 +110,7 @@ export class DesktopClient {
       }
 
       // Fetch full config
-      const res = await fetch(`${this.baseUrl}/config/takeover`, {
+      const res = await fetch(`${this.origin}${Paths.TakeoverConfig}`, {
         headers: this.headers,
         signal: controller.signal,
       });
@@ -136,7 +135,7 @@ export class DesktopClient {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const res = await fetch(`${this.baseUrl}/handover`, {
+      const res = await fetch(`${this.origin}${Paths.Handover}`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(req),
@@ -184,7 +183,7 @@ export class DesktopClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${this.baseUrl}/hls/variants`, {
+      const res = await fetch(`${this.origin}${Paths.HLSVariants}`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({ url, credentials }),
@@ -217,7 +216,7 @@ export class DesktopClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`${this.baseUrl}/media/probe`, {
+      const res = await fetch(`${this.origin}${Paths.MediaProbe}`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({ ...req, credentials }),
@@ -244,7 +243,7 @@ export class DesktopClient {
     onLinkStateChange?: (open: boolean) => void,
     onServerMigrated?: (newPort: number) => void,
   ): DesktopEventLink {
-    const wsUrl = `ws://127.0.0.1:${this.session.port}/api/v1/events?token=${encodeURIComponent(
+    const wsUrl = `ws://127.0.0.1:${this.session.port}${Paths.Events}?${QueryParams.Token}=${encodeURIComponent(
       this.session.sessionToken,
     )}`;
     let ws: WebSocket | null = null;
@@ -264,9 +263,9 @@ export class DesktopClient {
             event: string;
             data: unknown;
           };
-          if (msg.event === 'takeover_config_updated' && msg.data) {
+          if (msg.event === WsEvents.TakeoverConfigUpdated && msg.data) {
             onConfigUpdated(msg.data as TakeoverConfigSync);
-          } else if (msg.event === 'server_migrated' && msg.data) {
+          } else if (msg.event === WsEvents.ServerMigrated && msg.data) {
             const data = msg.data as { port?: number };
             if (data.port && typeof data.port === 'number') {
               onServerMigrated?.(data.port);

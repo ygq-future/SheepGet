@@ -213,3 +213,51 @@ test('frozen dependency validation rejects manifest drift', () => {
     rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test('protocol mirror check rejects drift and a key/ID mismatch', () => {
+  const base = join(root, '.tools');
+  mkdirSync(base, { recursive: true });
+  const fixture = mkdtempSync(join(base, 'protocol-probe-'));
+  const cli = join(fixture, 'scripts/protocol.mjs');
+  const source = join(fixture, 'internal/protocol/protocol.go');
+  const config = join(fixture, 'extension/wxt.config.ts');
+  const mirror = join(fixture, 'extension/lib/protocol.generated.ts');
+  const read = (path) => readFileSync(path, 'utf8');
+  const check = () => exec(process.execPath, [cli, '--check']);
+  try {
+    for (const file of [
+      'internal/protocol/protocol.go',
+      'extension/wxt.config.ts',
+      'extension/lib/protocol.generated.ts',
+      'frontend/src/lib/protocol.generated.ts',
+      'scripts/protocol.mjs',
+    ]) {
+      mkdirSync(dirname(join(fixture, file)), { recursive: true });
+      copyFileSync(join(root, file), join(fixture, file));
+    }
+    assert.equal(check().status, 0);
+
+    // 改一处线上事实却没同步镜像：门禁阶段必须失败
+    writeFileSync(
+      source,
+      read(source).replace('const BasePath = "/api/v1"', 'const BasePath = "/api/v2"'),
+    );
+    const drifted = check();
+    assert.notEqual(drifted.status, 0);
+    assert.match(drifted.stderr, /protocol\.generated\.ts/);
+
+    // 重新生成后镜像跟着 Go 侧走
+    assert.equal(exec(process.execPath, [cli, '--write']).status, 0);
+    assert.equal(check().status, 0);
+    assert.match(read(mirror), /'\/api\/v2\/ping'/);
+
+    // 换了扩展公钥却忘了改 ExtensionID：门禁阶段同样必须失败
+    writeFileSync(config, read(config).replace("IDAQAB';", "IDAQAC';"));
+    const idMismatch = check();
+    assert.notEqual(idMismatch.status, 0);
+    assert.match(idMismatch.stderr, /ExtensionID/);
+  } finally {
+    assert.ok(resolve(fixture).startsWith(resolve(base) + sep));
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});

@@ -13,8 +13,7 @@ import {
 } from '../bindings/sheep-get/app';
 import { Clipboard, Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
-import { Event } from './lib/events';
-import { DEFAULT_SERVER_PORT } from './lib/constants';
+import { Event, Ports } from './lib/protocol.generated';
 import { DownloadRequest } from '../bindings/sheep-get/internal/window/models';
 import { TaskItem } from './components/TaskItem';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
@@ -88,7 +87,7 @@ export function App() {
 
   const [serverStatus, setServerStatus] = useState<ServerStatusState>({
     running: false,
-    port: DEFAULT_SERVER_PORT,
+    port: Ports.DefaultServer,
     connectedCount: 0,
   });
 
@@ -97,7 +96,7 @@ export function App() {
       if (st) {
         setServerStatus({
           running: Boolean(st.running),
-          port: st.port || DEFAULT_SERVER_PORT,
+          port: st.port || Ports.DefaultServer,
           connectedCount: st.connectedCount || 0,
           error: st.error,
         });
@@ -109,7 +108,7 @@ export function App() {
       if (data) {
         setServerStatus({
           running: Boolean(data.running),
-          port: data.port || DEFAULT_SERVER_PORT,
+          port: data.port || Ports.DefaultServer,
           connectedCount: data.connectedCount || 0,
           error: data.error,
         });

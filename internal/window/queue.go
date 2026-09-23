@@ -9,8 +9,8 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
-	"sheep-get/internal/events"
 	"sheep-get/internal/hls"
+	"sheep-get/internal/protocol"
 	"sheep-get/internal/task"
 	"strings"
 	"sync"
@@ -257,7 +257,7 @@ func (qc *QueueController) SwitchActive(index int) (*FileInfoItem, error) {
 	activeItem := qc.items[qc.activeIndex]
 	activeCopy := *activeItem
 
-	actions.emit(events.FileInfoNext, &activeCopy)
+	actions.emit(protocol.EventFileInfoNext, &activeCopy)
 
 	return &activeCopy, nil
 }
@@ -453,10 +453,10 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	actions.focus()
 	if len(qc.items) == 1 {
 		itemCopy := *item
-		actions.emit(events.FileInfoNext, &itemCopy)
+		actions.emit(protocol.EventFileInfoNext, &itemCopy)
 	} else {
 		// If already open with an item, update it immediately to the latest manual click so the user immediately sees response
-		actions.emit(events.FileInfoQueueUpdated, map[string]int{
+		actions.emit(protocol.EventFileInfoQueueUpdated, map[string]int{
 			"index": qc.items[0].QueueIndex,
 			"total": qc.items[0].QueueTotal,
 		})
@@ -657,7 +657,7 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	}
 
 	itemCopy := *targetItem
-	actions.emit(events.FileInfoUpdated, &itemCopy)
+	actions.emit(protocol.EventFileInfoUpdated, &itemCopy)
 
 	return start
 }
@@ -762,7 +762,7 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 	}
 
 	itemCopy := *item
-	actions.emit(events.FileInfoUpdated, &itemCopy)
+	actions.emit(protocol.EventFileInfoUpdated, &itemCopy)
 
 	if start != nil {
 		go qc.startPreDownload(start)
@@ -833,7 +833,7 @@ func (qc *QueueController) finishPreDownloadStart(start *preDownloadStart, preTa
 
 	start.item.PreDownloadTaskID = preTask.ID
 	itemCopy := *start.item
-	actions.emit(events.FileInfoUpdated, &itemCopy)
+	actions.emit(protocol.EventFileInfoUpdated, &itemCopy)
 	return false
 }
 
@@ -1060,7 +1060,7 @@ func (qc *QueueController) advanceQueueLocked(actions *windowActions) {
 			qc.activeIndex = len(qc.items) - 1
 		}
 		nextItem := *qc.items[qc.activeIndex]
-		actions.emit(events.FileInfoNext, &nextItem)
+		actions.emit(protocol.EventFileInfoNext, &nextItem)
 	} else {
 		qc.activeIndex = 0
 		actions.hide()

@@ -1,4 +1,4 @@
-import { DEFAULT_LOOPBACK_PORT } from './client';
+import { Ports } from './protocol.generated';
 import type { SessionMetadata, TakeoverConfigSync } from './types';
 
 /**
@@ -77,7 +77,7 @@ export async function getStoredTargetPort(): Promise<number> {
   } catch (err) {
     console.warn('[SheepGet] Failed to read target port from storage:', err);
   }
-  return DEFAULT_LOOPBACK_PORT;
+  return Ports.DefaultServer;
 }
 
 export async function setStoredTargetPort(port: number): Promise<void> {

@@ -8,7 +8,7 @@ import { Button } from './ui/Button';
 import { Switch } from './ui/Switch';
 import { Slider } from './ui/Slider';
 import { showToast } from './ui/Toast';
-import { DEFAULT_SERVER_PORT } from '../lib/constants';
+import { Ports } from '../lib/protocol.generated';
 import {
   OpenExtensionFolder,
   OpenFolder,
@@ -508,7 +508,7 @@ export function SettingsPanel() {
     }
   };
 
-  const serverPort = serverPortDraft ?? String(general.serverPort || DEFAULT_SERVER_PORT);
+  const serverPort = serverPortDraft ?? String(general.serverPort || Ports.DefaultServer);
 
   const handleRestartServer = async () => {
     const portNum = parseInt(serverPort, 10);
@@ -1793,7 +1793,7 @@ export function SettingsPanel() {
 
               <SettingRow
                 label="本地 HTTP 服务端口"
-                description="扩展通信监听端口，默认 9248，修改后需重启"
+                description={`扩展通信监听端口，默认 ${Ports.DefaultServer}，修改后需重启`}
               >
                 <div className="flex items-center gap-2">
                   <Input

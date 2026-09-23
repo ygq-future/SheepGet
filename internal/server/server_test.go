@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"sheep-get/internal/protocol"
 )
 
 type mockDownloadHandler struct {
@@ -87,7 +88,7 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
 
 	// 2. Ping without token (Must fail with 401)
-	req, _ := http.NewRequest("GET", baseURL+"/api/v1/ping", nil)
+	req, _ := http.NewRequest("GET", baseURL+protocol.PathPing, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("ping request failed: %v", err)
@@ -98,8 +99,8 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// 3. Ping with token (Must succeed with 200)
-	req, _ = http.NewRequest("GET", baseURL+"/api/v1/ping", nil)
-	req.Header.Set("X-SheepGet-Token", srv.SessionToken())
+	req, _ = http.NewRequest("GET", baseURL+protocol.PathPing, nil)
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("ping request failed: %v", err)
@@ -110,8 +111,8 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// 4. GET takeover config
-	req, _ = http.NewRequest("GET", baseURL+"/api/v1/config/takeover", nil)
-	req.Header.Set("X-SheepGet-Token", srv.SessionToken())
+	req, _ = http.NewRequest("GET", baseURL+protocol.PathTakeoverConfig, nil)
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get takeover config failed: %v", err)
@@ -144,8 +145,8 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 		},
 	}
 	payloadBytes, _ := json.Marshal(handoverPayload)
-	req, _ = http.NewRequest("POST", baseURL+"/api/v1/handover", bytes.NewReader(payloadBytes))
-	req.Header.Set("X-SheepGet-Token", srv.SessionToken())
+	req, _ = http.NewRequest("POST", baseURL+protocol.PathHandover, bytes.NewReader(payloadBytes))
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -167,7 +168,7 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	}
 
 	// 6. WebSocket event connection and broadcast
-	wsURL := fmt.Sprintf("ws://127.0.0.1:%d/api/v1/events?token=%s", srv.Port(), srv.SessionToken())
+	wsURL := fmt.Sprintf("ws://127.0.0.1:%d%s?%s=%s", srv.Port(), protocol.PathEvents, protocol.QueryParamToken, srv.SessionToken())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -192,8 +193,8 @@ func TestServer_LifecycleAndEndpoints(t *testing.T) {
 	if err := wsjson.Read(ctx, conn, &eventMsg); err != nil {
 		t.Fatalf("failed to read websocket event: %v", err)
 	}
-	if eventMsg.Event != "takeover_config_updated" {
-		t.Errorf("expected takeover_config_updated event, got %s", eventMsg.Event)
+	if eventMsg.Event != protocol.EventTakeoverConfigUpdated {
+		t.Errorf("expected %s event, got %s", protocol.EventTakeoverConfigUpdated, eventMsg.Event)
 	}
 
 	// 7. Test Stop removes session file
@@ -220,8 +221,8 @@ func TestServer_Discover(t *testing.T) {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
 
 	// Case 1: Extension origin succeeds
-	req, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
-	req.Header.Set("Origin", AllowedExtensionOrigin)
+	req, _ := http.NewRequest("GET", baseURL+protocol.PathDiscover, nil)
+	req.Header.Set("Origin", protocol.ExtensionOrigin)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("discover request failed: %v", err)
@@ -229,8 +230,8 @@ func TestServer_Discover(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 OK for discover, got %d", resp.StatusCode)
 	}
-	if resp.Header.Get("Access-Control-Allow-Origin") != AllowedExtensionOrigin {
-		t.Errorf("expected CORS header %s, got %s", AllowedExtensionOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
+	if resp.Header.Get("Access-Control-Allow-Origin") != protocol.ExtensionOrigin {
+		t.Errorf("expected CORS header %s, got %s", protocol.ExtensionOrigin, resp.Header.Get("Access-Control-Allow-Origin"))
 	}
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -242,7 +243,7 @@ func TestServer_Discover(t *testing.T) {
 	}
 
 	// Case 2: Web origin is blocked (CSRF defense)
-	reqWeb, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	reqWeb, _ := http.NewRequest("GET", baseURL+protocol.PathDiscover, nil)
 	reqWeb.Header.Set("Origin", "https://malicious-website.com")
 	respWeb, err := http.DefaultClient.Do(reqWeb)
 	if err != nil {
@@ -254,7 +255,7 @@ func TestServer_Discover(t *testing.T) {
 	_ = respWeb.Body.Close()
 
 	// Case 3: Other extension origin is blocked
-	reqOther, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	reqOther, _ := http.NewRequest("GET", baseURL+protocol.PathDiscover, nil)
 	reqOther.Header.Set("Origin", "chrome-extension://malicious-extension-id-12345678")
 	respOther, err := http.DefaultClient.Do(reqOther)
 	if err != nil {
@@ -266,7 +267,7 @@ func TestServer_Discover(t *testing.T) {
 	_ = respOther.Body.Close()
 
 	// Case 4: Request without origin (standard Chrome extension service worker GET) succeeds
-	reqEmpty, _ := http.NewRequest("GET", baseURL+"/api/v1/discover", nil)
+	reqEmpty, _ := http.NewRequest("GET", baseURL+protocol.PathDiscover, nil)
 	respEmpty, err := http.DefaultClient.Do(reqEmpty)
 	if err != nil {
 		t.Fatalf("empty origin discover failed: %v", err)
@@ -308,8 +309,8 @@ func TestServer_RestartOnPort(t *testing.T) {
 	}
 
 	// Verify new port is responsive
-	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/api/v1/discover", newPort), nil)
-	req.Header.Set("Origin", AllowedExtensionOrigin)
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d%s", newPort, protocol.PathDiscover), nil)
+	req.Header.Set("Origin", protocol.ExtensionOrigin)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request to restarted server failed: %v", err)
@@ -330,15 +331,15 @@ func TestServer_RestartOnPort(t *testing.T) {
 	if err := srv.Restart(occupiedPort); err != nil {
 		t.Fatalf("expected restart on occupied port %d to auto-increment and succeed: %v", occupiedPort, err)
 	}
-	if srv.Port() <= occupiedPort || srv.Port() > occupiedPort+MaxPortAutoIncrementSpan {
-		t.Errorf("expected server port to auto-increment within span [%d, %d], got %d", occupiedPort, occupiedPort+MaxPortAutoIncrementSpan, srv.Port())
+	if srv.Port() <= occupiedPort || srv.Port() > occupiedPort+protocol.PortFallbackSpan {
+		t.Errorf("expected server port to auto-increment within span [%d, %d], got %d", occupiedPort, occupiedPort+protocol.PortFallbackSpan, srv.Port())
 	}
 
 	// Verify that when all ports in the auto-increment span are occupied, restart fails gracefully and keeps previous server running
 	currentPort := srv.Port()
-	exhaustLns := make([]net.Listener, 0, MaxPortAutoIncrementSpan+1)
+	exhaustLns := make([]net.Listener, 0, protocol.PortFallbackSpan+1)
 	baseBlockedPort := 54000
-	for p := baseBlockedPort; p <= baseBlockedPort+MaxPortAutoIncrementSpan; p++ {
+	for p := baseBlockedPort; p <= baseBlockedPort+protocol.PortFallbackSpan; p++ {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
 		if err != nil {
 			t.Fatalf("failed to occupy test port %d: %v", p, err)
@@ -352,17 +353,10 @@ func TestServer_RestartOnPort(t *testing.T) {
 	}()
 
 	if err := srv.Restart(baseBlockedPort); err == nil {
-		t.Errorf("expected restart on completely occupied port span [%d-%d] to fail", baseBlockedPort, baseBlockedPort+MaxPortAutoIncrementSpan)
+		t.Errorf("expected restart on completely occupied port span [%d-%d] to fail", baseBlockedPort, baseBlockedPort+protocol.PortFallbackSpan)
 	}
 	if srv.Port() != currentPort {
 		t.Errorf("expected server to retain port %d after failed restart attempt, got %d", currentPort, srv.Port())
 	}
 	_ = initialPort
-}
-
-func TestServer_EventsContract(t *testing.T) {
-	// Pinned event string contract matching browser extension expectations
-	if EventServerMigrated != "server_migrated" {
-		t.Errorf("expected EventServerMigrated to be 'server_migrated', got '%s'", EventServerMigrated)
-	}
 }

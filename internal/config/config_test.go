@@ -1,6 +1,8 @@
 package config
 
 import (
+	"sheep-get/internal/protocol"
+
 	"encoding/json"
 	"errors"
 	"os"
@@ -55,8 +57,8 @@ func TestDefaultSettings(t *testing.T) {
 	if s.General.LightweightMode != false {
 		t.Errorf("expected LightweightMode false by default")
 	}
-	if s.General.ServerPort != DefaultServerPort {
-		t.Errorf("expected ServerPort %d by default, got %d", DefaultServerPort, s.General.ServerPort)
+	if s.General.ServerPort != protocol.PortDefaultServer {
+		t.Errorf("expected ServerPort %d by default, got %d", protocol.PortDefaultServer, s.General.ServerPort)
 	}
 	if s.Proxy.Mode != ProxyModeSystem {
 		t.Errorf("expected ProxyModeSystem, got %s", s.Proxy.Mode)

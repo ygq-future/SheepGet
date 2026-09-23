@@ -1,10 +1,4 @@
-import {
-  DesktopClient,
-  type DesktopEventLink,
-  DEFAULT_LOOPBACK_PORT,
-  PORT_FALLBACK_SPAN,
-  discoverSessionViaHttp,
-} from '../lib/client';
+import { DesktopClient, type DesktopEventLink, discoverSessionViaHttp } from '../lib/client';
 import { ResponseFilenameCache } from '../lib/filenames';
 import { LINK_VERIFY_TTL_MS, planHandoverFailure, shouldReverifyLink } from '../lib/handover';
 import {
@@ -14,6 +8,7 @@ import {
   type MediaResource,
 } from '../lib/media';
 import { decideTakeover, type TakeoverDecision } from '../lib/rules';
+import { Ports } from '../lib/protocol.generated';
 import {
   KEY_MASKS,
   SHORTCUT_GRACE_PERIOD_MS,
@@ -76,7 +71,7 @@ let linkOnline = false;
 let linkSession: SessionMetadata | null = null;
 let linkLastVerifiedAt: number | null = null;
 let linkOfflineReason: string | null = null;
-let currentTargetPort = DEFAULT_LOOPBACK_PORT;
+let currentTargetPort = Ports.DefaultServer;
 const PING_TIMEOUT_MS = 1200;
 const HANDOVER_TIMEOUT_MS = 2500;
 
@@ -676,18 +671,18 @@ async function reverifyLink(trigger: string): Promise<DesktopStatus> {
   // 优先通过本地 HTTP 直接探测（为便携版与免 Host 模式提供纯净 HTTP 通信链路）
   // 单一数据来源：获取当前目标端口作为基准
   currentTargetPort = await getStoredTargetPort();
-  const basePort = currentTargetPort || stored?.port || DEFAULT_LOOPBACK_PORT;
+  const basePort = currentTargetPort || stored?.port || Ports.DefaultServer;
 
-  // 触发情况 3：顺延探测机制 [basePort, basePort + 1, ..., basePort + PORT_FALLBACK_SPAN]
+  // 触发情况 3：顺延探测机制 [basePort, basePort + 1, ..., basePort + Ports.FallbackSpan]
   const candidatePorts: number[] = [];
-  for (let i = 0; i <= PORT_FALLBACK_SPAN; i++) {
+  for (let i = 0; i <= Ports.FallbackSpan; i++) {
     const p = basePort + i;
     if (p >= 1024 && p <= 65535 && !candidatePorts.includes(p)) {
       candidatePorts.push(p);
     }
   }
-  // 保底：若 stored.port 与 DEFAULT_LOOPBACK_PORT 不在顺延池中，也一并加入末尾保底
-  for (const fallback of [stored?.port, DEFAULT_LOOPBACK_PORT]) {
+  // 保底：若 stored.port 与默认端口不在顺延池中，也一并加入末尾保底
+  for (const fallback of [stored?.port, Ports.DefaultServer]) {
     if (
       typeof fallback === 'number' &&
       fallback >= 1024 &&

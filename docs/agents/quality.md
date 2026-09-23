@@ -42,6 +42,7 @@ Vite 与 React 插件配套升级，依据[Vite 迁移指南](https://vite.dev/g
 | 构建                   | Vite、Go build；Wails build                                                       | 本机开发构建；三平台本机构建矩阵                   | 默认 / CI       | 默认不修改维护文件；跨平台结果独立记录                                                             |
 | 依赖与配置             | go mod verify、tidy -diff；Bun frozen dry-run；golangci config verify、actionlint | 两套锁文件、Go 模块、分析配置、CI 工作流           | 默认 / error    | 冻结锁冲突已验证会失败；verify 仅证明缓存完整性                                                    |
 | 版本一致性             | `scripts/version.mjs --check`（stage `version`）                                  | `build/config.yml` 的 SSOT 与 8 处镜像             | 默认 / error    | 镜像表在模块内声明；改错一处即失败，`--set X.Y.Z` 一次性改写并复核                                 |
+| 环回契约镜像           | `scripts/protocol.mjs --check`（stage `protocol`）                                | `internal/protocol` 与两处生成的 TS 镜像           | 默认 / error    | 端点、头、端口与事件名改一处未同步即失败；扩展 ID 由扩展公钥重新推导并比对                         |
 | 提交信息               | 根依赖中固定的 commitlint                                                         | 实际消息或整个提交范围                             | commit-msg / CI | 合法和非法输入已验证；不经 bun x 动态取包                                                          |
 | Git hooks              | 入库的 .githooks + bootstrap                                                      | 当前仓库                                           | 本地            | 已配置；克隆后必须执行 bootstrap                                                                   |
 | CI                     | GitHub Actions 三平台矩阵与 required 汇总                                         | Windows、macOS、Ubuntu                             | 合并/发布前     | 工作流已配置，远端执行与分支保护待验证                                                             |
@@ -53,6 +54,7 @@ Vite 与 React 插件配套升级，依据[Vite 迁移指南](https://vite.dev/g
 - 前端生产构建先于 Go 分析/构建，保证 embed 的 frontend/dist 存在。Wails 发布构建在 .tools 下隔离副本运行，允许框架在副本内更新 runtime，再将成品复制到 build/bin；不会改动工作区 bindings。声明产物仅写入 frontend/dist、build/bin 与工具缓存。
 - 根目录 Prettier 配置是公共格式选项来源，前端附加 Tailwind v4 stylesheet 和实际使用的 cn helper。
 - 产品版本以 `build/config.yml` 的 `info.version` 为 SSOT，镜像位置在 `scripts/version.mjs` 的 `MIRRORS` 表中声明；门禁执行 `--check`，任一镜像漂移或声明被改名即失败，新增版本出现位置必须在该表登记。
+- 环回通道与界面事件的线上事实只在 `internal/protocol/protocol.go` 定义一次：端点路径、鉴权头、查询参数、默认端口与顺延步长、两个事件通道的事件名，以及由扩展公钥推导的扩展 ID。TypeScript 镜像（`extension/lib/protocol.generated.ts`、`frontend/src/lib/protocol.generated.ts`）由 `scripts/protocol.mjs` 生成，门禁 stage `protocol` 校验；扩展 ID 用扩展公钥重新推导后比对，换了公钥却忘了改常量同样失败。
 - 引擎/框架构建配置经实际构建验证，工作流经 actionlint 验证；actionlint 的可选 shellcheck/pyflakes 检查未启用，不宣称覆盖嵌入脚本的所有诊断。
   当前维护一个 Go 模块、前端 SPA 模块及配套浏览器扩展模块（extension/）；扩展工程的依赖、类型检查、构建及单元测试已全面纳入门禁体系。增加新模块、源码或生成入口时必须同步纳入门禁，不能依赖空 glob 或忽略缺失任务获得成功。
 
@@ -68,7 +70,7 @@ React Hooks 和 TypeScript 语义规则已覆盖；JS 配置只做基础 ESLint�
 
 `scripts/test-scope.json` 中 scaffoldOnly 为 false，Go 与前端真实行为测试均已落地并实际执行，任一侧缺测试直接失败。无测试时打印 PARTIAL，而非伪造成功。该豁免仅在业务实现之前、两侧都还没有测试的空脚手架阶段有效，不延伸至已有业务代码。
 
-质量设施测试验证格式类排序、类型错误、Hooks、Promise、弃用引用、缺失工具、失败退出传播、提交信息校验和版本镜像一致性（含 `--set` 全量改写与非法版本拒绝）；Go 反例仅在临时隔离目录运行，清理后再次验证通过。
+质量设施测试验证格式类排序、类型错误、Hooks、Promise、弃用引用、缺失工具、失败退出传播、提交信息校验、版本镜像一致性与环回契约镜像一致性（含 `--set` 全量改写、非法版本拒绝、契约漂移与扩展 ID 公钥不符）；Go 反例仅在临时隔离目录运行，清理后再次验证通过。
 
 ## 本地与 CI 责任
 

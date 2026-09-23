@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { DEFAULT_LOOPBACK_PORT } from '../../lib/client';
+import { Ports } from '../../lib/protocol.generated';
 import { watchDesktopStatus } from '../../lib/liveStatus';
 import { formatBytes, formatDuration, mimeShortLabel, type MediaResource } from '../../lib/media';
 import type {
@@ -692,12 +692,12 @@ export default function App() {
                 ? `本地端口 ${status?.port} · 上次校验 ${formatClock(
                     status?.lastVerifiedAt ?? null,
                   )}`
-                : `桌面端离线 · 目标端口 ${status?.port ?? DEFAULT_LOOPBACK_PORT}`}
+                : `桌面端离线 · 目标端口 ${status?.port ?? Ports.DefaultServer}`}
             </span>
             {!online && (
               <button
                 onClick={() => {
-                  setCustomPortInput(String(status?.port ?? DEFAULT_LOOPBACK_PORT));
+                  setCustomPortInput(String(status?.port ?? Ports.DefaultServer));
                   setEditingPort(true);
                 }}
                 style={{

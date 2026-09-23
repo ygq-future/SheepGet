@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import { Events } from '@wailsio/runtime';
 import { AnimatePresence, motion, LayoutGroup } from 'motion/react';
 import { unwrapEventData } from '../lib/utils';
-import { Event } from '../lib/events';
+import { Event } from '../lib/protocol.generated';
 import {
   DownloadCloud,
   CheckCircle2,

@@ -21,17 +21,9 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"sheep-get/internal/atomicfile"
+	"sheep-get/internal/protocol"
 	"sheep-get/internal/version"
 )
-
-// PinnedExtensionID is the fixed 32-character extension ID for SheepGet (ADR-0005).
-const PinnedExtensionID = "oediboaeofmnlkgcjhnpfnngphkjooam"
-
-// AllowedExtensionOrigin is the expected browser extension Origin header value.
-const AllowedExtensionOrigin = "chrome-extension://" + PinnedExtensionID
-
-// EventServerMigrated is the WebSocket event name emitted to extension clients before migrating to a new port.
-const EventServerMigrated = "server_migrated"
 
 // Status represents the runtime status of the loopback HTTP and WebSocket server.
 type Status struct {
@@ -152,9 +144,6 @@ func (s *Server) Start() error {
 	return s.startLocked()
 }
 
-// MaxPortAutoIncrementSpan defines the maximum number of fallback ports to try when targetPort is occupied.
-const MaxPortAutoIncrementSpan = 5
-
 func listenWithAutoIncrement(basePort int) (net.Listener, int, error) {
 	if basePort <= 0 {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -165,7 +154,7 @@ func listenWithAutoIncrement(basePort int) (net.Listener, int, error) {
 	}
 
 	var lastErr error
-	maxPort := basePort + MaxPortAutoIncrementSpan
+	maxPort := basePort + protocol.PortFallbackSpan
 	if maxPort > 65535 {
 		maxPort = 65535
 	}
@@ -203,7 +192,7 @@ func (s *Server) Restart(newPort int) error {
 	// notify them so they immediately migrate to the new port before the old server shuts down.
 	if s.port != actualPort && len(s.clients) > 0 {
 		migrationMsg := EventMessage{
-			Event: EventServerMigrated,
+			Event: protocol.EventServerMigrated,
 			Data: map[string]any{
 				"port": actualPort,
 			},
@@ -295,16 +284,16 @@ func (s *Server) startWithListenerLocked(ln net.Listener) error {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/discover", s.handleDiscover)
-	mux.HandleFunc("OPTIONS /api/v1/discover", s.handleDiscover)
-	mux.HandleFunc("POST /api/v1/discover", s.handleDiscover)
-	mux.HandleFunc("GET /api/v1/ping", s.authMiddleware(s.handlePing))
-	mux.HandleFunc("GET /api/v1/config/takeover", s.authMiddleware(s.handleTakeoverConfig))
-	mux.HandleFunc("HEAD /api/v1/config/takeover", s.authMiddleware(s.handleTakeoverConfig))
-	mux.HandleFunc("POST /api/v1/handover", s.authMiddleware(s.handleHandover))
-	mux.HandleFunc("POST /api/v1/hls/variants", s.authMiddleware(s.handleHLSVariants))
-	mux.HandleFunc("POST /api/v1/media/probe", s.authMiddleware(s.handleMediaProbe))
-	mux.HandleFunc("GET /api/v1/events", s.handleEvents)
+	mux.HandleFunc("GET "+protocol.PathDiscover, s.handleDiscover)
+	mux.HandleFunc("OPTIONS "+protocol.PathDiscover, s.handleDiscover)
+	mux.HandleFunc("POST "+protocol.PathDiscover, s.handleDiscover)
+	mux.HandleFunc("GET "+protocol.PathPing, s.authMiddleware(s.handlePing))
+	mux.HandleFunc("GET "+protocol.PathTakeoverConfig, s.authMiddleware(s.handleTakeoverConfig))
+	mux.HandleFunc("HEAD "+protocol.PathTakeoverConfig, s.authMiddleware(s.handleTakeoverConfig))
+	mux.HandleFunc("POST "+protocol.PathHandover, s.authMiddleware(s.handleHandover))
+	mux.HandleFunc("POST "+protocol.PathHLSVariants, s.authMiddleware(s.handleHLSVariants))
+	mux.HandleFunc("POST "+protocol.PathMediaProbe, s.authMiddleware(s.handleMediaProbe))
+	mux.HandleFunc("GET "+protocol.PathEvents, s.handleEvents)
 
 	srv := &http.Server{
 		Handler:      mux,
@@ -348,7 +337,7 @@ func (s *Server) BroadcastTakeoverConfig(syncData TakeoverConfigSync) {
 	syncData.Version = newVersion
 
 	msg := EventMessage{
-		Event: "takeover_config_updated",
+		Event: protocol.EventTakeoverConfigUpdated,
 		Data:  syncData,
 	}
 
@@ -365,7 +354,7 @@ func (s *Server) BroadcastTakeoverConfig(syncData TakeoverConfigSync) {
 
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("X-SheepGet-Token")
+		token := r.Header.Get(protocol.HeaderToken)
 		s.mu.RLock()
 		currentToken := s.sessionToken
 		s.mu.RUnlock()
@@ -384,13 +373,13 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"forbidden web origin"}`, http.StatusForbidden)
 		return
 	}
-	if origin != "" && origin != AllowedExtensionOrigin {
+	if origin != "" && origin != protocol.ExtensionOrigin {
 		http.Error(w, `{"error":"forbidden origin"}`, http.StatusForbidden)
 		return
 	}
 
-	w.Header().Set("Access-Control-Allow-Origin", AllowedExtensionOrigin)
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-SheepGet-Token")
+	w.Header().Set("Access-Control-Allow-Origin", protocol.ExtensionOrigin)
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+protocol.HeaderToken)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 
 	if r.Method == http.MethodOptions {
@@ -424,7 +413,7 @@ func (s *Server) handleTakeoverConfig(w http.ResponseWriter, r *http.Request) {
 	ver := s.configVersion.Load()
 	eTag := fmt.Sprintf(`"%d"`, ver)
 	w.Header().Set("ETag", eTag)
-	w.Header().Set("X-Config-Version", fmt.Sprintf("%d", ver))
+	w.Header().Set(protocol.HeaderConfigVersion, fmt.Sprintf("%d", ver))
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method == http.MethodHead {
@@ -542,9 +531,9 @@ func (s *Server) handleMediaProbe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	token := r.URL.Query().Get(protocol.QueryParamToken)
 	if token == "" {
-		token = r.Header.Get("X-SheepGet-Token")
+		token = r.Header.Get(protocol.HeaderToken)
 	}
 	if token != s.sessionToken {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

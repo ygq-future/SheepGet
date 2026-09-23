@@ -16,8 +16,8 @@ import (
 	"sheep-get/internal/credentials"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
-	appevents "sheep-get/internal/events"
 	"sheep-get/internal/logging"
+	"sheep-get/internal/protocol"
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/sys"
@@ -263,11 +263,11 @@ func NewApp() *App {
 	if st.General.ServerPort > 0 {
 		loopbackSrv.SetTargetPort(st.General.ServerPort)
 	} else {
-		loopbackSrv.SetTargetPort(config.DefaultServerPort)
+		loopbackSrv.SetTargetPort(protocol.PortDefaultServer)
 	}
 	loopbackSrv.SetOnStatusChange(func(status server.Status) {
 		if wailsApp := app.getApp(); wailsApp != nil {
-			wailsApp.Event.Emit(appevents.ServerStatusChanged, status)
+			wailsApp.Event.Emit(protocol.EventServerStatusChanged, status)
 		}
 	})
 	app.loopbackServer = loopbackSrv
@@ -349,14 +349,14 @@ func (a *App) Shutdown() {
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
 func (a *App) OnTaskUpdated(t *task.Task) {
 	if app := a.getApp(); app != nil {
-		app.Event.Emit(appevents.TaskUpdated, t)
+		app.Event.Emit(protocol.EventTaskUpdated, t)
 	}
 }
 
 // OnTaskDeleted emits wails event to the frontend whenever a task is deleted
 func (a *App) OnTaskDeleted(taskID string) {
 	if app := a.getApp(); app != nil {
-		app.Event.Emit(appevents.TaskDeleted, taskID)
+		app.Event.Emit(protocol.EventTaskDeleted, taskID)
 	}
 }
 
@@ -381,7 +381,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		a.clipboardWatcher.OnSettingsUpdated(s)
 	}
 	if app := a.getApp(); app != nil {
-		app.Event.Emit(appevents.SettingsUpdated, s)
+		app.Event.Emit(protocol.EventSettingsUpdated, s)
 	}
 	if app := a.getApp(); app != nil && s != nil {
 		if mainWin, ok := app.Window.GetByName(winNameMain); ok {
@@ -479,7 +479,7 @@ func (a *App) RestartServer(port int) (int, error) {
 			port = a.settings.Get().General.ServerPort
 		}
 		if port <= 0 {
-			port = config.DefaultServerPort
+			port = protocol.PortDefaultServer
 		}
 	}
 
@@ -503,7 +503,7 @@ func (a *App) GetServerStatus() server.Status {
 	if a.loopbackServer != nil {
 		return a.loopbackServer.Status()
 	}
-	port := config.DefaultServerPort
+	port := protocol.PortDefaultServer
 	if a.settings != nil {
 		port = a.settings.Get().General.ServerPort
 	}
@@ -1237,13 +1237,13 @@ func (a *App) OpenSettingsWindow() {
 	}
 	if win, ok := app.Window.GetByName(winNameMain); ok {
 		window.ShowAndRaise(win)
-		app.Event.Emit(appevents.AppOpenSettings)
+		app.Event.Emit(protocol.EventAppOpenSettings)
 		return
 	}
 	win := a.ensureMainWindow(false, "/?open=settings")
 	if win != nil {
 		window.ShowAndRaise(win)
-		app.Event.Emit(appevents.AppOpenSettings)
+		app.Event.Emit(protocol.EventAppOpenSettings)
 	}
 }
 
@@ -1306,8 +1306,8 @@ func (a *App) ShowProgressWindow(taskID string) {
 			a.windowTimerLock.Unlock()
 			window.ShowAndRaise(win)
 			if taskID != "" {
-				app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
-				app.Event.Emit(appevents.ProgressFocusTask, taskID)
+				app.Event.Emit(protocol.EventProgressFocusCompleted, taskID)
+				app.Event.Emit(protocol.EventProgressFocusTask, taskID)
 			}
 			return
 		}
@@ -1349,13 +1349,13 @@ func (a *App) ShowProgressWindow(taskID string) {
 			}
 			event.Cancel()
 			progWin.Hide()
-			app.Event.Emit(appevents.ProgressClearViewed)
+			app.Event.Emit(protocol.EventProgressClearViewed)
 			a.scheduleWindowIdleDestroy(winNameProgress)
 		})
 		window.ShowAndRaise(progWin)
 		if taskID != "" {
-			app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
-			app.Event.Emit(appevents.ProgressFocusTask, taskID)
+			app.Event.Emit(protocol.EventProgressFocusCompleted, taskID)
+			app.Event.Emit(protocol.EventProgressFocusTask, taskID)
 		}
 	}
 }
@@ -1374,7 +1374,7 @@ func (a *App) HideProgressWindow() {
 	if app := a.getApp(); app != nil {
 		if win, ok := app.Window.GetByName(winNameProgress); ok {
 			win.Hide()
-			app.Event.Emit(appevents.ProgressClearViewed)
+			app.Event.Emit(protocol.EventProgressClearViewed)
 			a.scheduleWindowIdleDestroy(winNameProgress)
 		}
 	}

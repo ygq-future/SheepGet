@@ -2,6 +2,8 @@
 package config
 
 import (
+	"sheep-get/internal/protocol"
+
 	"encoding/json"
 	"fmt"
 	"net"
@@ -106,9 +108,6 @@ func (d *DownloadConfig) UnmarshalJSON(data []byte) error {
 	}
 	return nil
 }
-
-// DefaultServerPort is the default local loopback HTTP server port.
-const DefaultServerPort = 9248
 
 // GeneralConfig specifies general application settings like autostart and server port.
 type GeneralConfig struct {
@@ -330,7 +329,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			SilentStartup:   false,
 			LightweightMode: false,
 			EnableLogging:   false,
-			ServerPort:      DefaultServerPort,
+			ServerPort:      protocol.PortDefaultServer,
 		},
 		Appearance: AppearanceConfig{
 			Theme:       ThemeSystem,
@@ -371,7 +370,7 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 
 	// Validate ServerPort
 	if s.General.ServerPort < 1024 || s.General.ServerPort > 65535 {
-		s.General.ServerPort = DefaultServerPort
+		s.General.ServerPort = protocol.PortDefaultServer
 	}
 
 	// Validate Theme

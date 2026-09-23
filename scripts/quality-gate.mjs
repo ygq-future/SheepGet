@@ -114,6 +114,9 @@ const stages = {
   version() {
     node('scripts/version.mjs', ['--check']);
   },
+  protocol() {
+    node('scripts/protocol.mjs', ['--check']);
+  },
   dependencies() {
     run('go', ['mod', 'verify']);
     run('go', ['mod', 'tidy', '-diff']);

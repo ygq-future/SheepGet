@@ -19,7 +19,7 @@
 | 1 | C2 | 进度只给快照，不再共享同一个 `*task.Task` | 强 | 小—中 | 已完成 |
 | 2 | C8 | 版本一致性：做成检查，而不是清单 | 值得探索 | 小 | 已完成 |
 | 3 | C5 | 「这个名字被占了」只保留一条规则 | 强 | 小—中 | 已完成 |
-| 4 | C4 | 给环回通信契约一个归属模块 | 强 | 中 | 待探讨 |
+| 4 | C4 | 给环回通信契约一个归属模块 | 强 | 中 | 已完成 |
 | 5 | C1 | 让下载入口只有一个归属模块（含删死代码） | 强 | 大 | 待探讨 |
 | 6 | C3 | 窗口生命周期收成一个模块，每窗口一份声明 | 强 | 中 | 待探讨 |
 | 7 | C7 | 为扩展 Service Worker 立一条「就绪」接缝 | 值得探索 | 中 | 待探讨 |
@@ -108,13 +108,25 @@ C2 · C8 独立，无前置
 ## 4. C4 给环回通信契约一个归属模块
 
 - **强度**：强
+- **状态**：已完成（2026-09-23），门禁通过
 - **问题**：端点路径、鉴权头、事件名、端口与顺延步长、载荷结构、固定扩展 ID 被写了两遍且无归属；两边「契约测试」各自钉住自己那份字面量，扩展与桌面端可静默漂移。
-- **证据**：`internal/server/server.go:296-306, 366-393`、`internal/server/types.go`、`internal/config/model.go:111`、`internal/events/events.go`、`extension/lib/client.ts:10-11, 22-75, 246-249`、`extension/lib/types.ts`、`frontend/src/lib/constants.ts`、`frontend/src/lib/events.ts`、`internal/server/server_test.go:364-368`、`extension/lib/client.test.ts:11-16`（9248 出现在 3 个代码文件，顺延步长 `+5` 出现在 2 个）。
-- **深化方向**：一个 protocol 模块持有 Go 侧线上事实，生成 TypeScript 镜像，门禁在两侧不一致时失败。ADR-0006 已定通道，本项不触碰该决策。
-- **影响面**：`internal/server`、`internal/events`、`extension/lib`、`frontend/src/lib`、`scripts/quality-gate.mjs`、`scripts/package.mjs`（扩展产物）。
-- **前置**：无（但它是 C1、C7 的前置）。
-- **验证**：改一处端点或事件名，未同步的一侧必须让门禁失败。
-- **风险**：生成器引入构建步骤，需确保扩展与前端各自可独立构建，不破坏现有门禁阶段划分。
+- **证据**：`internal/server/server.go` 的 mux 注册、鉴权头与 CORS 列表、`MaxPortAutoIncrementSpan`，`internal/config/model.go:111` 的 `DefaultServerPort`，`internal/events/events.go` 与 `frontend/src/lib/events.ts` 的事件名，`extension/lib/client.ts` 的端口/顺延步长/路径/头/WebSocket 事件名，以及两端各自钉住字面量的测试。
+- **实际改动**：
+  - 新增 `internal/protocol`：环回端点路径、鉴权头、查询参数、默认端口与顺延步长、环回 WebSocket 事件名、界面事件名，以及扩展 ID 与 Origin。原先 `internal/events` 整包、`config.DefaultServerPort`、`server.PinnedExtensionID`/`EventServerMigrated`/`MaxPortAutoIncrementSpan`、前端 `lib/events.ts` 与 `lib/constants.ts` 全部删除，两侧只引用这里或它的镜像。
+  - `scripts/protocol.mjs` 从 protocol.go 生成两份 TS 镜像（`extension/lib/protocol.generated.ts`、`frontend/src/lib/protocol.generated.ts`）；门禁新增 stage `protocol`，两侧不一致直接失败。生成器的输入契约写在 protocol.go 的包注释里（`// mirror 目标.分组` + 字面量/整数，或 `BasePath + "字面量"`），写法不合契约会报错，不会静默漏生成。
+  - 扩展 ID 由 `extension/wxt.config.ts` 的固定公钥重新推导（SHA-256 前 16 字节按 a–p 编码）并与 Go 常量比对：换了公钥却忘了改常量，门禁直接失败——这正是 ADR-0005 决策 3 最容易漏的一步。
+  - 扩展的 `DEFAULT_LOOPBACK_PORT`/`PORT_FALLBACK_SPAN`、前端的 `DEFAULT_SERVER_PORT` 与 `Event` 表、设置页里写死的「默认 9248」都改为读镜像。
+  - 两侧「钉字面量」的断言删除（`client.test.ts` 两条静态断言、`server_test.go` 的空壳用例）：漂移保护移到生成器与门禁；跨进程契约的取值一侧由生成器产出、另一侧由门禁比对，不再各写一份。`docs/agents/post-implementation-checklist.md` 里「抽完常量再加断言测试钉住字面量」的旧做法一并改写。
+  - 代码评审发现并修复（附一条回归测试）：`DesktopClient` 的请求地址一度由「带协议前缀的 baseUrl」与「已含前缀的路径」拼接，得到 `/api/v1/api/v1/...`；新增用例逐个断言六条请求的真实地址，修复前该用例失败。
+- **未纳入镜像**：载荷结构（`internal/server/types.go` 与 `extension/lib/types.ts`）仍两侧各写一份。这是有意的边界：本项覆盖的是寻址事实（端点、头、端口、事件名、身份），它们的漂移会让扩展直接连不上；载荷字段的漂移由后端与扩展各自的行为测试守着，而把 Go 结构体生成成 TS 接口要引入第二套生成机制（反射 + 模板），代价与收益不成比例。若后续确有需要，作为独立项讨论。
+- **验证**（实际执行）：
+  - 漂移反证：把 protocol.go 的 `PathPing` 改成 `/ping2` 后，`node scripts/protocol.mjs --check` 与 `node scripts/quality-gate.mjs --stage protocol` 均失败并指出过期文件；还原后通过。
+  - 公钥反证：把扩展公钥末尾改一位后 `--check` 以「ExtensionID 与公钥推导结果不一致」失败。
+  - 质量设施新增用例：临时目录内复刻协议文件与生成器，验证「漂移必失败 → `--write` 后镜像跟着 Go 侧走 → 公钥与 ID 不符必失败」。
+  - 扩展新增用例：六条环回请求的地址与鉴权头逐个断言（回归保护见上）。
+  - 全量 `node scripts/quality-gate.mjs` 通过（Go 全包、前端 88 项、扩展 78 项、9 项质量设施测试）；扩展与前端仍各自独立构建（gate 的 `extensionBuild` 与 `frontendBuild` 阶段均通过）。
+- **影响面**：`internal/protocol`（新增）、`scripts/protocol.mjs`（新增）、`scripts/quality-gate.mjs`、`internal/server`、`internal/config`、`app.go`、`internal/window`、`extension/lib` 与 `entrypoints`、`frontend/src`、`AGENTS.md`、`CONTEXT.md`、`docs/agents/quality.md`、`docs/agents/post-implementation-checklist.md`。
+- **风险**：新增一个生成步骤（`node scripts/protocol.mjs --write`）；产物入库且门禁校验，遗忘执行只会让门禁报错，不会让产物悄悄过期。ADR-0006 定的通道与载荷格式未触碰。
 
 ## 5. C1 让下载入口只有一个归属模块（含删死代码）
 

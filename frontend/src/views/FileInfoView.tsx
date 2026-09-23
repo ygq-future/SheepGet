@@ -43,7 +43,7 @@ import type * as windowModels from '../../bindings/sheep-get/internal/window/mod
 import * as duplicateModels from '../../bindings/sheep-get/internal/duplicate/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
-import { Event } from '../lib/events';
+import { Event } from '../lib/protocol.generated';
 import { useSettingsStore } from '../stores/settings';
 import { useFileInfoDraftStore } from '../stores/fileInfoDraft';
 import { Select } from '../components/ui/Select';

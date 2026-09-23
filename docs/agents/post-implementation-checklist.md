@@ -12,7 +12,7 @@
 
 - 交付前，对本次新增的**每个规则、映射、字符串常量、文件操作**，grep 一遍是否已存在：
   - 同一规则是否在 Go 和 TS 各实现了一份？（尤其「文件名→分类」「URL 取文件名」「重复链接裁决」这类**跨前后端**的规则）
-  - 同一个常量/事件名是否已有统一出处？（`config.DefaultConnectionsPerTask`、`internal/events`、`frontend/src/lib/events.ts`）
+  - 同一个常量/事件名是否已有统一出处？（`config.DefaultConnectionsPerTask`、`internal/protocol`（环回通道与界面事件的线上事实）、`internal/version`（产品版本））
 - 跨前后端的规则只在后端实现一次（`config.ResolveDestination`、`internal/duplicate.Decide`），前端只读后端结果，不自行推导。
 
 **判断线索**：一个业务规则的「输入→输出」映射，出现第二次就是该抽的候选；第三次出现就是缺陷。
@@ -48,8 +48,8 @@
 **动作**：
 
 - 出现**第二次**的魔法值（数字、字符串）抽成常量；只出现一次的可接受。
-- 常量要有单一出处：窗口名/几何 → `appconsts.go`；事件名 → `internal/events`（Go）+ `frontend/src/lib/events.ts`（TS），改名两端同步；连接数 → `config.DefaultConnectionsPerTask`。
-- 事件名这类**跨进程契约**，抽完后加断言测试钉住字面量（参考 `internal/events/events_test.go`），防止误改导致前后端静默断联。
+- 常量要有单一出处：窗口名/几何 → `appconsts.go`；环回端点、头、端口与事件名 → `internal/protocol`（TS 侧读生成器产出的镜像，不另写字面量）；产品版本 → `build/config.yml`；连接数 → `config.DefaultConnectionsPerTask`。
+- **跨进程契约**（事件名、端点路径）抽完后不要靠断言测试钉字面量：两侧各钉一份字面量恰好是漂移的来源。正确做法是让另一侧的取值由生成器产出，再让门禁比较（参考 `scripts/protocol.mjs` 与 stage `protocol`）。
 
 ---
 
