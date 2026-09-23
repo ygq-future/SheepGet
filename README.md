@@ -95,10 +95,10 @@ oediboaeofmnlkgcjhnpfnngphkjooam
 bun run package
 ```
 
-打包产物**统一输出至项目根目录 `dist/`**，命名规范与发布矩阵完全对齐：
+打包产物**统一输出至 `build/dist/`**，命名规范与发布矩阵完全对齐：
 
 ```text
-dist/
+build/dist/
 ├── SheepGet_1.0.0_x64-setup.exe                  # Windows x64 NSIS 安装程序（带向导与快捷方式）
 ├── SheepGet_1.0.0_windows-x64-portable.zip       # Windows x64 绿色免安装便携包（即拷即用）
 ├── SheepGet_1.0.0_x64_en-US.msi                  # Windows x64 MSI 企业静默安装包

@@ -8,7 +8,7 @@ const FIXED_PUBLIC_KEY =
 export default defineConfig({
   extensionApi: 'chrome',
   modules: ['@wxt-dev/module-react'],
-  outDir: '../dist-extension',
+  outDir: '../build/dist-extension',
   manifest: {
     name: 'SheepGet Integration Module',
     description: 'Browser integration and media download helper for SheepGet',

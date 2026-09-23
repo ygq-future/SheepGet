@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package browser
 
 import (
 	"os"
@@ -10,9 +10,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// findBrowserExe 定位 Chrome 或 Edge 的可执行文件；找不到（或浏览器不受支持）时返回空串，
+// FindBrowserExe 定位 Chrome 或 Edge 的可执行文件；找不到（或浏览器不受支持）时返回空串，
 // 由调用方回退到 shell 启动。
-func findBrowserExe(browser string) string {
+func FindBrowserExe(browser string) string {
 	var vendor string
 	var exeName string
 	switch strings.ToLower(strings.TrimSpace(browser)) {

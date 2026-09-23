@@ -39,6 +39,7 @@ const productDescription = descMatch ? descMatch[1] : 'Modern Desktop Download M
 const ext = isWin ? '.exe' : '';
 const binDir = join(root, 'build', 'bin');
 const toolsDir = join(root, '.tools');
+rmSync(binDir, { recursive: true, force: true });
 mkdirSync(binDir, { recursive: true });
 mkdirSync(toolsDir, { recursive: true });
 function resolveWails3() {
@@ -47,7 +48,7 @@ function resolveWails3() {
   return 'wails3';
 }
 
-const distDir = join(root, 'dist');
+const distDir = join(root, 'build', 'dist');
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
 
@@ -183,7 +184,7 @@ async function main() {
   console.log('[Package] Building browser extension...');
   run('bun', ['run', 'build'], { cwd: join(root, 'extension'), quiet: true });
 
-  const extSourceDir = join(root, 'dist-extension', 'chrome-mv3');
+  const extSourceDir = join(root, 'build', 'dist-extension', 'chrome-mv3');
   const extTargetDir = join(distDir, 'extension');
   rmSync(extTargetDir, { recursive: true, force: true });
   cpSync(extSourceDir, extTargetDir, { recursive: true });
@@ -311,6 +312,8 @@ async function main() {
   console.log(`- SHA256SUMS.txt                                 [Integrity Checksum   ]`);
   console.log('External FFmpeg:   0 B (Pure Native Go Media Processing)');
   console.log('=====================================================================\n');
+  // Clean intermediate build scratch directory
+  rmSync(binDir, { recursive: true, force: true });
 }
 
 main().catch((err) => {

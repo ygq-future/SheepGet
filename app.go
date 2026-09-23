@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sheep-get/internal/browser"
 	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
 	"sheep-get/internal/credentials"
@@ -18,6 +19,7 @@ import (
 	appevents "sheep-get/internal/events"
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
+	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 	"strings"
@@ -75,7 +77,7 @@ func (w *wailsWindowView) Show() {
 		return
 	}
 	if win, ok := wailsApp.Window.GetByName(w.name); ok {
-		showAndRaise(win)
+		window.ShowAndRaise(win)
 		return
 	}
 	if w.name == winNameFileInfo {
@@ -96,7 +98,7 @@ func (w *wailsWindowView) Show() {
 			event.Cancel()
 			_ = w.app.CancelCurrentFileInfo()
 		})
-		showAndRaise(fileInfoWindow)
+		window.ShowAndRaise(fileInfoWindow)
 	}
 }
 
@@ -123,7 +125,7 @@ func (w *wailsWindowView) Focus() {
 	wailsApp := w.app.getApp()
 	if wailsApp != nil {
 		if win, ok := wailsApp.Window.GetByName(w.name); ok {
-			raiseWindow(win)
+			window.Raise(win)
 		}
 	}
 }
@@ -150,7 +152,7 @@ func NewApp() *App {
 		panic(fmt.Sprintf("failed to init task store: %v", err))
 	}
 
-	defaultDownloadDir := getDefaultDownloadDir()
+	defaultDownloadDir := sys.DefaultDownloadDir()
 	defaultTempDir := storeDir.TempDir()
 
 	app := &App{
@@ -463,14 +465,14 @@ func (a *App) GetDefaultDownloadDir() string {
 			return cfg.Download.DefaultDirectory
 		}
 	}
-	return getDefaultDownloadDir()
+	return sys.DefaultDownloadDir()
 }
 
 // ResolveDestination resolves the save directory and matched category for a filename.
 // 分类规则只在后端实现一次：界面用它展示命中分类并填充目录，不再自建同一规则。
 func (a *App) ResolveDestination(filename string) DestinationInfo {
 	if a.settings == nil {
-		return DestinationInfo{Directory: getDefaultDownloadDir()}
+		return DestinationInfo{Directory: sys.DefaultDownloadDir()}
 	}
 	cat, dir := a.settings.Get().Download.ResolveDestination(filename)
 	return DestinationInfo{Directory: dir, CategoryID: cat.ID}
@@ -687,7 +689,7 @@ func (a *App) isFilenameTaken(dir, candidate string) bool {
 // CheckFileConflict checks if filename exists in dir and returns conflict status and suggested name.
 func (a *App) CheckFileConflict(dir, filename string) FileConflictResult {
 	if dir == "" {
-		dir = getDefaultDownloadDir()
+		dir = sys.DefaultDownloadDir()
 	}
 	if !a.isFilenameTaken(dir, filename) {
 		return FileConflictResult{
@@ -706,7 +708,7 @@ func (a *App) CheckFileConflict(dir, filename string) FileConflictResult {
 // CheckURLFilesExist checks if any file previously downloaded with urlStr (or filename variants) exists in dir.
 func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResult {
 	if dir == "" {
-		dir = getDefaultDownloadDir()
+		dir = sys.DefaultDownloadDir()
 	}
 
 	// 1. Only report exists=true if the physical file actually exists on disk
@@ -785,7 +787,7 @@ func (a *App) ResolveDuplicateDecision(urlStr, dir, filename string) duplicate.D
 // ResolveDuplicate resolves a duplicate task using strategies "continue", "redownload", "copy", or "show_completed".
 func (a *App) ResolveDuplicate(taskID, strategy, dir, filename string, maxConn int) (*task.Task, error) {
 	if dir == "" {
-		dir = getDefaultDownloadDir()
+		dir = sys.DefaultDownloadDir()
 	}
 	return a.manager.ResolveDuplicate(a.ctx, taskID, strategy, dir, filename, maxConn)
 }
@@ -814,7 +816,7 @@ func (a *App) StartPreDownload(urlStr, dir, filename string, maxConn int) (*task
 // ConfirmPreDownload confirms the pre-download task with final user-chosen directory and filename.
 func (a *App) ConfirmPreDownload(taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error) {
 	if finalDir == "" {
-		finalDir = getDefaultDownloadDir()
+		finalDir = sys.DefaultDownloadDir()
 	}
 	return a.manager.ConfirmPreDownload(a.ctx, taskID, finalDir, finalFilename, maxConn)
 }
@@ -856,7 +858,7 @@ func (a *App) SelectDirectory(defaultDir string) (string, error) {
 		}
 	}
 	if targetDir == "" {
-		targetDir = getDefaultDownloadDir()
+		targetDir = sys.DefaultDownloadDir()
 	}
 
 	return app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
@@ -1064,7 +1066,7 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 			if a.GetFileInfoQueueLength() > 0 {
 				if app := a.getApp(); app != nil {
 					if fileWin, ok := app.Window.GetByName(winNameFileInfo); ok {
-						raiseWindow(fileWin)
+						window.Raise(fileWin)
 					}
 				}
 			}
@@ -1159,7 +1161,7 @@ func (a *App) ensureMainWindow(hidden bool, urlPath ...string) application.Windo
 // ShowMainWindow makes the main window visible and brings it to focus, creating it if needed.
 func (a *App) ShowMainWindow() {
 	if win := a.ensureMainWindow(false); win != nil {
-		showAndRaise(win)
+		window.ShowAndRaise(win)
 	}
 }
 
@@ -1170,13 +1172,13 @@ func (a *App) OpenSettingsWindow() {
 		return
 	}
 	if win, ok := app.Window.GetByName(winNameMain); ok {
-		showAndRaise(win)
+		window.ShowAndRaise(win)
 		app.Event.Emit(appevents.AppOpenSettings)
 		return
 	}
 	win := a.ensureMainWindow(false, "/?open=settings")
 	if win != nil {
-		showAndRaise(win)
+		window.ShowAndRaise(win)
 		app.Event.Emit(appevents.AppOpenSettings)
 	}
 }
@@ -1238,7 +1240,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 				a.progressPositioned = true
 			}
 			a.windowTimerLock.Unlock()
-			showAndRaise(win)
+			window.ShowAndRaise(win)
 			if taskID != "" {
 				app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
 				app.Event.Emit(appevents.ProgressFocusTask, taskID)
@@ -1286,7 +1288,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 			app.Event.Emit(appevents.ProgressClearViewed)
 			a.scheduleWindowIdleDestroy(winNameProgress)
 		})
-		showAndRaise(progWin)
+		window.ShowAndRaise(progWin)
 		if taskID != "" {
 			app.Event.Emit(appevents.ProgressFocusCompleted, taskID)
 			app.Event.Emit(appevents.ProgressFocusTask, taskID)
@@ -1418,4 +1420,48 @@ func (a *App) ToggleProgressWindowAlwaysOnTop() bool {
 // IsProgressWindowAlwaysOnTop reports whether the progress window is set to always on top.
 func (a *App) IsProgressWindowAlwaysOnTop() bool {
 	return a.progressAlwaysOnTop
+}
+
+// OpenExtensionFolder reveals the bundled extension directory in the system file manager.
+func (a *App) OpenExtensionFolder() error {
+	dir, err := browser.ExtensionDirectory()
+	if err != nil {
+		return err
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer", "/select,", dir)
+	case "darwin":
+		cmd = exec.Command("open", "-R", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+
+	return cmd.Start()
+}
+
+// PrepareExtensionPage 唤起浏览器并把扩展管理页地址写入剪贴板，返回该地址。
+// 用户在浏览器地址栏粘贴即可进入扩展管理页，随后手动加载扩展目录。
+func (a *App) PrepareExtensionPage(browserName string) (string, error) {
+	var exePath string
+	if runtime.GOOS == "windows" {
+		exePath = browser.FindBrowserExe(browserName)
+	}
+	plan, err := browser.PlanExtensionInstall(runtime.GOOS, browserName, exePath)
+	if err != nil {
+		return "", err
+	}
+
+	app := a.getApp()
+	if app == nil || app.Clipboard == nil || !app.Clipboard.SetText(plan.Address) {
+		return "", fmt.Errorf("写入剪贴板失败")
+	}
+
+	if err := exec.Command(plan.Exe, plan.Args...).Start(); err != nil {
+		return "", fmt.Errorf("唤起浏览器失败: %w", err)
+	}
+
+	return plan.Address, nil
 }

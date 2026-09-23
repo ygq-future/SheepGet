@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -154,14 +154,13 @@ const stages = {
   },
   tests,
   build() {
+    const target = 'build/bin/quality-app' + (process.platform === 'win32' ? '.exe' : '');
     mkdirSync('build/bin', { recursive: true });
-    run('go', [
-      'build',
-      '-mod=readonly',
-      '-o',
-      'build/bin/quality-app' + (process.platform === 'win32' ? '.exe' : ''),
-      '.',
-    ]);
+    try {
+      run('go', ['build', '-mod=readonly', '-o', target, '.']);
+    } finally {
+      rmSync('build/bin', { recursive: true, force: true });
+    }
   },
   infrastructure() {
     node('--test', ['scripts/quality-gate.test.mjs']);

@@ -6,6 +6,8 @@
 *.dylib
 *.syso
 build/bin/
+build/dist/
+build/dist-extension/
 *.wixobj
 *.wixpdb
 build/windows/installer/tmp/
