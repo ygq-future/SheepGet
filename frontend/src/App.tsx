@@ -23,7 +23,7 @@ import {
   Layers,
   CheckCircle2,
   PauseCircle,
-  AlertCircle,
+  AlertTriangle,
   Inbox,
   Settings as SettingsIcon,
   Activity,
@@ -36,6 +36,7 @@ import { useSettingsStore, initSettingsListener } from './stores/settings';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
 import { filterTasks, type TaskFilterType } from './lib/taskFilter';
+import { Button } from './components/ui/Button';
 const SettingsPanel = lazy(() =>
   import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })),
 );
@@ -293,6 +294,20 @@ export function App() {
     setSelectionAnchor(null);
     setBaseSelectedIds(new Set());
   };
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedTaskIds.size > 0 && !isBatchDeleting && !deletingTask) {
+        handleCancelSelection();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedTaskIds.size, isBatchDeleting, deletingTask]);
+
+  const handleSelectFilter = (nextFilter: TaskFilterType | 'settings') => {
+    setFilter(nextFilter);
+    handleCancelSelection();
+  };
 
   // Progress window trigger button logic
   const handleProgressWindowClick = () => {
@@ -416,7 +431,7 @@ export function App() {
     {
       id: 'error' as const,
       label: '下载异常',
-      icon: AlertCircle,
+      icon: AlertTriangle,
       count: counts.error,
       color: 'text-rose-500',
     },
@@ -488,7 +503,7 @@ export function App() {
               return (
                 <button
                   key={item.id}
-                  onClick={() => setFilter(item.id)}
+                  onClick={() => handleSelectFilter(item.id)}
                   title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
                   className={`group relative flex w-full cursor-pointer items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
                     sidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-2.5 py-2'
@@ -544,7 +559,7 @@ export function App() {
         {/* Aside Footer: Settings Tab Button & Error status */}
         <div className="w-full space-y-2 border-t border-[var(--border-subtle)] pt-2.5">
           <button
-            onClick={() => setFilter('settings')}
+            onClick={() => handleSelectFilter('settings')}
             title="偏好设置"
             className={`group relative flex w-full cursor-pointer items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
               sidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-2.5 py-2'
@@ -689,18 +704,31 @@ export function App() {
             </button>
 
             {/* New Download */}
-            <button
+            <Button
+              variant="primary"
+              size="sm"
               onClick={() => void handleNewDownload()}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white shadow-md transition-all hover:opacity-90 active:scale-98"
+              className="font-medium"
             >
-              <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
-              新建任务
-            </button>
+              <Plus className="h-3.5 w-3.5 stroke-[2.5] text-[var(--accent)]" />
+              <span>新建任务</span>
+            </Button>
           </div>
         </header>
 
         {/* Main Content Area */}
-        <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-3">
+        <main
+          onClick={(e) => {
+            const target = e.target as HTMLElement;
+            if (
+              !target.closest('[data-task-item]') &&
+              !target.closest('button, input, select, textarea, [role="button"], [role="menuitem"]')
+            ) {
+              handleCancelSelection();
+            }
+          }}
+          className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-3"
+        >
           {filter === 'settings' ? (
             <Suspense fallback={null}>
               <SettingsPanel />
@@ -720,7 +748,7 @@ export function App() {
               </p>
             </motion.div>
           ) : (
-            <div className="w-full min-w-0 space-y-1">
+            <div className="flex w-full min-w-0 flex-1 flex-col space-y-1">
               <AnimatePresence mode="popLayout">
                 {filteredTasks.map((t) => (
                   <TaskItem
@@ -735,6 +763,8 @@ export function App() {
                   />
                 ))}
               </AnimatePresence>
+              {/* 点击任务列表下方空白延伸区域取消选中 */}
+              <div className="min-h-12 flex-1 cursor-default" />
             </div>
           )}
         </main>

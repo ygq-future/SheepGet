@@ -42,6 +42,7 @@ export function TaskItem({
   const durationText = isMediaFile(t.filename) && t.duration ? formatDuration(t.duration) : null;
 
   const handleRowClick = (e: MouseEvent) => {
+    e.stopPropagation();
     if (onToggleSelect) {
       onToggleSelect(t.id, {
         ctrlKey: e.ctrlKey || e.metaKey,
@@ -125,6 +126,7 @@ export function TaskItem({
       }}
       onClick={handleRowClick}
       onDoubleClick={handleRowDoubleClick}
+      data-task-item={t.id}
       className={`group relative flex cursor-pointer items-center justify-between gap-2.5 rounded-lg border px-3 py-1.5 shadow-2xs backdrop-blur-xs transition-all duration-150 select-none ${
         selected
           ? 'border-[var(--accent)]/50 bg-[var(--accent)]/15 text-[var(--text-primary)] shadow-xs ring-1 ring-[var(--accent)]/30'
