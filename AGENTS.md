@@ -92,17 +92,15 @@
 
 ### 版本协同与发版核对红线（全链路版本一致性）
 
-在版本迭代、更新版本号或发布新版本前，必须严格核验并确保以下配置与常量中的版本号完全一致，严禁出现前后端版本脱节或元数据滞后：
+版本一致性由 `scripts/version.mjs` 统一判定，不再依赖人工清单：
 
-1. **唯一事实来源（SSOT）**：
-   - `build/config.yml` (`info.version`) 为桌面端核心版本的单一事实来源。`scripts/package.mjs` 在打包时会自动动态读取该版本，并向下自动注入生成 Windows PE Version Info (`.syso`)、NSIS (`INFO_PRODUCTVERSION`) 以及 WiX MSI (`ProductVersion`)，严禁脱节。
-2. **必须同步手动维护与核验的清单（发版检查点）**：
-   - **项目根配置**：`package.json` 中的 `"version"`（必须与 `build/config.yml` 保持一致）；
-   - **Windows 兜底配置**：`build/windows/info.json` 中的 `"ProductVersion"` 与 `"file_version"`（提供非 package 脚本单编时的基准对齐）；
-   - **浏览器扩展**：`extension/package.json` 中的 `"version"` 与 `extension/wxt.config.ts` 中的 `manifest.version`（扩展独立打包发布，版本升级时必须核验对齐）；
-   - **发布流水线**：`.github/workflows/release.yml` 中的 workflow_dispatch 默认 tag（如 `default: 'v1.0.0'`）；
-   - **用户文档与分发规范**：`README.md` 中的安装包产物命名示例（如 `SheepGet_1.0.0_x64-setup.exe`）。
-3. **发版验收硬指标**：
+1. **唯一事实来源（SSOT）**：`build/config.yml` (`info.version`)。版本号格式固定为 `X.Y.Z` 三段数字——Windows PE 版本资源、MSI `ProductVersion` 与 Chrome manifest 都只接受该形式。`scripts/package.mjs` 与版本模块共用同一套 `info` 块解析，并向下注入 Windows PE Version Info (`.syso`)、NSIS (`INFO_PRODUCTVERSION`) 以及 WiX MSI (`ProductVersion`)，不存在第二份版本读取实现。
+2. **镜像位置只在模块内声明一次**：`scripts/version.mjs` 的 `MIRRORS` 表是全部镜像的唯一定义，当前覆盖根 `package.json`、`build/windows/info.json`（`file_version` 与 `ProductVersion`）、`internal/version/version.go`、扩展 `package.json` 与 `wxt.config.ts`、扩展 popup 的版本显示、`.github/workflows/release.yml` 的发布 tag、`README.md` 的安装包命名示例。新增版本出现位置时必须在该表登记，不得另建文字清单。
+3. **升级与核验**：
+   - `node scripts/version.mjs --set X.Y.Z` 一次性改写 SSOT 与全部镜像，改写后自动复核；
+   - `node scripts/version.mjs --check` 是质量门禁阶段（stage `version`），任一处漂移或声明被改名都会直接失败；
+   - 禁止手工逐处修改版本号，禁止在其他文档里维护第二份同步清单。
+4. **发版验收硬指标（人工，Windows）**：
    - 发布前必须在 Windows 下检查生成的 `SheepGet.exe`“属性 -> 详细信息”中的“产品版本”与“文件版本”，确认已与目标版本号严格一致，严禁残留模板占位符；
    - 开启自启动后验证 Windows“设置 -> 启动应用”管理面板中的产品名称（`SheepGet`）与发布者（`SheepGet`）显示正常，严禁出现未解析模板宏。
 

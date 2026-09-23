@@ -16,8 +16,8 @@
 
 | 序 | 编号 | 项目 | 强度 | 规模 | 状态 |
 |---|---|---|---|---|---|
-| 1 | C2 | 进度只给快照，不再共享同一个 `*task.Task` | 强 | 小—中 | 待探讨 |
-| 2 | C8 | 版本一致性：做成检查，而不是清单 | 值得探索 | 小 | 待探讨 |
+| 1 | C2 | 进度只给快照，不再共享同一个 `*task.Task` | 强 | 小—中 | 已完成 |
+| 2 | C8 | 版本一致性：做成检查，而不是清单 | 值得探索 | 小 | 已完成 |
 | 3 | C5 | 「这个名字被占了」只保留一条规则 | 强 | 小—中 | 待探讨 |
 | 4 | C4 | 给环回通信契约一个归属模块 | 强 | 中 | 待探讨 |
 | 5 | C1 | 让下载入口只有一个归属模块（含删死代码） | 强 | 大 | 待探讨 |
@@ -64,13 +64,24 @@ C2 · C8 独立，无前置
 ## 2. C8 版本一致性：做成检查，而不是清单
 
 - **强度**：值得探索（发布在即，收益直接）
+- **状态**：已完成（2026-09-23），门禁通过
 - **问题**：桌面端元数据、安装包、扩展清单与文档的版本一致性目前是七处手改文件 + 文字清单，质量门禁无任何阶段能发现漏改。
 - **证据**：`build/config.yml:8`、`package.json:3`、`build/windows/info.json:3,7`、`extension/package.json:4`、`extension/wxt.config.ts:15`、`.github/workflows/release.yml:12`、`README.md:102-104`、`scripts/package.mjs:26-34`、`AGENTS.md` §版本协同与发版核对红线。
-- **深化方向**：一个版本模块（`--check` 接入门禁，`--set <v>` 一次性改写全部来源），保留 `build/config.yml` 为 SSOT。
-- **影响面**：`scripts/`、`.github/workflows/`、`AGENTS.md` 相关章节。
-- **前置**：无。
-- **验证**：故意改错一处后 `--check` 必须失败；`--set` 后七处一致。
-- **风险**：`scripts/package.mjs` 现有正则解析需与新版保持一致，避免出现两套版本读取实现。
+- **实际改动**：
+  - 新增 `scripts/version.mjs`：`build/config.yml` 的 `info` 块是 SSOT，模块内一个极简块解析器同时给出取值与取值区间，`scripts/package.mjs` 改用同一解析（原 30-40 行的正则块删除），不存在第二份版本读取实现。
+  - `MIRRORS` 表一次性声明全部镜像；每条声明用带 `d` 标记的正则捕获裸版本号，`--set` 只改写捕获区间（引号、`v` 前缀、产物名原样保留），`--check` 要求每条声明至少命中一次且取值等于 SSOT——声明被改名或删除会报「no declaration」，而不是静默放过。
+  - 镜像清单：根 `package.json`、`build/windows/info.json`（`file_version` 与 `ProductVersion`）、扩展 `package.json`、`extension/wxt.config.ts`、扩展 popup 页脚版本显示、`.github/workflows/release.yml` 的三处 `v1.0.0`、`README.md` 的三个安装包命名示例。
+  - 评审证据里漏掉的两处一并纳入：`internal/server/server.go` 原先在发现响应与 ping 响应各写一遍 `"1.0.0"`，改为唯一常量 `internal/version.Version`（ping 载荷改为包级私有变量，顺带去掉了逐请求拼接）；扩展 popup 的 `v1.0.0` 同样纳入镜像。
+  - 版本号格式固定为 `X.Y.Z`（Windows PE 资源、MSI `ProductVersion` 与 Chrome manifest 的共同约束），`--check` 与 `--set` 都拒绝其它写法。
+  - 门禁新增 stage `version`；原先的工具版本检查函数改名 `toolVersions` 以免与产品版本混淆。
+  - `AGENTS.md` 的七处手改清单改写为模块说明（清单不再重复维护），`docs/agents/quality.md` 增加能力矩阵行与检查范围说明。
+- **验证**（实际执行）：
+  - `node scripts/quality-gate.mjs` 全绿（Go 全包、前端 88 项、扩展 79 项、8 项质量设施测试，`internal/version` 无测试文件属预期）。
+  - 漂移反证：把根 `package.json` 改成 `"version": "1.1.0"` 后，`node scripts/version.mjs --check` 与 `node scripts/quality-gate.mjs --stage version` 均以 `package.json:3: version is 1.1.0, expected 1.0.0` 失败；还原后重新通过。
+  - `--set` 反证：真实工作树上 `--set 9.9.9` 一次改写 9 个文件（清单见输出），`--set 1.0.0` 后 `git diff` 无任何版本相关残留；非法版本 `1.0` 被拒绝且不写入任何文件。
+  - 质量设施新增用例 `version check rejects drifted copies and --set rewrites every source`：复制真实版本文件到临时目录后验证漂移阻断、非法版本拒绝、全量改写结果（`v` 前缀、popup 显示串、README 产物名、Go 常量）与真实仓库未被触碰。
+- **影响面**：`scripts/version.mjs`（新增）、`scripts/quality-gate.mjs`、`scripts/package.mjs`、`internal/version`（新增）、`internal/server/server.go`、扩展 popup、`AGENTS.md`、`docs/agents/quality.md`。
+- **风险**：一次 `--set` 会同时改动扩展与用户文档，扩展独立发版时须与桌面端同批提交；HTTP 载荷结构未变，扩展与前端无需改动；`build/windows/installer/project.nsi` 里那行 `## !define INFO_PRODUCTVERSION "1.0.0"` 是 Wails 上游模板注释（非本项目元数据），刻意不纳入镜像。
 
 ## 3. C5 「这个名字被占了」只保留一条规则
 

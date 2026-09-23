@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, copyFileSync } from 'node:fs';
-import { resolve, join, sep } from 'node:path';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs';
+import { resolve, join, sep, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { ESLint } from '../frontend/node_modules/eslint/lib/api.js';
 import * as prettier from '../frontend/node_modules/prettier/index.mjs';
 import { run } from './process.mjs';
+import { readInfo, versionFiles } from './version.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const linter = new ESLint({ cwd: join(root, 'frontend') });
@@ -135,6 +136,52 @@ test('isolated Go diagnostics and failing tests return failure', () => {
       'package qualityprobe\n\nimport "testing"\n\nfunc TestSuccess(t *testing.T) {}\n',
     );
     assert.equal(exec('go', ['test', '.'], { cwd: fixture }).status, 0);
+  } finally {
+    assert.ok(resolve(fixture).startsWith(resolve(base) + sep));
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('version check rejects drifted copies and --set rewrites every source', () => {
+  const base = join(root, '.tools');
+  mkdirSync(base, { recursive: true });
+  const fixture = mkdtempSync(join(base, 'version-probe-'));
+  const cli = join(fixture, 'scripts/version.mjs');
+  const read = (file) => readFileSync(join(fixture, file), 'utf8');
+  try {
+    for (const file of [...versionFiles(), 'scripts/version.mjs']) {
+      mkdirSync(dirname(join(fixture, file)), { recursive: true });
+      copyFileSync(join(root, file), join(fixture, file));
+    }
+    assert.equal(exec(process.execPath, [cli, '--check']).status, 0);
+
+    const { version } = readInfo(fixture);
+    const packagePath = join(fixture, 'package.json');
+    writeFileSync(
+      packagePath,
+      read('package.json').replace(`"version": "${version}"`, '"version": "9.9.9"'),
+    );
+    const drifted = exec(process.execPath, [cli, '--check']);
+    assert.notEqual(drifted.status, 0);
+    assert.match(drifted.stderr, /package\.json:.*9\.9\.9/);
+
+    const rejected = exec(process.execPath, [cli, '--set', '1.0']);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /X\.Y\.Z/);
+    assert.match(read('package.json'), /"version": "9\.9\.9"/);
+
+    const target = '2.5.0';
+    const applied = exec(process.execPath, [cli, '--set', target]);
+    assert.equal(applied.status, 0, applied.stdout + applied.stderr);
+    assert.equal(exec(process.execPath, [cli, '--check']).status, 0);
+    assert.equal(readInfo(fixture).version, target);
+    assert.match(read('build/windows/info.json'), /"ProductVersion": "2\.5\.0"/);
+    assert.match(read('internal/version/version.go'), /Version = "2\.5\.0"/);
+    assert.match(read('extension/wxt.config.ts'), /version: '2\.5\.0'/);
+    assert.match(read('extension/entrypoints/popup/App.tsx'), />v2\.5\.0<\/span>/);
+    assert.match(read('.github/workflows/release.yml'), /default: 'v2\.5\.0'/);
+    assert.match(read('README.md'), /SheepGet_2\.5\.0_x64-setup\.exe/);
+    assert.equal(readInfo(root).version, version);
   } finally {
     assert.ok(resolve(fixture).startsWith(resolve(base) + sep));
     rmSync(fixture, { recursive: true, force: true });

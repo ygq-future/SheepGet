@@ -11,6 +11,7 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { run } from './process.mjs';
+import { readInfo } from './version.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 process.chdir(root);
@@ -23,18 +24,14 @@ const isLinux = !isWin && !isMac;
 const platformName = isWin ? 'windows' : isMac ? 'darwin' : 'linux';
 const arch = process.arch;
 const archLabel = arch === 'arm64' ? 'arm64' : 'x64';
-// Read version and metadata from build/config.yml under the `info:` block as Single Source of Truth (SSOT)
-const buildConfigRaw = readFileSync(join(root, 'build', 'config.yml'), 'utf-8');
-const infoBlockMatch = buildConfigRaw.match(/info:\s*([\s\S]*?)(?:\n\w+:|$)/);
-const infoBlock = infoBlockMatch ? infoBlockMatch[1] : buildConfigRaw;
-const versionMatch = infoBlock.match(/^\s*version:\s*['"]?([^'"\s]+)['"]?/m);
-const version = versionMatch ? versionMatch[1] : '1.0.0';
-const productNameMatch = infoBlock.match(/^\s*productName:\s*['"]?([^'"\s]+)['"]?/m);
-const productName = productNameMatch ? productNameMatch[1] : 'SheepGet';
-const companyNameMatch = infoBlock.match(/^\s*companyName:\s*['"]?([^'"\s]+)['"]?/m);
-const companyName = companyNameMatch ? companyNameMatch[1] : 'SheepGet';
-const descMatch = infoBlock.match(/^\s*description:\s*['"]?([^'"\r\n]+)['"]?/m);
-const productDescription = descMatch ? descMatch[1] : 'Modern Desktop Download Manager';
+// Product metadata comes from build/config.yml `info:` (SSOT) through the same parser the
+// version check uses; see scripts/version.mjs.
+const { version, productName, companyName, description: productDescription } = readInfo(root);
+if (!version || !productName || !companyName || !productDescription) {
+  throw new Error(
+    'build/config.yml info block must define version, productName, companyName and description',
+  );
+}
 
 const ext = isWin ? '.exe' : '';
 const binDir = join(root, 'build', 'bin');

@@ -21,6 +21,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"sheep-get/internal/atomicfile"
+	"sheep-get/internal/version"
 )
 
 // PinnedExtensionID is the fixed 32-character extension ID for SheepGet (ADR-0005).
@@ -401,7 +402,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	resp := map[string]any{
 		"status":       "ok",
-		"version":      "1.0.0",
+		"version":      version.Version,
 		"port":         s.port,
 		"sessionToken": s.sessionToken,
 		"startedAt":    s.startedAt,
@@ -410,10 +411,14 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// pingPayload answers liveness probes. The version is read once from internal/version
+// so the desktop reports the same version it ships with.
+var pingPayload = []byte(`{"status":"ok","version":"` + version.Version + `"}`)
+
 func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok","version":"1.0.0"}`))
+	_, _ = w.Write(pingPayload)
 }
 func (s *Server) handleTakeoverConfig(w http.ResponseWriter, r *http.Request) {
 	ver := s.configVersion.Load()

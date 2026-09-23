@@ -41,7 +41,7 @@ function fingerprint() {
   );
 }
 
-function versions() {
+function toolVersions() {
   if (process.versions.node !== tools.node) throw new Error(`Node ${tools.node} required`);
   for (const [command, values, expected] of [
     ['bun', ['--version'], tools.bun],
@@ -110,6 +110,9 @@ const stages = {
     node('node_modules/prettier/bin/prettier.cjs', ['--check', '.'], {
       cwd: join(root, 'frontend'),
     });
+  },
+  version() {
+    node('scripts/version.mjs', ['--check']);
   },
   dependencies() {
     run('go', ['mod', 'verify']);
@@ -197,7 +200,7 @@ try {
         'Pre-commit requires an index matching the working tree; review/stage all intended changes first. No auto-staging.',
       );
     }
-    versions();
+    toolVersions();
     const before = fingerprint();
     let stageError;
     try {
