@@ -65,7 +65,9 @@ type DownloadEngine interface {
 	CancelPreDownload(ctx context.Context, taskID string) error
 	ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error)
 	ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult) (*task.Task, error)
-	NumberedCopyName(ctx context.Context, dir, filename string) (string, error)
+	// Occupancy 给出目标落点的占用判定（任务库快照由引擎提供）；排队项来源由队列自己补上，
+	// 因为「已经发给排队项的名字」只有队列知道。
+	Occupancy(ctx context.Context, reserved engine.Reserved) engine.Occupancy
 	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
 	SetTaskPageURL(ctx context.Context, taskID, pageURL string) error
 }
@@ -278,6 +280,50 @@ func (qc *QueueController) indexOfLocked(id string) int {
 	return -1
 }
 
+// ReservedNames 返回「队列已经发出的名字」判定器，不含 exceptID 那一项。
+// 调用方是窗口之外的地方（例如 App 的冲突绑定），因此这里自己加锁。
+func (qc *QueueController) ReservedNames(exceptID string) engine.Reserved {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	return qc.reservedNamesLocked(exceptID)
+}
+
+// reservedNamesLocked 把队列里其它项的目标名字取成一份快照判定器。调用方必须持有队列锁。
+//
+// 两项名字都要算占用：Filename 是这一项将要落下的名字，SuggestedFilename 是它留给「序号
+// 副本」动作的备选名——两个都可能被提交。没有第二份来源时，两个排队项会建议同一个名字。
+// 返回的是闭包捕获的快照，离开锁之后可以继续用（占用判定要在锁外逐个候选名字地问）。
+func (qc *QueueController) reservedNamesLocked(exceptID string) engine.Reserved {
+	type target struct{ dir, name string }
+	taken := make([]target, 0, len(qc.items)*2)
+	for _, item := range qc.items {
+		if item == nil || item.ID == exceptID {
+			continue
+		}
+		if item.Filename != "" {
+			taken = append(taken, target{item.Directory, item.Filename})
+		}
+		if item.SuggestedFilename != "" && item.SuggestedFilename != item.Filename {
+			taken = append(taken, target{item.Directory, item.SuggestedFilename})
+		}
+	}
+	return func(dir, name string) bool {
+		for _, t := range taken {
+			if engine.SamePath(t.dir, dir) && engine.SameFilename(t.name, name) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// occupancyLocked 组装这一项的占用判定：磁盘、任务库与队列里其它项已经占用的名字。
+// 正在处理的这一项不算占着自己的名字——窗口里的冲突提示回答的是「除了它自己，还有谁占着」。
+// 调用方必须持有队列锁：排队项来源就是从这里取的。
+func (qc *QueueController) occupancyLocked(ctx context.Context, exceptID string) engine.Occupancy {
+	return qc.engine.Occupancy(ctx, qc.reservedNamesLocked(exceptID))
+}
+
 // itemByIDLocked 按 ID 取队列项；不在队列里时返回 nil。
 func (qc *QueueController) itemByIDLocked(id string) *FileInfoItem {
 	if idx := qc.indexOfLocked(id); idx >= 0 {
@@ -346,11 +392,11 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	conflict := false
 	suggested := ""
+	// 占用判定在登记时取一次，它同时给出冲突提示与序号副本名——两者必须是同一个答案。
+	occupancy := qc.occupancyLocked(ctx, "")
 	if filename != "" {
-		conflict, suggested = engine.CheckFileConflict(dir, filename)
-		if copyName, err := qc.engine.NumberedCopyName(ctx, dir, filename); err == nil && copyName != "" {
-			suggested = copyName
-		}
+		conflict = occupancy.Taken(dir, filename)
+		suggested = occupancy.Suggest(dir, filename)
 	}
 	// 重复链接该给哪些动作、默认哪个，只由后端裁决一次；界面不再推导策略含义。
 	decision := duplicate.Decide(duplicate.Facts{
@@ -362,8 +408,8 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	// 只有裁决确实要做「序号副本」时才预置编号名称。目标位置没有成品文件时既没有要避让的
 	// 文件、动作也不是副本，编号名称只会让界面显示的名字与实际落点不符。
-	if decision.Default == duplicate.ActionCopy {
-		filename = suggested
+	if decision.Default == duplicate.ActionCopy && filename != "" {
+		filename = occupancy.NumberedCopy(dir, filename)
 		conflict = false
 	}
 
@@ -570,12 +616,9 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 		return nil
 	}
 
-	conflict, suggested := engine.CheckFileConflict(dir, targetItem.Filename)
-	if copyName, err := qc.engine.NumberedCopyName(context.Background(), dir, targetItem.Filename); err == nil && copyName != "" {
-		suggested = copyName
-	}
-	targetItem.SuggestedFilename = suggested
-	targetItem.FileConflict = conflict
+	occupancy := qc.occupancyLocked(context.Background(), targetItem.ID)
+	targetItem.SuggestedFilename = occupancy.Suggest(dir, targetItem.Filename)
+	targetItem.FileConflict = occupancy.Taken(dir, targetItem.Filename)
 
 	// 探测补齐了历史任务与目标位置的现状，重新裁决一次，使界面刷新后的选项与事实一致。
 	decision := duplicate.Decide(duplicate.Facts{
@@ -587,7 +630,7 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	targetItem.DuplicateDecision = decision
 
 	if decision.Default == duplicate.ActionCopy {
-		targetItem.Filename = suggested
+		targetItem.Filename = occupancy.NumberedCopy(dir, targetItem.Filename)
 		targetItem.FileConflict = false
 	}
 
@@ -700,12 +743,9 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 
 	if job.probe != nil && job.probe.HLS != nil && len(job.probe.HLS.Variants) > 1 {
 		item.Filename = engine.HLSVariantFilename(item.Filename, src.Variant)
-		conflict, suggested := engine.CheckFileConflict(item.Directory, item.Filename)
-		if copyName, err := qc.engine.NumberedCopyName(context.Background(), item.Directory, item.Filename); err == nil && copyName != "" {
-			suggested = copyName
-		}
-		item.SuggestedFilename = suggested
-		item.FileConflict = conflict
+		occupancy := qc.occupancyLocked(ctx, item.ID)
+		item.SuggestedFilename = occupancy.Suggest(item.Directory, item.Filename)
+		item.FileConflict = occupancy.Taken(item.Directory, item.Filename)
 	}
 	var start *preDownloadStart
 	if item.PreDownload && !item.FileConflict && item.DuplicateTask == nil && item.PreDownloadTaskID == "" && !item.preDownloadStarting {

@@ -1139,3 +1139,43 @@ func TestQueueController_Probing_StateTransition(t *testing.T) {
 	}
 	_ = resp
 }
+
+// 队列知道的占用来源里必须包含它自己已经发出的名字：两个排队项先后登记同一个目标名时，
+// 后一项不能拿到同一个建议名，否则两笔下载会落到同一个文件上。
+//
+// 这里用的链接指向本机不可达端口，登记时那次探测定论是失败：这一项保持登记时的样子，
+// 断言因此只落在 Enqueue 的命名上，不依赖网络也不依赖探测时序。
+func TestQueueController_QueuedItemsReserveTheirNames(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, _, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+	req := DownloadRequest{URL: "http://127.0.0.1:1/report.pdf", Filename: "report.pdf", Directory: tmpDir}
+
+	if _, err := qc.Enqueue(ctx, req); err != nil {
+		t.Fatalf("enqueue first failed: %v", err)
+	}
+	items := qc.GetQueueItems()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 queued item, got %d", len(items))
+	}
+	// 第一项：这个名字还没人占，它自己更不算占着自己。
+	if items[0].FileConflict || items[0].SuggestedFilename != "report.pdf" {
+		t.Fatalf("first item should keep its own free name, got conflict=%v suggested=%s", items[0].FileConflict, items[0].SuggestedFilename)
+	}
+
+	for _, want := range []string{"report (1).pdf", "report (2).pdf"} {
+		if _, err := qc.Enqueue(ctx, req); err != nil {
+			t.Fatalf("enqueue failed: %v", err)
+		}
+		items = qc.GetQueueItems()
+		last := items[len(items)-1]
+		if !last.FileConflict {
+			t.Errorf("目标名已被前面的排队项占用，这一项必须报冲突：suggested=%s", last.SuggestedFilename)
+		}
+		if last.SuggestedFilename != want {
+			t.Errorf("expected suggested %s, got %s", want, last.SuggestedFilename)
+		}
+		if last.SuggestedFilename == items[0].SuggestedFilename {
+			t.Errorf("两个排队项建议了同一个名字：%s", last.SuggestedFilename)
+		}
+	}
+}

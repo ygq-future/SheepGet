@@ -743,29 +743,21 @@ func (a *App) ProbeMediaDuration(urlStr, filename string, totalBytes int64) floa
 	return seconds
 }
 
-func (a *App) isFilenameTaken(dir, candidate string) bool {
-	if engine.FileExists(filepath.Join(dir, candidate)) {
-		return true
-	}
-	if a.manager != nil {
-		if tasks, err := a.manager.List(a.ctx); err == nil {
-			for _, t := range tasks {
-				if engine.SamePath(t.Directory, dir) && engine.SameFilename(t.Filename, candidate) {
-					if t.Status == task.StatusDownloading || t.Status == task.StatusQueued || t.Status == task.StatusProcessing {
-						return true
-					}
-				}
-			}
-		}
-	}
+// occupancy 组装一次目标落点的占用判定：磁盘、任务库，以及窗口队列已经发给其它排队项的名字。
+// 正在编辑的那一项不算占着自己的名字——窗口里的冲突提示回答的是「除了它自己，还有谁占着」。
+func (a *App) occupancy() engine.Occupancy {
+	var reserved engine.Reserved
 	if a.windowQueue != nil {
-		for _, it := range a.windowQueue.GetQueueItems() {
-			if it != nil && engine.SamePath(it.Directory, dir) && engine.SameFilename(it.Filename, candidate) {
-				return true
-			}
+		activeID := ""
+		if active, err := a.windowQueue.GetActive(); err == nil && active != nil {
+			activeID = active.ID
 		}
+		reserved = a.windowQueue.ReservedNames(activeID)
 	}
-	return false
+	if a.manager == nil {
+		return engine.Occupancy{Reserved: reserved}
+	}
+	return a.manager.Occupancy(a.ctx, reserved)
 }
 
 // CheckFileConflict checks if filename exists in dir and returns conflict status and suggested name.
@@ -773,17 +765,10 @@ func (a *App) CheckFileConflict(dir, filename string) FileConflictResult {
 	if dir == "" {
 		dir = sys.DefaultDownloadDir()
 	}
-	if !a.isFilenameTaken(dir, filename) {
-		return FileConflictResult{
-			Exists:            false,
-			SuggestedFilename: filename,
-		}
-	}
+	occupancy := a.occupancy()
 	return FileConflictResult{
-		Exists: true,
-		SuggestedFilename: engine.NextNumberedCopy(filename, func(cand string) bool {
-			return a.isFilenameTaken(dir, cand)
-		}),
+		Exists:            occupancy.Taken(dir, filename),
+		SuggestedFilename: occupancy.Suggest(dir, filename),
 	}
 }
 
@@ -809,13 +794,10 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 	}
 
 	// 2. Purely read-only suggestion calculation; no deletions here!
-	var suggested string
+	// 建议名与冲突提示出自同一个占用判定（见 occupancy）。
+	suggested := filename
 	if exists {
-		suggested = engine.NextNumberedCopy(filename, func(cand string) bool {
-			return a.isFilenameTaken(dir, cand)
-		})
-	} else {
-		suggested = filename
+		suggested = a.occupancy().Suggest(dir, filename)
 	}
 	res := FileConflictResult{
 		Exists:            exists,

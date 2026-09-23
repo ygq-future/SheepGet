@@ -199,9 +199,11 @@ func (e *blockingEngine) ResolveDuplicateFromProbe(_ context.Context, taskID, _,
 	return &task.Task{ID: taskID}, nil
 }
 
-func (e *blockingEngine) NumberedCopyName(_ context.Context, _, filename string) (string, error) {
-	e.enter("NumberedCopyName")
-	return filename, nil
+// Occupancy 在真实引擎里要读一次任务库；这里给一份空快照（没有任务记录），命名只剩磁盘与
+// 排队项两类来源——档名冲突的断言因此落在队列自己的登记行为上。
+func (e *blockingEngine) Occupancy(_ context.Context, reserved engine.Reserved) engine.Occupancy {
+	e.enter("Occupancy")
+	return engine.Occupancy{Reserved: reserved}
 }
 
 func (e *blockingEngine) ReuseExistingFile(_ context.Context, taskID, _, _ string) (*task.Task, error) {

@@ -81,8 +81,8 @@ func (e *hlsProbeEngine) ResolveDuplicateFromProbe(_ context.Context, _ string, 
 	return &task.Task{ID: "task_duplicate_resolved"}, nil
 }
 
-func (e *hlsProbeEngine) NumberedCopyName(context.Context, string, string) (string, error) {
-	return "", nil
+func (e *hlsProbeEngine) Occupancy(_ context.Context, reserved engine.Reserved) engine.Occupancy {
+	return engine.Occupancy{Reserved: reserved}
 }
 
 func (e *hlsProbeEngine) ReuseExistingFile(context.Context, string, string, string) (*task.Task, error) {

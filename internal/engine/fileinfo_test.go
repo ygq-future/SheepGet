@@ -200,47 +200,109 @@ func TestProbe_UnknownSize(t *testing.T) {
 	}
 }
 
-func TestCheckFileConflict(t *testing.T) {
+func TestOccupancy_DiskNames(t *testing.T) {
 	tmpDir := t.TempDir()
+	occupancy := engine.Occupancy{}
 
-	exists, suggested := engine.CheckFileConflict(tmpDir, "sample.txt")
-	if exists || suggested != "sample.txt" {
-		t.Errorf("expected exists=false, suggested=sample.txt; got exists=%v, suggested=%s", exists, suggested)
+	if occupancy.Taken(tmpDir, "sample.txt") || occupancy.Suggest(tmpDir, "sample.txt") != "sample.txt" {
+		t.Errorf("expected a free name, got taken=%v suggest=%s", occupancy.Taken(tmpDir, "sample.txt"), occupancy.Suggest(tmpDir, "sample.txt"))
 	}
 
 	writeFile(t, filepath.Join(tmpDir, "sample.txt"))
 
-	exists, suggested = engine.CheckFileConflict(tmpDir, "sample.txt")
-	if !exists || suggested != "sample (1).txt" {
-		t.Errorf("expected exists=true, suggested=sample (1).txt; got exists=%v, suggested=%s", exists, suggested)
+	if !occupancy.Taken(tmpDir, "sample.txt") || occupancy.Suggest(tmpDir, "sample.txt") != "sample (1).txt" {
+		t.Errorf("expected sample (1).txt, got taken=%v suggest=%s", occupancy.Taken(tmpDir, "sample.txt"), occupancy.Suggest(tmpDir, "sample.txt"))
 	}
 
 	writeFile(t, filepath.Join(tmpDir, "sample (1).txt"))
 
-	exists, suggested = engine.CheckFileConflict(tmpDir, "sample.txt")
-	if !exists || suggested != "sample (2).txt" {
-		t.Errorf("expected exists=true, suggested=sample (2).txt; got exists=%v, suggested=%s", exists, suggested)
+	if got := occupancy.Suggest(tmpDir, "sample.txt"); got != "sample (2).txt" {
+		t.Errorf("expected sample (2).txt, got %s", got)
 	}
 
 	writeFile(t, filepath.Join(tmpDir, "README"))
 
-	exists, suggested = engine.CheckFileConflict(tmpDir, "README")
-	if !exists || suggested != "README (1)" {
-		t.Errorf("expected exists=true, suggested=README (1); got exists=%v, suggested=%s", exists, suggested)
+	if !occupancy.Taken(tmpDir, "README") || occupancy.Suggest(tmpDir, "README") != "README (1)" {
+		t.Errorf("expected README (1), got taken=%v suggest=%s", occupancy.Taken(tmpDir, "README"), occupancy.Suggest(tmpDir, "README"))
 	}
 }
-func TestCheckFileConflict_SheepgetTemporaryFile(t *testing.T) {
+
+func TestOccupancy_SheepgetTemporaryFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	// If a downloading task has created sample.txt.sheepget, it should be treated as taken.
 	writeFile(t, filepath.Join(tmpDir, "sample.txt.sheepget"))
 
-	exists, suggested := engine.CheckFileConflict(tmpDir, "sample.txt")
-	if !exists || suggested != "sample (1).txt" {
-		t.Errorf("expected sample.txt.sheepget to cause conflict, got exists=%v, suggested=%s", exists, suggested)
+	occupancy := engine.Occupancy{}
+	if !occupancy.Taken(tmpDir, "sample.txt") || occupancy.Suggest(tmpDir, "sample.txt") != "sample (1).txt" {
+		t.Errorf("expected sample.txt.sheepget to cause conflict, got taken=%v suggest=%s", occupancy.Taken(tmpDir, "sample.txt"), occupancy.Suggest(tmpDir, "sample.txt"))
 	}
 }
 
-func TestManager_NumberedCopyName_MultiCopies(t *testing.T) {
+// 「这个名字被占了」只有一条规则，三类来源都在里面：磁盘、正在进行中的任务、以及已经发给
+// 排队项的名字。已完成且成品文件已不在磁盘上的记录不算占用。
+func TestOccupancy_Sources(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	writeFile(t, filepath.Join(tmpDir, "base.zip"))
+	_ = store.Save(ctx, &task.Task{ID: "active", Filename: "base (2).zip", Directory: tmpDir, Status: task.StatusDownloading})
+	_ = store.Save(ctx, &task.Task{ID: "stale", Filename: "base (3).zip", Directory: tmpDir, Status: task.StatusCompleted})
+	reserved := func(dir, name string) bool {
+		return engine.SamePath(dir, tmpDir) && name == "base (1).zip"
+	}
+
+	occupancy := mgr.Occupancy(ctx, reserved)
+	for name, reason := range map[string]string{
+		"base.zip":     "磁盘上的成品文件",
+		"base (2).zip": "正在进行中的任务",
+		"base (1).zip": "排队项已经发出的名字",
+	} {
+		if !occupancy.Taken(tmpDir, name) {
+			t.Errorf("%s 应算占用：%s", name, reason)
+		}
+	}
+	if occupancy.Taken(tmpDir, "base (3).zip") {
+		t.Error("已完成且成品文件已不在磁盘上的记录不该算占用")
+	}
+	if occupancy.Taken(filepath.Join(tmpDir, "other"), "base.zip") {
+		t.Error("另一个目录下的同名文件不该算占用")
+	}
+
+	suggested := occupancy.Suggest(tmpDir, "base.zip")
+	if suggested != "base (3).zip" {
+		t.Errorf("expected base (3).zip (跳过占用中的 1、2), got %s", suggested)
+	}
+	if occupancy.Taken(tmpDir, suggested) {
+		t.Errorf("建议名 %s 自己不能是被占用的名字", suggested)
+	}
+}
+
+// 「建议名」与「序号副本名」是同一个占用判定给出的两个答案，语义不同：建议名在原名可用时
+// 就是原名（没有冲突就没什么要避让的），序号副本名则永远是编号名（这个动作要的就是另一份成品）。
+func TestOccupancy_NumberedCopyAlwaysNumbers(t *testing.T) {
+	tmpDir := t.TempDir()
+	occupancy := engine.Occupancy{}
+
+	if got := occupancy.Suggest(tmpDir, "free.zip"); got != "free.zip" {
+		t.Errorf("expected the free name itself, got %s", got)
+	}
+	if got := occupancy.NumberedCopy(tmpDir, "free.zip"); got != "free (1).zip" {
+		t.Errorf("expected free (1).zip, got %s", got)
+	}
+
+	writeFile(t, filepath.Join(tmpDir, "free (1).zip"))
+	if got := occupancy.NumberedCopy(tmpDir, "free.zip"); got != "free (2).zip" {
+		t.Errorf("expected free (2).zip, got %s", got)
+	}
+}
+
+func TestManager_Occupancy_MultiCopies(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
 	if err != nil {
@@ -259,20 +321,14 @@ func TestManager_NumberedCopyName_MultiCopies(t *testing.T) {
 	_ = store.Save(ctx, t1)
 	_ = store.Save(ctx, t2)
 
-	// NumberedCopyName should recognize existing disk files/active tasks and produce test (3).zip
-	copyName, err := mgr.NumberedCopyName(ctx, tmpDir, "test.zip")
-	if err != nil {
-		t.Fatalf("NumberedCopyName failed: %v", err)
-	}
+	// 占用判定要认出磁盘文件与正在进行中的任务，给出 test (3).zip
+	copyName := mgr.Occupancy(ctx, nil).Suggest(tmpDir, "test.zip")
 	if copyName != "test (3).zip" {
 		t.Errorf("expected test (3).zip, got %s", copyName)
 	}
 
 	// Even if passed "test (1).zip", it should still recognize existing (1) and (2) and return (3)
-	copyName2, err := mgr.NumberedCopyName(ctx, tmpDir, "test (1).zip")
-	if err != nil {
-		t.Fatalf("NumberedCopyName from copy failed: %v", err)
-	}
+	copyName2 := mgr.Occupancy(ctx, nil).Suggest(tmpDir, "test (1).zip")
 	if copyName2 != "test (3).zip" {
 		t.Errorf("expected test (3).zip, got %s", copyName2)
 	}
@@ -307,11 +363,8 @@ func TestManager_NumberedCopy_CleanMissingCopies_ScenarioAllMissing(t *testing.T
 		})
 	}
 
-	// 1. In read-only preview (NumberedCopyName), it identifies copy (1) WITHOUT deleting any tasks
-	suggested, err := mgr.NumberedCopyName(ctx, tmpDir, "item.zip")
-	if err != nil {
-		t.Fatalf("NumberedCopyName failed: %v", err)
-	}
+	// 1. 只读预览（占用判定）认出副本 (1)，且不删除任何任务
+	suggested := mgr.Occupancy(ctx, nil).Suggest(tmpDir, "item.zip")
 	if suggested != "item (1).zip" {
 		t.Errorf("expected suggested copy item (1).zip, got %s", suggested)
 	}
@@ -381,10 +434,7 @@ func TestManager_NumberedCopy_CleanMissingCopies_ScenarioHoleMissing(t *testing.
 		})
 	}
 
-	suggested, err := mgr.NumberedCopyName(ctx, tmpDir, "item.zip")
-	if err != nil {
-		t.Fatalf("NumberedCopyName failed: %v", err)
-	}
+	suggested := mgr.Occupancy(ctx, nil).Suggest(tmpDir, "item.zip")
 	if suggested != "item (3).zip" {
 		t.Errorf("expected suggested copy item (3).zip, got %s", suggested)
 	}

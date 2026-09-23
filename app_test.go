@@ -1280,3 +1280,36 @@ func TestApp_LoggingSwitch(t *testing.T) {
 		t.Fatalf("expected no active log path after disabling, got %s", app.log().Path())
 	}
 }
+
+// 「这个名字被占了」的占用来源里包含窗口队列已经发出的名字，但正在编辑的那一项不算占着
+// 自己的名字——窗口里的冲突提示回答的是「除了它自己，还有谁占着」。
+func TestApp_CheckFileConflict_ExcludesEditedItem(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+	ctx := context.Background()
+	enqueue := func(filename string) {
+		t.Helper()
+		if _, err := app.windowQueue.Enqueue(ctx, window.DownloadRequest{
+			URL:       "http://127.0.0.1:1/" + filename,
+			Filename:  filename,
+			Directory: tmpDir,
+		}); err != nil {
+			t.Fatalf("enqueue %s failed: %v", filename, err)
+		}
+	}
+
+	enqueue("report.pdf")
+	own := app.CheckFileConflict(tmpDir, "report.pdf")
+	if own.Exists || own.SuggestedFilename != "report.pdf" {
+		t.Errorf("正在编辑的这一项不该和它自己的名字冲突，got %+v", own)
+	}
+
+	// 另一项占着 report (1).pdf：窗口问它时必须报冲突，并给出仍然可用的序号副本。
+	enqueue("report (1).pdf")
+	other := app.CheckFileConflict(tmpDir, "report (1).pdf")
+	if !other.Exists {
+		t.Errorf("另一个排队项占着的名字必须报冲突，got %+v", other)
+	}
+	if other.SuggestedFilename != "report (2).pdf" {
+		t.Errorf("expected report (2).pdf, got %s", other.SuggestedFilename)
+	}
+}

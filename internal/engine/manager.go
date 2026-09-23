@@ -95,62 +95,6 @@ func SameFilename(a, b string) bool {
 	return a == b
 }
 
-// FileExists reports whether path or path.sheepget exists on disk.
-func FileExists(path string) bool {
-	if _, err := os.Stat(path); err == nil {
-		return true
-	}
-	if _, err := os.Stat(path + ".sheepget"); err == nil {
-		return true
-	}
-	return false
-}
-
-// CheckFileConflict reports whether filename already exists in dir, and if so suggests a
-// numbered alternative name that is free on disk.
-func CheckFileConflict(dir, filename string) (bool, string) {
-	if dir == "" || filename == "" {
-		return false, filename
-	}
-	if !FileExists(filepath.Join(dir, filename)) {
-		return false, filename
-	}
-	return true, NextNumberedCopy(filename, func(candidate string) bool {
-		return FileExists(filepath.Join(dir, candidate))
-	})
-}
-
-// DestinationOccupied reports whether this download's finished file already sits in dir.
-// 既看用户当前选定的文件名，也看该链接历史任务的文件名：策略为「序号副本」时后端会先把
-// 文件名改成 name (n).ext，此时真正占着位置、也真正需要用户决定怎么处理的是原名文件。
-func DestinationOccupied(dir, filename string, dupTask *task.Task) bool {
-	if dir == "" || filename == "" {
-		return false
-	}
-	if FileExists(filepath.Join(dir, filename)) {
-		return true
-	}
-	return dupTask != nil && dupTask.Filename != "" && dupTask.Filename != filename &&
-		FileExists(filepath.Join(dir, dupTask.Filename))
-}
-
-var numberedSuffixRegex = regexp.MustCompile(`^(.*) \(\d+\)$`)
-
-// NextNumberedCopy returns the first "name (n).ext" variant free according to taken.
-func NextNumberedCopy(filename string, taken func(string) bool) string {
-	ext := filepath.Ext(filename)
-	stem := strings.TrimSuffix(filename, ext)
-	if m := numberedSuffixRegex.FindStringSubmatch(stem); len(m) == 2 {
-		stem = m[1]
-	}
-	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		if !taken(candidate) {
-			return candidate
-		}
-	}
-}
-
 var numberedCopyStrictRegex = regexp.MustCompile(`^(.+) \((\d+)\)$`)
 
 // ExtractStemAndExt returns the base stem (without any (n) suffix) and extension.
@@ -464,10 +408,7 @@ func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strateg
 		}
 		// Clean up missing copy tasks now that user explicitly confirmed creating a copy
 		_, _ = m.CleanMissingNumberedCopies(ctx, t.URL, dir, filename)
-		filename, err = m.NumberedCopyName(ctx, dir, filename)
-		if err != nil {
-			return nil, err
-		}
+		filename = m.Occupancy(ctx, nil).NumberedCopy(dir, filename)
 		if maxConn <= 0 {
 			maxConn = t.MaxConcurrency
 		}
@@ -644,26 +585,18 @@ func (m *Manager) CleanMissingNumberedCopies(ctx context.Context, urlStr, dir, f
 	return deletedIDs, nil
 }
 
-// NumberedCopyName returns the first "name (n).ext" variant free on disk and in the task list.
-// It performs a purely read-only scan of disk files and active downloading tasks without deleting any tasks.
-func (m *Manager) NumberedCopyName(ctx context.Context, dir, filename string) (string, error) {
+// Occupancy 组装一份目标落点的占用判定：任务库快照取自本地存储，排队项来源由调用方补上
+// （引擎不认识文件信息窗口的队列）。
+//
+// 任务库读不出来时按「没有记录」处理并记一条日志：命名不能因为一次读库失败就整个失败，
+// 那会让窗口连一个可用的建议名字都给不出。磁盘与排队项两类来源仍然有效，判定只是少了一类。
+func (m *Manager) Occupancy(ctx context.Context, reserved Reserved) Occupancy {
 	existingList, err := m.store.List(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to read task list: %w", err)
+		m.log().Warn("occupancy: task list unavailable", "error", err.Error())
+		return Occupancy{Reserved: reserved}
 	}
-	return NextNumberedCopy(filename, func(candidate string) bool {
-		if FileExists(filepath.Join(dir, candidate)) {
-			return true
-		}
-		for _, et := range existingList {
-			if SamePath(et.Directory, dir) && SameFilename(et.Filename, candidate) {
-				if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
-					return true
-				}
-			}
-		}
-		return false
-	}), nil
+	return Occupancy{Tasks: existingList, Reserved: reserved}
 }
 
 // FindDuplicateTask finds an existing task with matching urlStr from local store without network probe.
