@@ -942,6 +942,60 @@ func TestApp_ResolveDestination(t *testing.T) {
 	}
 }
 
+func TestApp_Startup_MigratesEmptyCategoryID(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to init store: %v", err)
+	}
+	ctx := context.Background()
+
+	// 启动前已有老版本历史任务（CategoryID 为空）
+	oldTask := &task.Task{
+		ID:         "task_legacy_without_cat",
+		URL:        "https://example.com/legacy_video.mp4",
+		Filename:   "legacy_video.mp4",
+		CategoryID: "",
+		Status:     task.StatusCompleted,
+	}
+	if err := store.Save(ctx, oldTask); err != nil {
+		t.Fatalf("failed to seed old task: %v", err)
+	}
+
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 2})
+	t.Cleanup(mgr.Close)
+	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir, nil)
+
+	app := &App{
+		manager:  mgr,
+		store:    store,
+		settings: settingsSvc,
+	}
+
+	// 模拟应用启动
+	app.startup(ctx)
+
+	tasks, err := app.ListTasks()
+	if err != nil {
+		t.Fatalf("ListTasks failed: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].CategoryID != "builtin-video" {
+		t.Errorf("expected CategoryID %q, got %q", "builtin-video", tasks[0].CategoryID)
+	}
+
+	// 验证已持久化固化到 store
+	saved, err := store.Get(ctx, "task_legacy_without_cat")
+	if err != nil {
+		t.Fatalf("failed to get task from store: %v", err)
+	}
+	if saved.CategoryID != "builtin-video" {
+		t.Errorf("expected persisted CategoryID %q, got %q", "builtin-video", saved.CategoryID)
+	}
+}
+
 // seedHistoryElsewhere 在另一个目录放一条已完成的历史记录，模拟「手动选过目录、默认目录
 // 后来改过、或文件被搬走过」之后，历史记录所在目录与这次解析出的保存目录不一致的情形。
 // writeFile 为真时同时落下成品文件，用于验证不该被误删的情况。

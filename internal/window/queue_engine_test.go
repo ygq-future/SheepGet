@@ -220,6 +220,10 @@ func (e *blockingEngine) SetTaskPageURL(_ context.Context, _ string, _ string) e
 	e.enter("SetTaskPageURL")
 	return nil
 }
+func (e *blockingEngine) SetTaskCategoryID(_ context.Context, _ string, _ string) error {
+	e.enter("SetTaskCategoryID")
+	return nil
+}
 
 func setupQueueWithEngine(t *testing.T, eng DownloadEngine, view WindowView, runOps windowOps) (*QueueController, string) {
 	t.Helper()

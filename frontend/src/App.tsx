@@ -196,8 +196,7 @@ export function App() {
     return opts;
   }, [settings?.download?.customCategories, settings?.download?.builtinCategories]);
 
-  const filteredTasks =
-    filter === 'settings' ? [] : filterTasks(tasks, filter, selectedCategory, settings);
+  const filteredTasks = filter === 'settings' ? [] : filterTasks(tasks, filter, selectedCategory);
 
   // Handle single task delete request
   const handleDeleteSingleRequest = (target: task.Task) => {

@@ -48,9 +48,13 @@ type Task struct {
 	URL string `json:"url"`
 	// PageURL 是该下载任务的来源网页地址（如浏览器扩展捕获时所在的源页面）。
 	// 当下载链接失效或用户需要时，可直接在浏览器中重新打开该源网页。
-	PageURL        string       `json:"pageUrl,omitempty"`
-	Filename       string       `json:"filename"`
-	Directory      string       `json:"directory"`
+	PageURL   string `json:"pageUrl,omitempty"`
+	Filename  string `json:"filename"`
+	Directory string `json:"directory"`
+	// CategoryID 是该下载任务命中的分类 ID（如 "builtin-video"、"custom-game"）。
+	// 在任务创建时由后端的分类规则或文件信息窗口的用户选择判定并固化在任务上，
+	// 作为历史归属的单一事实来源，界面直接读取该字段，不再重复推算。
+	CategoryID     string       `json:"categoryId,omitempty"`
 	TempDir        string       `json:"tempDir,omitempty"`
 	TotalBytes     int64        `json:"totalBytes"`
 	Downloaded     int64        `json:"downloaded"`

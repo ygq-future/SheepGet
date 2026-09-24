@@ -240,6 +240,7 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}
+	a.migrateHistoricalTasksCategory(ctx)
 }
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
@@ -503,6 +504,25 @@ func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 // ListTasks lists all tasks
 func (a *App) ListTasks() ([]*task.Task, error) {
 	return a.manager.List(a.ctx)
+}
+
+// migrateHistoricalTasksCategory 检查历史任务并补齐分类（仅在启动时进行一次性迁移固化）。
+func (a *App) migrateHistoricalTasksCategory(ctx context.Context) {
+	if a.store == nil || a.settings == nil {
+		return
+	}
+	tasks, err := a.store.List(ctx)
+	if err != nil || len(tasks) == 0 {
+		return
+	}
+	downloadCfg := a.settings.Get().Download
+	for _, t := range tasks {
+		if t.CategoryID == "" && t.Filename != "" {
+			cat, _ := downloadCfg.ResolveDestination(t.Filename)
+			t.CategoryID = cat.ID
+			_ = a.store.Save(ctx, t)
+		}
+	}
 }
 
 // ScanCleanup scans cleanable tasks and files according to options.

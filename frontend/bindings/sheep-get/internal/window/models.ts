@@ -219,6 +219,7 @@ export class FileInfoSubmission {
     "url": string;
     "filename": string;
     "directory": string;
+    "categoryId"?: string;
     "maxConn": number;
     "preDownload": boolean;
 

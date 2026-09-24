@@ -568,6 +568,7 @@ export function FileInfoView() {
           url: url.trim(),
           filename: filename.trim(),
           directory: directory.trim(),
+          categoryId: categoryId || undefined,
           maxConn: parsedConn,
           action,
           preDownload,

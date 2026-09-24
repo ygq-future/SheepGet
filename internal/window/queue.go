@@ -70,6 +70,7 @@ type DownloadEngine interface {
 	Occupancy(ctx context.Context, reserved engine.Reserved) engine.Occupancy
 	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
 	SetTaskPageURL(ctx context.Context, taskID, pageURL string) error
+	SetTaskCategoryID(ctx context.Context, taskID, categoryID string) error
 }
 
 // SettingsProvider provides active application configuration.
@@ -157,6 +158,7 @@ type FileInfoSubmission struct {
 	URL         string `json:"url"`
 	Filename    string `json:"filename"`
 	Directory   string `json:"directory"`
+	CategoryID  string `json:"categoryId,omitempty"`
 	MaxConn     int    `json:"maxConn"`
 	PreDownload bool   `json:"preDownload"`
 	// Action 是用户为这次重复选定的动作，取自文件信息窗口收到的裁决选项；
@@ -534,9 +536,15 @@ func (qc *QueueController) startPreDownload(start *preDownloadStart) {
 	preTask, preErr := qc.engine.StartPreDownloadWithHeaders(context.Background(), start.url, start.dir, start.filename, start.maxConn, start.headers)
 	if preErr != nil {
 		preTask = nil
-	} else if preTask != nil && start.item.PageURL != "" {
-		preTask.PageURL = start.item.PageURL
-		_ = qc.engine.SetTaskPageURL(context.Background(), preTask.ID, start.item.PageURL)
+	} else if preTask != nil {
+		if start.item.CategoryID != "" {
+			preTask.CategoryID = start.item.CategoryID
+			_ = qc.engine.SetTaskCategoryID(context.Background(), preTask.ID, start.item.CategoryID)
+		}
+		if start.item.PageURL != "" {
+			preTask.PageURL = start.item.PageURL
+			_ = qc.engine.SetTaskPageURL(context.Background(), preTask.ID, start.item.PageURL)
+		}
 	}
 	if qc.finishPreDownloadStart(start, preTask) && preTask != nil {
 		// 启动期间这一项被取消了：把刚启动的任务收掉，否则它会一直跑在后台，
@@ -867,9 +875,15 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 	if err != nil {
 		return nil, err
 	}
-	if resTask != nil && plan.item.PageURL != "" {
-		resTask.PageURL = plan.item.PageURL
-		_ = qc.engine.SetTaskPageURL(ctx, resTask.ID, plan.item.PageURL)
+	if resTask != nil {
+		if plan.categoryID != "" {
+			resTask.CategoryID = plan.categoryID
+			_ = qc.engine.SetTaskCategoryID(ctx, resTask.ID, plan.categoryID)
+		}
+		if plan.item.PageURL != "" {
+			resTask.PageURL = plan.item.PageURL
+			_ = qc.engine.SetTaskPageURL(ctx, resTask.ID, plan.item.PageURL)
+		}
 	}
 	// 按 ID 摘除：提交期间用户可能已经切到别的项上，按位置删会删错人。
 	if idx := qc.indexOfLocked(plan.item.ID); idx >= 0 {
@@ -885,15 +899,16 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 
 // submitPlan 是提交穿过锁的一次快照：锁内取事实，锁外调引擎，回来后按 ID 落地。
 type submitPlan struct {
-	item      *FileInfoItem
-	url       string
-	directory string
-	filename  string
-	maxConn   int
-	headers   map[string]string
-	policy    config.DuplicateURLPolicy
-	sub       FileInfoSubmission
-	preTaskID string
+	item       *FileInfoItem
+	url        string
+	directory  string
+	filename   string
+	maxConn    int
+	categoryID string
+	headers    map[string]string
+	policy     config.DuplicateURLPolicy
+	sub        FileInfoSubmission
+	preTaskID  string
 	// probe 是登记时那次探测的结果，提交用它建任务、不再自己联网（见 runSubmit）。
 	// 它是空的就说明这次提交无从复用：链接是新输入的，或者用户改过链接（那份元数据
 	// 已经不属于这个链接了），只能退回让引擎自己探一次。
@@ -960,11 +975,21 @@ func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmissi
 		}
 		active.submitting = true
 
+		catID := sub.CategoryID
+		if catID == "" {
+			catID = active.CategoryID
+		}
+		if catID == "" && qc.settings != nil {
+			cat, _ := qc.settings.Get().Download.ResolveDestination(sub.Filename)
+			catID = cat.ID
+		}
+
 		plan := &submitPlan{
 			item:          active,
 			url:           sub.URL,
 			directory:     sub.Directory,
 			filename:      sub.Filename,
+			categoryID:    catID,
 			maxConn:       sub.MaxConn,
 			headers:       active.Headers,
 			policy:        qc.settings.Get().Download.DuplicateURLPolicy,

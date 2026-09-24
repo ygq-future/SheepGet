@@ -172,3 +172,45 @@ func TestFileTaskStore_PageURLPersistence(t *testing.T) {
 		t.Errorf("expected PageURL %q, got %q", testPageURL, reloaded.PageURL)
 	}
 }
+
+func TestFileTaskStore_CategoryIDPersistenceAndClone(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeFile := filepath.Join(tmpDir, "tasks.json")
+
+	store, err := task.NewFileTaskStore(storeFile)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	ctx := context.Background()
+	t1 := &task.Task{
+		ID:         "task-cat-test",
+		URL:        "https://example.com/movie.mp4",
+		Filename:   "movie.mp4",
+		CategoryID: "builtin-video",
+		Status:     task.StatusDownloading,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+
+	cloned := t1.Clone()
+	if cloned.CategoryID != "builtin-video" {
+		t.Fatalf("Clone did not retain CategoryID: %q", cloned.CategoryID)
+	}
+
+	if err := store.Save(ctx, t1); err != nil {
+		t.Fatalf("failed to save task: %v", err)
+	}
+
+	store2, err := task.NewFileTaskStore(storeFile)
+	if err != nil {
+		t.Fatalf("failed to reload store: %v", err)
+	}
+	reloaded, err := store2.Get(ctx, "task-cat-test")
+	if err != nil {
+		t.Fatalf("failed to get reloaded task: %v", err)
+	}
+	if reloaded.CategoryID != "builtin-video" {
+		t.Errorf("expected CategoryID %q, got %q", "builtin-video", reloaded.CategoryID)
+	}
+}

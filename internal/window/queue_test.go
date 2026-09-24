@@ -1093,7 +1093,87 @@ func TestQueueController_PageURL_PreservedOnSubmit(t *testing.T) {
 	if savedTask.PageURL != sourcePageURL {
 		t.Errorf("savedTask.PageURL = %q, want %q", savedTask.PageURL, sourcePageURL)
 	}
+}
 
+func TestQueueController_CategoryID_PreservedOnSubmit(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, store, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	const targetURL = "https://example.com/movie.mp4"
+
+	resp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       targetURL,
+		Filename:  "movie.mp4",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	active, err := qc.GetActive()
+	if err != nil || active == nil {
+		t.Fatalf("failed to get active item: %v", err)
+	}
+	if active.CategoryID != "builtin-video" {
+		t.Errorf("active.CategoryID = %q, want %q", active.CategoryID, "builtin-video")
+	}
+
+	// 1. Submit with explicit category override (user selected another category)
+	createdTask, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID:  resp.RequestID,
+		URL:        targetURL,
+		Filename:   "movie.mp4",
+		Directory:  tmpDir,
+		CategoryID: "custom-special",
+		MaxConn:    4,
+	})
+	if err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+	if createdTask == nil {
+		t.Fatal("expected non-nil created task")
+	}
+	if createdTask.CategoryID != "custom-special" {
+		t.Errorf("createdTask.CategoryID = %q, want %q", createdTask.CategoryID, "custom-special")
+	}
+
+	savedTask, err := store.Get(ctx, createdTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get task from store: %v", err)
+	}
+	if savedTask.CategoryID != "custom-special" {
+		t.Errorf("savedTask.CategoryID = %q, want %q", savedTask.CategoryID, "custom-special")
+	}
+
+	// 2. Submit without override: retains auto-resolved category
+	resp2, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/song.mp3",
+		Filename:  "song.mp3",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue 2 failed: %v", err)
+	}
+	createdTask2, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID: resp2.RequestID,
+		URL:       "https://example.com/song.mp3",
+		Filename:  "song.mp3",
+		Directory: tmpDir,
+		MaxConn:   4,
+	})
+	if err != nil {
+		t.Fatalf("submit 2 failed: %v", err)
+	}
+	if createdTask2.CategoryID != "builtin-audio" {
+		t.Errorf("createdTask2.CategoryID = %q, want %q", createdTask2.CategoryID, "builtin-audio")
+	}
+	savedTask2, err := store.Get(ctx, createdTask2.ID)
+	if err != nil {
+		t.Fatalf("failed to get task 2 from store: %v", err)
+	}
+	if savedTask2.CategoryID != "builtin-audio" {
+		t.Errorf("savedTask2.CategoryID = %q, want %q", savedTask2.CategoryID, "builtin-audio")
+	}
 }
 
 func TestQueueController_Probing_StateTransition(t *testing.T) {

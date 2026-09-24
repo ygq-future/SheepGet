@@ -1475,3 +1475,13 @@ func (m *Manager) SetTaskPageURL(ctx context.Context, taskID, pageURL string) er
 	t.PageURL = pageURL
 	return m.store.Save(ctx, t)
 }
+
+// SetTaskCategoryID updates and persists the CategoryID for the specified task.
+func (m *Manager) SetTaskCategoryID(ctx context.Context, taskID, categoryID string) error {
+	t, err := m.store.Get(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	t.CategoryID = categoryID
+	return m.store.Save(ctx, t)
+}

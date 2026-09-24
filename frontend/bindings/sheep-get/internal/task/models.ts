@@ -103,6 +103,13 @@ export class Task {
     "pageUrl"?: string;
     "filename": string;
     "directory": string;
+
+    /**
+     * CategoryID 是该下载任务命中的分类 ID（如 "builtin-video"、"custom-game"）。
+     * 在任务创建时由后端的分类规则或文件信息窗口的用户选择判定并固化在任务上，
+     * 作为历史归属的单一事实来源，界面直接读取该字段，不再重复推算。
+     */
+    "categoryId"?: string;
     "tempDir"?: string;
     "totalBytes": number;
     "downloaded": number;
@@ -220,22 +227,22 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField19_0 = $$createType1;
-        const $$createField20_0 = $$createType3;
-        const $$createField23_0 = $$createType4;
-        const $$createField24_0 = $$createType6;
+        const $$createField20_0 = $$createType1;
+        const $$createField21_0 = $$createType3;
+        const $$createField24_0 = $$createType4;
+        const $$createField25_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField19_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField20_0($$parsedSource["chunks"]);
         }
         if ("media" in $$parsedSource) {
-            $$parsedSource["media"] = $$createField20_0($$parsedSource["media"]);
+            $$parsedSource["media"] = $$createField21_0($$parsedSource["media"]);
         }
         if ("segmentDone" in $$parsedSource) {
-            $$parsedSource["segmentDone"] = $$createField23_0($$parsedSource["segmentDone"]);
+            $$parsedSource["segmentDone"] = $$createField24_0($$parsedSource["segmentDone"]);
         }
         if ("mediaInputs" in $$parsedSource) {
-            $$parsedSource["mediaInputs"] = $$createField24_0($$parsedSource["mediaInputs"]);
+            $$parsedSource["mediaInputs"] = $$createField25_0($$parsedSource["mediaInputs"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

@@ -14,16 +14,16 @@
 
 ## 执行顺序总览
 
-| 序 | 编号 | 项目 | 强度 | 规模 | 状态 |
-|---|---|---|---|---|---|
-| 1 | C2 | 进度只给快照，不再共享同一个 `*task.Task` | 强 | 小—中 | 已完成 |
-| 2 | C8 | 版本一致性：做成检查，而不是清单 | 值得探索 | 小 | 已完成 |
-| 3 | C5 | 「这个名字被占了」只保留一条规则 | 强 | 小—中 | 已完成 |
-| 4 | C4 | 给环回通信契约一个归属模块 | 强 | 中 | 已完成 |
-| 5 | C1 | 让下载入口只有一个归属模块（含删死代码） | 强 | 大 | 已完成 |
-| 6 | C3 | 窗口生命周期收成一个模块，每窗口一份声明 | 强 | 中 | 已完成 |
-| 7 | C7 | 为扩展 Service Worker 立一条「就绪」接缝 | 值得探索 | 中 | 已完成 |
-| 8 | C6 | 把目标落点记在任务上，不让界面重推一遍 | 值得探索 | 中—大 | 待探讨 |
+| 序  | 编号 | 项目                                      | 强度     | 规模  | 状态   |
+| --- | ---- | ----------------------------------------- | -------- | ----- | ------ |
+| 1   | C2   | 进度只给快照，不再共享同一个 `*task.Task` | 强       | 小—中 | 已完成 |
+| 2   | C8   | 版本一致性：做成检查，而不是清单          | 值得探索 | 小    | 已完成 |
+| 3   | C5   | 「这个名字被占了」只保留一条规则          | 强       | 小—中 | 已完成 |
+| 4   | C4   | 给环回通信契约一个归属模块                | 强       | 中    | 已完成 |
+| 5   | C1   | 让下载入口只有一个归属模块（含删死代码）  | 强       | 大    | 已完成 |
+| 6   | C3   | 窗口生命周期收成一个模块，每窗口一份声明  | 强       | 中    | 已完成 |
+| 7   | C7   | 为扩展 Service Worker 立一条「就绪」接缝  | 值得探索 | 中    | 已完成 |
+| 8   | C6   | 把目标落点记在任务上，不让界面重推一遍    | 值得探索 | 中—大 | 已完成 |
 
 依赖关系（箭头 = 前者是后者的前置）：
 
@@ -199,13 +199,20 @@ C2 · C8 独立，无前置
 ## 8. C6 把目标落点记在任务上，不让界面重推一遍
 
 - **强度**：值得探索
+- **状态**：已完成（2026-09-24），用户选定方案 A（历史归属语义），门禁通过
 - **问题**：CONTEXT.md 写明目标落点由后端判定一次、界面读取结果，但 `task.Task` 上没有命中分类字段，主列表对每个任务、每次渲染都要跑一遍 TypeScript 版的优先级规则。
 - **证据**：`frontend/src/lib/category.ts:51-99`、`frontend/src/lib/taskFilter.ts:18`、`frontend/src/App.tsx:201`、`frontend/src/category.test.ts:23-134`、`internal/task/task.go:41-72`、`internal/config/model.go:544-596`。
-- **深化方向**：入口解析一次落点并把命中分类记在任务上，界面按事实筛选。
-- **影响面**：`internal/task`、`internal/engine`、`internal/config`、`frontend/src/lib`、`frontend/src/App.tsx`、`frontend/bindings`（重新生成）。
-- **前置**：C1（在入口一次解析）。
-- **待定语义**：用户后来修改分类规则时，历史任务上记录的分类算「历史归属」还是「按现行规则重算」——先定这个再动手。
-- **验证**：侧栏分类计数与列表筛选一致；改动分类规则后的行为与选定语义一致。
+- **实际改动**（按方案 A 历史归属语义落定单一事实来源）：
+  - `internal/task/task.go`：在 `Task` 结构体新增 `CategoryID string`（JSON: `categoryId`），`Task.Clone()` 与持久化存储自动带出该字段；
+  - `internal/engine/manager.go`：新增 `SetTaskCategoryID(ctx, taskID, categoryID)` 提供分类更新与持久化；
+  - `internal/window/queue.go`：`FileInfoSubmission` 增加 `CategoryID`；预下载启动时赋给任务，提交（`Submit`）时优先采用用户在弹窗手动指定的分类、否则沿用登记时自动命中的分类，建任务后直接固化；
+  - `app.go`：在应用启动生命周期（`App.startup`）对旧版本留下的无分类历史任务统一补齐并落盘固化，`ListTasks` 严格保持纯只读（符合读写分离 CQS）；
+  - 重新生成 Wails TS 绑定（`frontend/bindings`），类型严格对齐；
+  - `frontend/src/lib/taskFilter.ts` 与 `frontend/src/App.tsx`：主列表筛选直接比对 `t.categoryId === selectedCategory`，彻底移除对 `settings` 的依赖；
+  - `frontend/src/lib/category.ts` & `frontend/src/category.test.ts`：彻底删除前端重复维护的 `matchTaskCategory` 及其 112 行冗余测试。
+- **验证**：
+  - `internal/task`、`internal/window` 与 `app_test.go` 新增测试覆盖分类持久化、提交覆盖与启动历史数据迁移；
+  - 前端 85 项测试与类型检查全部通过；全量质量门禁 `node scripts/quality-gate.mjs` 全绿。
 
 ---
 

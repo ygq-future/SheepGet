@@ -204,7 +204,7 @@ export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse
 }
 
 /**
- * OpenSettingsWindow ensures the main window is open and switched to the preferences tab.
+ * OpenSettingsWindow 打开主窗口并让界面切到设置页。
  */
 export function OpenSettingsWindow(): $CancellablePromise<void> {
     return $Call.ByID(3185921024);

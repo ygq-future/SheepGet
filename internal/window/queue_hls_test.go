@@ -92,6 +92,9 @@ func (e *hlsProbeEngine) ReuseExistingFile(context.Context, string, string, stri
 func (e *hlsProbeEngine) SetTaskPageURL(context.Context, string, string) error {
 	return nil
 }
+func (e *hlsProbeEngine) SetTaskCategoryID(context.Context, string, string) error {
+	return nil
+}
 
 // twoVariantProbe 构造一份有两个清晰度的 HLS 探测结果，供选择类测试复用。
 func twoVariantProbe() *engine.ProbeResult {
