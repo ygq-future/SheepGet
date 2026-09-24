@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,8 +20,8 @@ import (
 	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
+	"sheep-get/internal/windowing"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -53,21 +51,12 @@ type App struct {
 	storage             *storage.Storage
 	settings            *config.SettingsService
 	windowQueue         *window.QueueController
-	progressPositioned  bool
+	windows             *windowing.Registry
 	progressAlwaysOnTop bool
 	clipboardWatcher    *clipboard.Watcher
 	loopbackServer      *server.Server
 	logger              atomic.Pointer[logging.Logger]
 	logError            error
-	windowTimerLock     sync.Mutex
-	fileInfoTimer       *time.Timer
-	progressTimer       *time.Timer
-	destroyingWindows   map[string]bool
-}
-
-type wailsWindowView struct {
-	app  *App
-	name string
 }
 
 // log 返回日志出口；尚未接上日志（测试直接构造 App）时丢弃日志。
@@ -114,79 +103,6 @@ func (a *App) applyLogging(enabled bool) {
 	a.logError = nil
 	if a.manager != nil {
 		a.manager.SetLogger(logger.Logger)
-	}
-}
-
-func (w *wailsWindowView) Show() {
-	if w.app == nil {
-		return
-	}
-	w.app.cancelWindowIdleDestroy(w.name)
-	wailsApp := w.app.getApp()
-	if wailsApp == nil {
-		return
-	}
-	if win, ok := wailsApp.Window.GetByName(w.name); ok {
-		window.ShowAndRaise(win)
-		return
-	}
-	if w.name == winNameFileInfo {
-		fileInfoWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-			Name:           winNameFileInfo,
-			Title:          "新建下载 - SheepGet",
-			Width:          fileInfoWindowWidth,
-			Height:         fileInfoWindowHeight,
-			Frameless:      true,
-			BackgroundType: application.BackgroundTypeTransparent,
-			DisableResize:  true,
-			URL:            "/?window=fileinfo",
-		})
-		fileInfoWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-			if w.app.isWindowDestroying(winNameFileInfo) {
-				return
-			}
-			event.Cancel()
-			_ = w.app.CancelCurrentFileInfo()
-		})
-		window.ShowAndRaise(fileInfoWindow)
-	}
-}
-
-func (w *wailsWindowView) Hide() {
-	if w.app == nil {
-		return
-	}
-	wailsApp := w.app.getApp()
-	if wailsApp == nil {
-		return
-	}
-	if win, ok := wailsApp.Window.GetByName(w.name); ok {
-		win.Hide()
-		if w.name == winNameFileInfo {
-			w.app.scheduleWindowIdleDestroy(w.name)
-		}
-	}
-}
-
-func (w *wailsWindowView) Focus() {
-	if w.app == nil {
-		return
-	}
-	wailsApp := w.app.getApp()
-	if wailsApp != nil {
-		if win, ok := wailsApp.Window.GetByName(w.name); ok {
-			window.Raise(win)
-		}
-	}
-}
-
-func (w *wailsWindowView) Emit(event string, data any) {
-	if w.app == nil {
-		return
-	}
-	wailsApp := w.app.getApp()
-	if wailsApp != nil {
-		wailsApp.Event.Emit(event, data)
 	}
 }
 
@@ -251,6 +167,7 @@ func NewApp() *App {
 	}
 	logger.Info("应用启动", startupFields...)
 
+	app.declareWindows(&windowsHost{app: app})
 	winView := &wailsWindowView{
 		app:  app,
 		name: winNameFileInfo,
@@ -340,8 +257,9 @@ func (a *App) Shutdown() {
 	if exitFile := os.Getenv("SHEEP_GET_DEV_EXIT_FILE"); exitFile != "" {
 		_ = os.WriteFile(exitFile, []byte("exit"), 0600)
 	}
-	a.cancelWindowIdleDestroy(winNameFileInfo)
-	a.cancelWindowIdleDestroy(winNameProgress)
+	if a.windows != nil {
+		a.windows.Shutdown()
+	}
 	_ = a.log().Close()
 }
 
@@ -382,22 +300,12 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 	if app := a.getApp(); app != nil {
 		app.Event.Emit(protocol.EventSettingsUpdated, s)
 	}
-	if app := a.getApp(); app != nil && s != nil {
-		if mainWin, ok := app.Window.GetByName(winNameMain); ok {
-			bg := mainWindowDarkBackgroundColour
-			if s.Appearance.Theme == config.ThemeLight {
-				bg = mainWindowLightBackgroundColour
-			}
-			mainWin.SetBackgroundColour(bg)
-		}
-	}
-	if app := a.getApp(); app != nil && s != nil && s.General.LightweightMode {
-		if mainWin, ok := app.Window.GetByName(winNameMain); ok && !mainWin.IsVisible() {
-			mainWin.Close()
-		}
-		if progWin, ok := app.Window.GetByName(winNameProgress); ok && !progWin.IsVisible() {
-			a.progressPositioned = false
-			progWin.Close()
+	if a.windows != nil && s != nil {
+		a.windows.SetBackground(winNameMain, a.mainWindowBackground())
+		if s.General.LightweightMode {
+			// 打开轻量模式：不再热备，立刻收掉不可见的窗口（可见的留给用户自己关）。
+			a.windows.CloseHidden(winNameMain)
+			a.windows.CloseHidden(winNameProgress)
 		}
 	}
 	return nil
@@ -882,10 +790,8 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 		if st.Download.ShowProgressWindow {
 			a.ShowProgressWindow(t.ID)
 			if a.fileInfoQueueLength() > 0 {
-				if app := a.getApp(); app != nil {
-					if fileWin, ok := app.Window.GetByName(winNameFileInfo); ok {
-						window.Raise(fileWin)
-					}
+				if fileWin, ok := a.windows.Find(winNameFileInfo); ok {
+					fileWin.Raise()
 				}
 			}
 		}
@@ -925,311 +831,6 @@ func (a *App) SwitchFileInfoActive(index int) (*window.FileInfoItem, error) {
 		return nil, fmt.Errorf("window queue not initialized")
 	}
 	return a.windowQueue.SwitchActive(index)
-}
-
-// ensureMainWindow returns the main window, creating it if it doesn't exist yet.
-func (a *App) ensureMainWindow(hidden bool, urlPath ...string) application.Window {
-	app := a.getApp()
-	if app == nil {
-		return nil
-	}
-	if win, ok := app.Window.GetByName(winNameMain); ok {
-		return win
-	}
-	targetURL := "/"
-	if len(urlPath) > 0 && urlPath[0] != "" {
-		targetURL = urlPath[0]
-	}
-	bg := mainWindowDarkBackgroundColour
-	if a.settings != nil && a.settings.Get().Appearance.Theme == config.ThemeLight {
-		bg = mainWindowLightBackgroundColour
-	}
-	mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             winNameMain,
-		Title:            "SheepGet",
-		Width:            mainWindowWidth,
-		Height:           mainWindowHeight,
-		MinWidth:         mainWindowWidth,
-		MinHeight:        mainWindowHeight,
-		Hidden:           hidden,
-		BackgroundColour: bg,
-		URL:              targetURL,
-	})
-	mainWindow.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		st := a.GetSettings()
-		if st.General.LightweightMode {
-			// 在轻量模式下不拦截关闭事件，允许 Wails 销毁窗口与 WebView 渲染进程
-			return
-		}
-		// 默认模式下拦截并隐藏到托盘
-		event.Cancel()
-		mainWindow.Hide()
-	})
-	return mainWindow
-}
-
-// ShowMainWindow makes the main window visible and brings it to focus, creating it if needed.
-func (a *App) ShowMainWindow() {
-	if win := a.ensureMainWindow(false); win != nil {
-		window.ShowAndRaise(win)
-	}
-}
-
-// OpenSettingsWindow ensures the main window is open and switched to the preferences tab.
-func (a *App) OpenSettingsWindow() {
-	app := a.getApp()
-	if app == nil {
-		return
-	}
-	if win, ok := app.Window.GetByName(winNameMain); ok {
-		window.ShowAndRaise(win)
-		app.Event.Emit(protocol.EventAppOpenSettings)
-		return
-	}
-	win := a.ensureMainWindow(false, "/?open=settings")
-	if win != nil {
-		window.ShowAndRaise(win)
-		app.Event.Emit(protocol.EventAppOpenSettings)
-	}
-}
-
-// MinimiseFileInfoWindow minimises the file info window.
-func (a *App) MinimiseFileInfoWindow() {
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameFileInfo); ok {
-			win.Minimise()
-		}
-	}
-}
-
-// SetFileInfoWindowHeight dynamically adjusts the fileinfo window's height to wrap its content.
-func (a *App) SetFileInfoWindowHeight(height int) {
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameFileInfo); ok {
-			if height < fileInfoWindowMinH {
-				height = fileInfoWindowMinH
-			}
-			if height > fileInfoWindowMaxH {
-				height = fileInfoWindowMaxH
-			}
-			win.SetSize(fileInfoWindowWidth, height)
-		}
-	}
-}
-
-// SetProgressWindowHeight adjusts the progress window's height to wrap its content.
-// 高度由内容决定：只有一个任务卡片时窗口就收成一张卡片的高度，不套用内容意义上的下限，
-// 只有超过上限时才封顶（超出部分由窗口内部滚动）。
-func (a *App) SetProgressWindowHeight(height int) {
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			if height < progressWindowMinH {
-				height = progressWindowMinH
-			}
-			if height > progressWindowMaxH {
-				height = progressWindowMaxH
-			}
-			win.SetSize(progressWindowWidth, height)
-		}
-	}
-}
-
-// ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
-func (a *App) ShowProgressWindow(taskID string) {
-	a.cancelWindowIdleDestroy(winNameProgress)
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			a.windowTimerLock.Lock()
-			positioned := a.progressPositioned
-			if !positioned {
-				if primary := app.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
-					x := primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
-					y := primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
-					win.SetPosition(x, y)
-				}
-				a.progressPositioned = true
-			}
-			a.windowTimerLock.Unlock()
-			window.ShowAndRaise(win)
-			if taskID != "" {
-				app.Event.Emit(protocol.EventProgressFocusCompleted, taskID)
-				app.Event.Emit(protocol.EventProgressFocusTask, taskID)
-			}
-			return
-		}
-
-		var (
-			progX       = 0
-			progY       = 0
-			progInitPos = application.WindowCentered
-		)
-		if primary := app.Screen.GetPrimary(); primary != nil && primary.WorkArea.Width > 0 && primary.WorkArea.Height > 0 {
-			progX = primary.WorkArea.X + primary.WorkArea.Width - progressWindowWidth - progressWindowEdgeGap
-			progY = primary.WorkArea.Y + primary.WorkArea.Height - progressWindowBottomOffset - progressWindowEdgeGap
-			progInitPos = application.WindowXY
-		}
-
-		progWin := app.Window.NewWithOptions(application.WebviewWindowOptions{
-			Name:            winNameProgress,
-			Title:           "下载进度 - SheepGet",
-			Width:           progressWindowWidth,
-			Height:          progressWindowHeight,
-			MinWidth:        progressWindowMinWidth,
-			MaxWidth:        progressWindowMaxWidth,
-			MinHeight:       progressWindowMinH,
-			MaxHeight:       progressWindowMaxH,
-			InitialPosition: progInitPos,
-			X:               progX,
-			Y:               progY,
-			Frameless:       true,
-			AlwaysOnTop:     a.progressAlwaysOnTop,
-			BackgroundType:  application.BackgroundTypeTransparent,
-			URL:             fmt.Sprintf("/?window=progress&focus=%s", url.QueryEscape(taskID)),
-		})
-		a.windowTimerLock.Lock()
-		a.progressPositioned = true
-		a.windowTimerLock.Unlock()
-		progWin.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-			if a.isWindowDestroying(winNameProgress) {
-				return
-			}
-			event.Cancel()
-			progWin.Hide()
-			app.Event.Emit(protocol.EventProgressClearViewed)
-			a.scheduleWindowIdleDestroy(winNameProgress)
-		})
-		window.ShowAndRaise(progWin)
-		if taskID != "" {
-			app.Event.Emit(protocol.EventProgressFocusCompleted, taskID)
-			app.Event.Emit(protocol.EventProgressFocusTask, taskID)
-		}
-	}
-}
-
-// MinimiseProgressWindow minimises the progress window.
-func (a *App) MinimiseProgressWindow() {
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			win.Minimise()
-		}
-	}
-}
-
-// HideProgressWindow hides the progress window.
-func (a *App) HideProgressWindow() {
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			win.Hide()
-			app.Event.Emit(protocol.EventProgressClearViewed)
-			a.scheduleWindowIdleDestroy(winNameProgress)
-		}
-	}
-}
-
-func (a *App) isWindowDestroying(name string) bool {
-	a.windowTimerLock.Lock()
-	defer a.windowTimerLock.Unlock()
-	return a.destroyingWindows[name]
-}
-
-func (a *App) setWindowDestroying(name string, destroying bool) {
-	a.windowTimerLock.Lock()
-	defer a.windowTimerLock.Unlock()
-	if a.destroyingWindows == nil {
-		a.destroyingWindows = make(map[string]bool)
-	}
-	if destroying {
-		a.destroyingWindows[name] = true
-	} else {
-		delete(a.destroyingWindows, name)
-	}
-}
-
-func (a *App) cancelWindowIdleDestroy(name string) {
-	a.windowTimerLock.Lock()
-	defer a.windowTimerLock.Unlock()
-	switch name {
-	case winNameFileInfo:
-		if a.fileInfoTimer != nil {
-			a.fileInfoTimer.Stop()
-			a.fileInfoTimer = nil
-		}
-	case winNameProgress:
-		if a.progressTimer != nil {
-			a.progressTimer.Stop()
-			a.progressTimer = nil
-		}
-	}
-}
-
-func (a *App) scheduleWindowIdleDestroy(name string) {
-	st := a.GetSettings()
-	if !st.General.LightweightMode {
-		return
-	}
-
-	a.windowTimerLock.Lock()
-	defer a.windowTimerLock.Unlock()
-
-	switch name {
-	case winNameFileInfo:
-		if a.fileInfoTimer != nil {
-			a.fileInfoTimer.Stop()
-		}
-		a.fileInfoTimer = time.AfterFunc(windowIdleDestroyGracePeriod, func() {
-			a.windowTimerLock.Lock()
-			a.fileInfoTimer = nil
-			a.windowTimerLock.Unlock()
-
-			if a.fileInfoQueueLength() == 0 {
-				if app := a.getApp(); app != nil {
-					if win, ok := app.Window.GetByName(winNameFileInfo); ok && !win.IsVisible() {
-						a.setWindowDestroying(winNameFileInfo, true)
-						win.Close()
-						a.setWindowDestroying(winNameFileInfo, false)
-					}
-				}
-			}
-		})
-
-	case winNameProgress:
-		if a.progressTimer != nil {
-			a.progressTimer.Stop()
-		}
-		a.progressTimer = time.AfterFunc(windowIdleDestroyGracePeriod, func() {
-			a.windowTimerLock.Lock()
-			a.progressTimer = nil
-			a.windowTimerLock.Unlock()
-
-			if app := a.getApp(); app != nil {
-				if win, ok := app.Window.GetByName(winNameProgress); ok && !win.IsVisible() {
-					a.windowTimerLock.Lock()
-					a.progressPositioned = false
-					a.windowTimerLock.Unlock()
-
-					a.setWindowDestroying(winNameProgress, true)
-					win.Close()
-					a.setWindowDestroying(winNameProgress, false)
-				}
-			}
-		})
-	}
-}
-
-// ToggleProgressWindowAlwaysOnTop toggles whether the progress window is always on top.
-func (a *App) ToggleProgressWindowAlwaysOnTop() bool {
-	a.progressAlwaysOnTop = !a.progressAlwaysOnTop
-	if app := a.getApp(); app != nil {
-		if win, ok := app.Window.GetByName(winNameProgress); ok {
-			win.SetAlwaysOnTop(a.progressAlwaysOnTop)
-		}
-	}
-	return a.progressAlwaysOnTop
-}
-
-// IsProgressWindowAlwaysOnTop reports whether the progress window is set to always on top.
-func (a *App) IsProgressWindowAlwaysOnTop() bool {
-	return a.progressAlwaysOnTop
 }
 
 // OpenExtensionFolder reveals the bundled extension directory in the system file manager.

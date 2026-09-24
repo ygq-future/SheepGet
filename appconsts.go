@@ -3,11 +3,11 @@ package main
 import (
 	"time"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"sheep-get/internal/windowing"
 )
 
-// 窗口名与窗口几何的单一命名来源。main.go 预创建窗口、app.go 动态操作窗口时
-// 共用这些常量，避免同一标识散落成多处字符串/数字字面量。
+// 窗口名与窗口几何的单一命名来源：窗口的三份声明在 app_windows.go，这里只留标识与尺寸这一层，
+// 避免同一标识散落成多处字符串/数字字面量。
 
 // 窗口名。
 const (
@@ -24,8 +24,8 @@ const (
 
 // 主窗口默认背景色（与前端暗色/亮色基调 #09090b / #f8fafc 完全统一，避免深蓝模板色与黑白主题割裂）。
 var (
-	mainWindowDarkBackgroundColour  = application.RGBA{Red: 9, Green: 9, Blue: 11, Alpha: 255}
-	mainWindowLightBackgroundColour = application.RGBA{Red: 248, Green: 250, Blue: 252, Alpha: 255}
+	mainWindowDarkBackgroundColour  = windowing.Colour{R: 9, G: 9, B: 11, A: 255}
+	mainWindowLightBackgroundColour = windowing.Colour{R: 248, G: 250, B: 252, A: 255}
 )
 
 // Windows 平台 WebView2 启动加速参数（裁剪非桌面必要服务，缩短内核冷启动耗时）。
@@ -38,7 +38,7 @@ var windowsAdditionalBrowserArgs = []string{
 	"--disable-sync",
 }
 
-// 进度窗口几何。main.go 预创建与 app.go 动态重建/调整时共用，保证两处尺寸一致。
+// 进度窗口几何。创建声明与内容驱动的高度调整共用同一组数字。
 const (
 	progressWindowWidth    = 560
 	progressWindowHeight   = 160

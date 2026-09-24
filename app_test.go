@@ -20,6 +20,7 @@ import (
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
 	"sheep-get/internal/window"
+	"sheep-get/internal/windowing"
 )
 
 // serveRangedPayload stands in for a remote resource: it honours Range requests and, when referer
@@ -104,6 +105,9 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	adapter := &loopbackServerAdapter{app: app}
 	loopbackSrv := server.NewServer(filepath.Join(tmpDir, "session.json"), adapter, adapter)
 	app.loopbackServer = loopbackSrv
+	// 无头测试里宿主窗口不存在，注册表的宿主适配器会如实说「没有窗口」；
+	// 窗口策略本身由 internal/windowing 的用例覆盖。
+	app.declareWindows(&windowsHost{app: app})
 	winView := &wailsWindowView{
 		app:  app,
 		name: winNameFileInfo,
@@ -144,6 +148,49 @@ func waitPreDownloadTask(t *testing.T, app *App, itemID string) string {
 	t.Fatalf("pre-download for item %s never started", itemID)
 	return ""
 }
+
+// 无头环境里没有真窗口，但窗口的声明与策略就在 App 上：用一个记录型宿主把声明驱动起来，
+// 就能验证「关到托盘」「关掉文件信息窗口等于取消这次下载」这类应用侧策略。
+type headlessWindow struct {
+	onClose   func() bool
+	visible   bool
+	closed    bool
+	alwaysTop bool
+}
+
+func (w *headlessWindow) Show()                          { w.visible = true }
+func (w *headlessWindow) Hide()                          { w.visible = false }
+func (w *headlessWindow) Raise()                         { w.visible = true }
+func (w *headlessWindow) Minimise()                      { w.visible = false }
+func (w *headlessWindow) Close()                         { w.closed = true }
+func (w *headlessWindow) IsVisible() bool                { return w.visible }
+func (w *headlessWindow) SetSize(int, int)               {}
+func (w *headlessWindow) SetPosition(int, int)           {}
+func (w *headlessWindow) SetAlwaysOnTop(on bool)         { w.alwaysTop = on }
+func (w *headlessWindow) SetBackground(windowing.Colour) {}
+
+type headlessHost struct {
+	windows map[string]*headlessWindow
+}
+
+func (h *headlessHost) Open(options windowing.Options, onClose func() bool) (windowing.Window, bool) {
+	win := &headlessWindow{onClose: onClose}
+	if h.windows == nil {
+		h.windows = map[string]*headlessWindow{}
+	}
+	h.windows[options.Name] = win
+	return win, true
+}
+
+func (h *headlessHost) Find(name string) (windowing.Window, bool) {
+	win, ok := h.windows[name]
+	if !ok {
+		return nil, false
+	}
+	return win, true
+}
+
+func (h *headlessHost) WorkArea() (windowing.Rect, bool) { return windowing.Rect{}, false }
 
 func waitAppTask(t *testing.T, store task.TaskStore, id string, want task.Status) *task.Task {
 	t.Helper()
@@ -1337,5 +1384,59 @@ func TestApp_CheckFileConflict_ExcludesEditedItem(t *testing.T) {
 	}
 	if other.SuggestedFilename != "report (2).pdf" {
 		t.Errorf("expected report (2).pdf, got %s", other.SuggestedFilename)
+	}
+}
+
+// 主窗口的关闭策略：非轻量模式关到托盘（拦下这次关闭并隐藏），轻量模式放行让宿主销毁。
+func TestApp_MainWindowClosePolicy(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	host := &headlessHost{}
+	app.declareWindows(host)
+
+	if _, ok := app.windows.Show(winNameMain, "/"); !ok {
+		t.Fatalf("expected the main window to be created")
+	}
+	win := host.windows[winNameMain]
+	if !win.onClose() {
+		t.Errorf("non-lightweight: closing the main window must be intercepted")
+	}
+	if win.visible {
+		t.Errorf("non-lightweight: the intercepted close must hide the window into the tray")
+	}
+
+	st := app.GetSettings()
+	st.General.LightweightMode = true
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+	win.visible = true
+	if win.onClose() {
+		t.Errorf("lightweight: the close must be allowed through so the host can destroy the window")
+	}
+}
+
+// 关掉文件信息窗口就是「这次下载不要了」：拦下关闭，并把队列里的当前项取消掉。
+func TestApp_FileInfoWindowCloseCancelsCurrent(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+	host := &headlessHost{}
+	app.declareWindows(host)
+
+	if _, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       "http://127.0.0.1:59999/cancel.bin",
+		Filename:  "cancel.bin",
+		Directory: tmpDir,
+	}); err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+	waitActiveItem(t, app, "cancel.bin")
+
+	if _, ok := app.windows.Show(winNameFileInfo, ""); !ok {
+		t.Fatalf("expected the file info window to be created")
+	}
+	if cancel := host.windows[winNameFileInfo].onClose(); !cancel {
+		t.Fatalf("closing the file info window must be intercepted")
+	}
+	if length := app.fileInfoQueueLength(); length != 0 {
+		t.Errorf("closing the file info window must cancel the current item, %d left", length)
 	}
 }
