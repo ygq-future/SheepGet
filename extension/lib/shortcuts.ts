@@ -1,4 +1,4 @@
-import type { KeyName } from './types';
+import type { KeyName, KeyStateReport } from './types';
 
 export const KEY_MASKS: Record<KeyName, number> = {
   Shift: 1 << 0,
@@ -49,6 +49,16 @@ export function isKeyPressed(mask: number, targetShortcutName: string): boolean 
 
 /** 快捷键在用户松开或失焦后的宽限保留时间（毫秒），平滑网络延迟与切标签页导致的按键状态丢失 */
 export const SHORTCUT_GRACE_PERIOD_MS = 3000;
+
+/**
+ * 页面对「现在按住了哪些键」的回答：只在真的按住键时应答。
+ *
+ * 没按住必须表现为不应答，而不是回一个 0：后台据此区分「用户没按住」与「这个页面没有
+ * 内容脚本（特权页）/ 忙得没来得及回」，回 0 会把后两者伪装成前者的答案。
+ */
+export function keyStateReply(mask: number): KeyStateReport | undefined {
+  return mask === 0 ? undefined : { keyMask: mask };
+}
 
 export interface ShortcutClickIntent {
   keyMask: number;

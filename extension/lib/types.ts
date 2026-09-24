@@ -99,6 +99,21 @@ export interface TabMediaUpdatedMessage {
   resources: MediaResource[];
 }
 
+/**
+ * 问页面此刻按住了哪些快捷键键位。
+ *
+ * Service Worker 每次被挂起重建都会丢掉按键掩码，而内容脚本的本地掩码随页面存活——
+ * 按住的键只在那里还看得见（见 lib/shortcuts.ts 的 keyStateReply）。
+ */
+export interface QueryKeyStateMessage {
+  type: 'QUERY_KEY_STATE';
+}
+
+/** 页面对 QUERY_KEY_STATE 的回答。没按住任何键时页面干脆不应答（见 keyStateReply）。 */
+export interface KeyStateReport {
+  keyMask: number;
+}
+
 /** content script 上报所在页面的真实标题与 URL，供 HLS 等资源智能命名。 */
 export interface ReportPageContextMessage {
   type: 'REPORT_PAGE_CONTEXT';
@@ -176,11 +191,14 @@ export interface SetTargetPortMessage {
   port: number;
 }
 
+/** 后台发给页面的消息。 */
+export type BackgroundMessage = TabMediaUpdatedMessage | QueryKeyStateMessage;
+
+/** 页面与面板发给后台的消息。 */
 export type ExtensionMessage =
   | KeyStateMessage
   | ResetKeysMessage
   | GetTabMediaMessage
-  | TabMediaUpdatedMessage
   | ReportPageContextMessage
   | HandoverMediaMessage
   | GetHLSVariantsMessage

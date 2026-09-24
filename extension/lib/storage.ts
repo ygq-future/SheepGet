@@ -15,7 +15,8 @@ export const DEFAULT_TAKEOVER_CONFIG: TakeoverConfigSync = {
   forceShortcut: 'Insert',
 };
 
-const STORAGE_KEYS = {
+/** 本地存储布局：键名只在这里出现一次。 */
+export const STORAGE_KEYS = {
   TAKEOVER_CONFIG: 'sheepget_takeover_config',
   SESSION: 'sheepget_session',
   TARGET_PORT: 'sheepget_target_port',

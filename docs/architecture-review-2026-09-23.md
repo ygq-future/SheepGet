@@ -22,7 +22,7 @@
 | 4 | C4 | 给环回通信契约一个归属模块 | 强 | 中 | 已完成 |
 | 5 | C1 | 让下载入口只有一个归属模块（含删死代码） | 强 | 大 | 已完成 |
 | 6 | C3 | 窗口生命周期收成一个模块，每窗口一份声明 | 强 | 中 | 已完成 |
-| 7 | C7 | 为扩展 Service Worker 立一条「就绪」接缝 | 值得探索 | 中 | 待探讨 |
+| 7 | C7 | 为扩展 Service Worker 立一条「就绪」接缝 | 值得探索 | 中 | 已完成 |
 | 8 | C6 | 把目标落点记在任务上，不让界面重推一遍 | 值得探索 | 中—大 | 待探讨 |
 
 依赖关系（箭头 = 前者是后者的前置）：
@@ -171,13 +171,30 @@ C2 · C8 独立，无前置
 ## 7. C7 为扩展 Service Worker 立一条「就绪」接缝
 
 - **强度**：值得探索
+- **状态**：已完成（2026-09-24），门禁通过，未提交
 - **问题**：只要下载事件在未 await 的 `init()` 读完存储之前到达，接管判定就会对着后缀清单为空的默认配置做出；失败静默（下载留在浏览器完成）。
-- **证据**：`extension/entrypoints/background.ts:41, 94, 225, 890-915`、`extension/lib/storage.ts:12-22`、`extension/lib/handover.test.ts`（仅覆盖纯函数）。
-- **深化方向**：配置、会话与媒体池收进一个带就绪保证的状态模块，入站事件统一 `await ready()` 后再判定。
-- **影响面**：`extension/entrypoints/background.ts`、`extension/lib/storage.ts`、`extension/lib/handover.ts`。
-- **前置**：C4（就绪语义若影响线上契约，需在契约模块内表达）。
-- **验证**：冷启动即触发下载事件的场景下，判定必须使用已恢复的规则；现有纯函数测试保留。
-- **风险**：Chromium 挂起阈值不可控，属于概率性竞态；以「不变式在模块内成立」为准，不以复现率证明。
+- **证据**（改动前）：`extension/entrypoints/background.ts` 里未 await 的 `init()` 与模块级 `currentConfig`、`extension/lib/storage.ts` 的空清单默认值、`extension/lib/handover.test.ts`（仅覆盖纯函数，`background.ts` 没有测试入口）。
+- **实际改动**：
+  - 新增 `extension/lib/takeoverConfig.ts`（接缝）：`readyConfig()` 读回本地缓存——整个 Service Worker 生命周期只读一次，读回之前不给出规则；`applyConfig()` 采用桌面端下发的规则并落盘。规则只能从这个出口取到，判定方拿不到「模块初值当规则」这种可能。
+  - 只有持久化过的状态才有「就绪」可言，所以模块不收纳会话与媒体池：会话在消费点（`ensureDesktop` → `reverifyLink`）自己等存储，媒体池是易失的嗅探缓存、没有可加载的来源。`storage.ts` 与 `handover.ts` 经核对无需改动（评审影响面里的这两处不是缺口）。
+  - `background.ts`：模块级 `currentConfig` 与 `init()` 里的即时赋值删除；下载判定、`reconcileTakeoverConfig`、WS 广播三条路径统一改走接缝。`reconcileTakeoverConfig` 先 `await readyConfig()` 再比版本，HEAD 版本比较用的是已恢复的值。
+  - 读取期间落进来的桌面端广播不会被随后 resolve 的旧存储值覆盖（`hydrate` 里 `if (!hydrated)`）：读取与实时更新并发是接缝的固有形态，这条守住「模块里总是较新的那份规则」。
+  - 删除 `chrome.storage.onChanged` 对 `sheepget_takeover_config` 的监听：扩展侧唯一写入方就是这个 SW 自己，监听只能收到自己的回声（`applyConfig` 已就地采用）。`STORAGE_KEYS` 随之改为导出，键名只在 `storage.ts` 出现一次。
+  - `logDownloadDecision` 改为接收事实对象：规则不再从模块变量读，而是在判定时传进来（这也让它不必再依赖模块状态）。
+  - 按住的快捷键不再随 Service Worker 挂起丢失：内容脚本的本地掩码是随页面存活的（它才是权威来源），因此新增一问一答 `QUERY_KEY_STATE` → `KeyStateReport`（`lib/types.ts` 按方向拆成 `BackgroundMessage` / `ExtensionMessage`）：**每次判定都现问一遍**（不缓存——缓存会在最需要它的时候过期），250ms 上限兜住主线程正忙的页面；页面只在真的按住键时应答（`lib/shortcuts.ts` 的 `keyStateReply`），所以「没人应答」就是「没按住」，不必为否定结论等超时。
+  - 为什么是「每次问」而不是「没听到按键消息才问」：`SHORTCUT_CLICKED` 说的是**点击那一刻**的按键，3 秒后即过期，它不能证明「现在没按住键」。用它当作「已知按键状态」的判据，正好丢掉「按住键 → 点下载链接 → 下载几秒后才开始」这一种（判定时掩码为空，接管照样发生）。
+- **验证**（实际执行）：
+  - 新增 `extension/lib/takeoverConfig.test.ts`：读回之前不给规则、读回之后给出已恢复的规则且只读一次存储；读取期间落进来的规则不被旧值覆盖且已落盘；存储读不出来时就绪仍然成立（按空清单判定，不把判定挂住）。
+  - 新增 `extension/lib/downloadIntercept.test.ts`：驱动真实入口与真实 `downloads.onCreated` 监听，用假浏览器复刻「唤醒这次 SW 的就是那个下载事件」——① 规则读取卡住时判定不许动这次下载（不 pause、不 resume），放开后按已恢复的 `zip` 清单接管；② 先投一条已过期的 `SHORTCUT_CLICKED`（复刻「按住 Delete → 点下载链接 → 下载几秒后才开始」）再触发下载：页面按住 `Delete` → 判定 `pause_shortcut_active`，下载留在浏览器；③ 页面按住 `Insert` → 判定 `force_shortcut_active` 强制接管，且第二次判定会再问一次页面。判定结论本身没有别的出口（不接管时它对下载什么都不做），断言读的是它留下的诊断日志。
+  - 反证：把 `entrypoints/background.ts` 换回改动前的版本，① 以「等待超时：按已恢复的规则判定接管后，把下载还给离线的桌面端」失败（下载被静默留在浏览器）；把判定前的询问改成「收到过点击消息就不问」，② 以「预期不接管」失败（下载照样被接管，这正是「按住 Delete 没用」的那个现象）；删掉询问本身，②③ 都失败。三处换回后均通过。
+  - `extension/lib/shortcuts.test.ts` 新增 `keyStateReply` 用例（按住才应答、没按住不应答）。
+  - `bun test`（扩展 85 项）、`bun run compile`、`node scripts/quality-gate.mjs` 全绿。
+- **影响面**：`extension/lib/takeoverConfig.ts`（新增）、`extension/lib/takeoverConfig.test.ts`（新增）、`extension/lib/downloadIntercept.test.ts`（新增）、`extension/entrypoints/background.ts`、`extension/entrypoints/content.ts`、`extension/lib/storage.ts`、`extension/lib/shortcuts.ts`、`extension/lib/types.ts`。
+- **行为变化**：冷启动窗口里的下载判定从「按空清单不接管」变为「等规则就绪后按真实清单判定」；按住的暂停键与强制键在 SW 被挂起重建后仍然生效（每次判定都现问一次页面）；配置的存储变化不再被监听（无其它写入方）。其余为等价收敛。
+- **风险**：Chromium 挂起阈值不可控，这是概率性竞态——本项以「不变式在模块内成立」为准，不以复现率证明。就绪与按键询问都未进入环回契约：popup 与 SW 的消息、桌面端下发的载荷都没有变化。按键状态仍以「页面还能回答」为前提：没有内容脚本的页面（特权页）与内容脚本被卸载的标签页本就上报不了按键，这里不改变它们的语义。
+- **未实测**：本轮没能跑起真机端到端——本机 Chrome 153 已不接受 `--load-extension`（137 起移除），用 CDP `Extensions.loadUnpacked` 加载的扩展在自动化连接里既不出现在 `chrome://extensions-internals`、也观察不到它的 Service Worker target。因此 `chrome.tabs.query` / `tabs.sendMessage` 这条询问链路目前只由假浏览器用例覆盖，真机确认需要在 Chrome 里加载重建后的扩展、按住 `Delete` 点一次下载，看 SW 控制台里 `[SheepGet] download decision` 的 `reason` 是否为 `pause_shortcut_active`。
+- **已知边界**（用户确认保持现状）：悬浮条 / 媒体面板的交接是一次显式点击，不经接管规则（含暂停/强制键），也不写 `download decision` 日志——`handleMediaHandover` 只整理 Cookie/Referer 后投递。按住 `Delete` 点悬浮条仍会投递；要拦住它需要单独的产品决定（拦住后这次下载落在哪里）。
+- **遗留发现**（未做）：按键的「松手宽限」仍是 3 秒（`SHORTCUT_GRACE_PERIOD_MS`），下载若在松手 3 秒后才开始，那次快捷键意图会失效。这与按键是否按住无关（按住由本项的询问覆盖），属于既有产品规则，调整需单独讨论。
 
 ## 8. C6 把目标落点记在任务上，不让界面重推一遍
 

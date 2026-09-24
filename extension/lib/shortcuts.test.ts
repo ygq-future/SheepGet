@@ -4,6 +4,7 @@ import {
   KEY_MASKS,
   SHORTCUT_GRACE_PERIOD_MS,
   isKeyPressed,
+  keyStateReply,
   normalizeKeyName,
   resolveEffectiveKeyMask,
   updateKeyMask,
@@ -138,5 +139,16 @@ describe('shortcuts', () => {
       now,
     );
     assert.equal(clickedExpired, 0);
+  });
+
+  it('keyStateReply 只在真的按住键时应答', () => {
+    assert.deepEqual(keyStateReply(KEY_MASKS.Insert | KEY_MASKS.Shift), {
+      keyMask: KEY_MASKS.Insert | KEY_MASKS.Shift,
+    });
+    assert.equal(
+      keyStateReply(0),
+      undefined,
+      '没按住时不应答：回一个 0 会让后台把「没答案」当成答案',
+    );
   });
 });

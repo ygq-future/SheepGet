@@ -18,30 +18,31 @@ import {
 } from '../lib/shortcuts';
 import { addResourceOnce, resolveTabId } from '../lib/tabmedia';
 import {
-  DEFAULT_TAKEOVER_CONFIG,
   getStoredSession,
-  getStoredTakeoverConfig,
   getStoredTargetPort,
   setStoredSession,
-  setStoredTakeoverConfig,
   setStoredTargetPort,
 } from '../lib/storage';
+import { applyConfig, readyConfig } from '../lib/takeoverConfig';
 import type {
   DesktopStatus,
   ExtensionMessage,
   HandoverRequest,
   HandoverResponse,
   HLSVariantsResponse,
+  KeyStateReport,
   MediaProbeInfo,
+  QueryKeyStateMessage,
   SessionMetadata,
   TakeoverConfigSync,
 } from '../lib/types';
 
-let currentConfig: TakeoverConfigSync = DEFAULT_TAKEOVER_CONFIG;
 let currentKeyMask = 0;
 let recentReleaseMask = 0;
 let recentReleaseTime = 0;
 const recentShortcutClicks: ShortcutClickIntent[] = [];
+// 问页面时的等待上限：页面主线程正忙不能把判定拖住。
+const KEY_QUERY_TIMEOUT_MS = 250;
 
 function recordShortcutRelease(mask: number) {
   if (mask > 0) {
@@ -316,21 +317,12 @@ export default defineBackground(() => {
     });
   }
 
-  // 5. Listen for storage changes (e.g. config or session updated from popup or sync)
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local') {
-      if (changes['sheepget_takeover_config']?.newValue) {
-        currentConfig = changes['sheepget_takeover_config'].newValue as TakeoverConfigSync;
-      }
-    }
-  });
-
-  // 6. Intercept downloads via onCreated
+  // 5. Intercept downloads via onCreated
   chrome.downloads.onCreated.addListener((item) => {
     void handleDownloadIntercept(item);
   });
 
-  // 7. Network-level media sniffing (onHeadersReceived)
+  // 6. Network-level media sniffing (onHeadersReceived)
   chrome.webRequest.onHeadersReceived.addListener(
     (details) => {
       if (!details.url) return;
@@ -407,7 +399,7 @@ export default defineBackground(() => {
     ['responseHeaders'],
   );
 
-  // 8. Clean up media resources on tab close and navigation
+  // 7. Clean up media resources on tab close and navigation
   chrome.tabs.onRemoved.addListener((tabId) => {
     tabMediaPool.delete(tabId);
     tabPageContext.delete(tabId);
@@ -614,8 +606,8 @@ async function fetchMediaProbe(req: {
 }
 
 async function init() {
-  // Read local cache immediately to ensure millisecond responsiveness on wake-up
-  currentConfig = await getStoredTakeoverConfig();
+  // 先把接管规则读回来：这次唤醒很可能就是一个下载事件引起的，判定等不起（见 lib/takeoverConfig.ts）
+  await readyConfig();
 
   // The keepalive alarm is what keeps the link state honest across service worker
   // suspensions. Creating it on every start is fine: same name replaces the old one.
@@ -736,8 +728,7 @@ function adoptLink(session: SessionMetadata, client: DesktopClient) {
 
   eventLink = client.connectEvents(
     (cfg) => {
-      currentConfig = cfg;
-      void setStoredTakeoverConfig(cfg);
+      void applyConfig(cfg);
     },
     (open) => {
       // 主动断开时 desktopClient 已换人或已清空，只有当前连接才代表链路状态。
@@ -794,10 +785,10 @@ function markLinkOffline(reason: string) {
 }
 
 async function reconcileTakeoverConfig(client: DesktopClient) {
-  const remoteConfig = await client.fetchTakeoverConfig(currentConfig.version);
-  if (remoteConfig && remoteConfig.version !== currentConfig.version) {
-    currentConfig = remoteConfig;
-    await setStoredTakeoverConfig(remoteConfig);
+  const local = await readyConfig();
+  const remoteConfig = await client.fetchTakeoverConfig(local.version);
+  if (remoteConfig && remoteConfig.version !== local.version) {
+    await applyConfig(remoteConfig);
   }
 }
 
@@ -857,6 +848,45 @@ async function handOverWithRetry(
 }
 
 /**
+ * 问一次页面此刻按住了哪些键。
+ *
+ * 权威在页面：内容脚本的本地掩码随页面存活，而 Service Worker 手上那份只由它听见的按键事件
+ * 拼出来，被挂起重建就没了。所以每次判定都问一遍，不缓存答案——缓存会在最需要它的时候过期
+ * （按住键 → 点下载链接 → 下载几秒后才开始，这中间 Service Worker 可能已经被重建过一次）。
+ *
+ * 页面只在真的按住键时应答（见 lib/shortcuts.ts 的 keyStateReply），所以「没人应答」就是
+ * 「没按住」，不必为否定结论等超时；超时只用来兜住主线程正忙、迟迟不回应的页面。
+ */
+async function queryPageKeyMask(): Promise<number> {
+  const expiry = Promise.withResolvers<number>();
+  const timer = setTimeout(() => expiry.resolve(0), KEY_QUERY_TIMEOUT_MS);
+  try {
+    return await Promise.race([collectPageKeyMasks(), expiry.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function collectPageKeyMasks(): Promise<number> {
+  let mask = 0;
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (tab.id === undefined) return;
+      try {
+        const report = (await chrome.tabs.sendMessage(tab.id, {
+          type: 'QUERY_KEY_STATE',
+        } satisfies QueryKeyStateMessage)) as KeyStateReport | undefined;
+        mask |= report?.keyMask ?? 0;
+      } catch {
+        // 这个标签页没有内容脚本（特权页），或者页面没按住键
+      }
+    }),
+  );
+  return mask;
+}
+
+/**
  * 一次下载该不该接管，同时决定这次下载的浏览器反馈归谁。
  *
  * 接管按次进行：判定要接管就地 pause 这一次下载（下一行就发出来，不等任何网络），
@@ -883,6 +913,11 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   const filename = responseFilename || item.filename;
 
   // Check takeover rules
+  // 规则必须先就绪再判定：这次唤醒可能就是一个下载事件引起的，本地缓存里的清单
+  // 还没读回来时判定，等于拿空清单回答「不接管」（见 lib/takeoverConfig.ts）。
+  const config = await readyConfig();
+  // 按住的快捷键以页面为准：SW 被挂起重建后手上没有这些按键，页面里还有（见 queryPageKeyMask）。
+  currentKeyMask |= await queryPageKeyMask();
   // `item.mime` 是这次响应真实的 Content-Type：后缀命中但内容其实是页面/脚本时
   // （`.ts` 的 TypeScript 源码、签名过期后返回 HTML 错误页的 `.mp4`），规则会否决接管。
   const effectiveKeyMask = resolveEffectiveKeyMask(
@@ -896,18 +931,19 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
     url,
     filename,
     item.referrer,
-    currentConfig,
+    config,
     effectiveKeyMask,
     item.mime,
   );
-  logDownloadDecision(
-    item.id,
+  logDownloadDecision({
+    downloadId: item.id,
     url,
     filename,
-    responseFilename !== undefined,
+    fromResponseHeader: responseFilename !== undefined,
     decision,
     effectiveKeyMask,
-  );
+    config,
+  });
 
   if (!decision.takeover) {
     return;
@@ -974,27 +1010,28 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
  * 接管判定留一条可读日志：接管与否、用的是哪个文件名、规则版本、桌面端是否在线。
  * 判定以外的分支（挂起失败、交接被拒、超时）各有自己的 warn，组合起来能定位一次失败的下载。
  */
-function logDownloadDecision(
-  downloadId: number,
-  url: string,
-  filename: string,
-  fromResponseHeader: boolean,
-  decision: TakeoverDecision,
-  effectiveKeyMask = 0,
-): void {
+function logDownloadDecision(facts: {
+  downloadId: number;
+  url: string;
+  filename: string;
+  fromResponseHeader: boolean;
+  decision: TakeoverDecision;
+  effectiveKeyMask: number;
+  config: TakeoverConfigSync;
+}): void {
   console.info(
     '[SheepGet] download decision',
     JSON.stringify({
-      downloadId,
+      downloadId: facts.downloadId,
       // 只记录来源与路径：链接里的令牌与一次性参数属于敏感请求上下文，不写进日志。
-      url: stripQuery(url),
-      filename,
-      filenameSource: fromResponseHeader ? 'response-header' : 'download-item',
-      takeover: decision.takeover,
-      reason: decision.reason,
-      effectiveKeyMask,
-      configVersion: currentConfig.version,
-      excludedSites: currentConfig.excludedSites,
+      url: stripQuery(facts.url),
+      filename: facts.filename,
+      filenameSource: facts.fromResponseHeader ? 'response-header' : 'download-item',
+      takeover: facts.decision.takeover,
+      reason: facts.decision.reason,
+      effectiveKeyMask: facts.effectiveKeyMask,
+      configVersion: facts.config.version,
+      excludedSites: facts.config.excludedSites,
       linkOnline,
       linkCheckedAt: linkLastVerifiedAt,
       clientConnected: desktopClient !== null,

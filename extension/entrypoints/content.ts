@@ -1,10 +1,12 @@
 import { MediaBarManager } from '../lib/mediabar';
 import { inferPageTitle, type MediaResource } from '../lib/media';
 import { safeSendMessage } from '../lib/runtime';
-import { KEY_MASKS, normalizeKeyName, updateKeyMask } from '../lib/shortcuts';
+import { KEY_MASKS, keyStateReply, normalizeKeyName, updateKeyMask } from '../lib/shortcuts';
 import type {
+  BackgroundMessage,
   ExtensionMessage,
   KeyStateMessage,
+  KeyStateReport,
   ResetKeysMessage,
   ShortcutClickMessage,
 } from '../lib/types';
@@ -130,11 +132,20 @@ export default defineContentScript({
     // 之后新嗅探到的资源由 background 主动推送：播放器后加载、用户点了播放才发起
     // 媒体请求的页面，首次拉取必然为空，只能靠这条推送完成关联。
     try {
-      chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
-        if (msg?.type === 'TAB_MEDIA_UPDATED') {
-          mediaBar.setResources(msg.resources);
-        }
-      });
+      chrome.runtime.onMessage.addListener(
+        (msg: BackgroundMessage, _sender, sendResponse: (report: KeyStateReport) => void) => {
+          if (msg?.type === 'TAB_MEDIA_UPDATED') {
+            mediaBar.setResources(msg.resources);
+            return;
+          }
+          if (msg?.type === 'QUERY_KEY_STATE') {
+            // 后台刚被唤醒时手上没有按键状态，问的就是这个页面此刻的本地掩码；
+            // 没按住键时不回应答（见 lib/shortcuts.ts 的 keyStateReply）。
+            const report = keyStateReply(localKeyMask);
+            if (report) sendResponse(report);
+          }
+        },
+      );
     } catch {
       // Extension context might be invalidated
     }
