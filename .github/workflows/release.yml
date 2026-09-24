@@ -64,13 +64,30 @@ jobs:
       - name: Package distribution artifacts
         run: node scripts/package.mjs
 
+      - name: Determine Tag Name and Release Notes
+        id: tag_info
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="${{ github.event.inputs.tag || 'v1.0.0' }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if [ -f ".github/release-note/${TAG}.md" ]; then
+            echo "body_path=.github/release-note/${TAG}.md" >> $GITHUB_OUTPUT
+          elif [ -f ".github/release-note/v1.0.0.md" ]; then
+            echo "body_path=.github/release-note/v1.0.0.md" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload artifacts to Release
-        uses: softprops/action-gh-release@c95fe1489396fe8a9ec8723d33963d3cb2430f80
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name || github.event.inputs.tag || 'v1.0.0' }}
-          body_path: .github/release-note/v1.0.0.md
+          tag_name: ${{ steps.tag_info.outputs.tag }}
+          name: 'SheepGet ${{ steps.tag_info.outputs.tag }}'
+          body_path: ${{ steps.tag_info.outputs.body_path }}
           draft: false
           prerelease: false
           fail_on_unmatched_files: false
