@@ -10,9 +10,6 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-//go:embed build/appicon.png
-var appIcon []byte
-
 func main() {
 	// Create an instance of the app structure
 	app := NewApp()
@@ -62,8 +59,8 @@ func main() {
 	// Configure cross-platform system tray
 	systemTray := wailsApp.SystemTray.New()
 	systemTray.SetTooltip("SheepGet 下载管理器")
-	if len(appIcon) > 0 {
-		systemTray.SetIcon(appIcon)
+	if len(trayIcon) > 0 {
+		systemTray.SetIcon(trayIcon)
 	}
 	systemTray.OnClick(func() {
 		app.ShowMainWindow()

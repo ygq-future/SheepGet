@@ -127,19 +127,24 @@ async function main() {
     ? join(toolsDir, `info_windows_${arch === 'arm64' ? 'arm64' : 'amd64'}.json`)
     : null;
   if (isWin) {
+    const commonFields = {
+      ProductVersion: version,
+      FileVersion: version,
+      CompanyName: companyName,
+      FileDescription: productName,
+      LegalCopyright: `Copyright © ${new Date().getFullYear()} ${companyName}`,
+      ProductName: productName,
+      Comments: productDescription,
+    };
     const infoPayload = {
       fixed: {
         file_version: version,
+        product_version: version,
       },
       info: {
-        '0000': {
-          ProductVersion: version,
-          CompanyName: companyName,
-          FileDescription: productName,
-          LegalCopyright: `Copyright © ${new Date().getFullYear()} ${companyName}`,
-          ProductName: productName,
-          Comments: productDescription,
-        },
+        '0409': commonFields,
+        '0804': commonFields,
+        '0000': commonFields,
       },
     };
     writeFileSync(tempInfoTarget, JSON.stringify(infoPayload, null, 2), 'utf-8');
