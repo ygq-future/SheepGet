@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -22,8 +23,6 @@ const isMac = platform === 'darwin';
 const isLinux = !isWin && !isMac;
 
 const platformName = isWin ? 'windows' : isMac ? 'darwin' : 'linux';
-const arch = process.arch;
-const archLabel = arch === 'arm64' ? 'arm64' : 'x64';
 // Product metadata comes from build/config.yml `info:` (SSOT) through the same parser the
 // version check uses; see scripts/version.mjs.
 const { version, productName, companyName, description: productDescription } = readInfo(root);
@@ -33,7 +32,6 @@ if (!version || !productName || !companyName || !productDescription) {
   );
 }
 
-const ext = isWin ? '.exe' : '';
 const binDir = join(root, 'build', 'bin');
 const toolsDir = join(root, '.tools');
 rmSync(binDir, { recursive: true, force: true });
@@ -110,79 +108,82 @@ async function ensureWindowsTools() {
   }
 }
 
+function generateWindowsSyso(targetArch) {
+  const sysoTarget = join(root, `resource_windows_${targetArch}.syso`);
+  const tempInfoTarget = join(toolsDir, `info_windows_${targetArch}.json`);
+  const commonFields = {
+    ProductVersion: version,
+    FileVersion: version,
+    CompanyName: companyName,
+    FileDescription: productName,
+    LegalCopyright: `Copyright © ${new Date().getFullYear()} ${companyName}`,
+    ProductName: productName,
+    Comments: productDescription,
+  };
+  const infoPayload = {
+    fixed: {
+      file_version: version,
+      product_version: version,
+    },
+    info: {
+      '0409': commonFields,
+      '0804': commonFields,
+      '0000': commonFields,
+    },
+  };
+  writeFileSync(tempInfoTarget, JSON.stringify(infoPayload, null, 2), 'utf-8');
+  run(resolveWails3(), [
+    'generate',
+    'syso',
+    '-arch',
+    targetArch,
+    '-icon',
+    'build/windows/icon.ico',
+    '-info',
+    tempInfoTarget,
+    '-manifest',
+    'build/windows/wails.exe.manifest',
+    '-out',
+    sysoTarget,
+  ]);
+  return { sysoTarget, tempInfoTarget };
+}
+
+function assembleMacAppBundle(binaryPath, appPath) {
+  rmSync(appPath, { recursive: true, force: true });
+  const contentsDir = join(appPath, 'Contents');
+  const macOSDir = join(contentsDir, 'MacOS');
+  const resourcesDir = join(contentsDir, 'Resources');
+  mkdirSync(macOSDir, { recursive: true });
+  mkdirSync(resourcesDir, { recursive: true });
+
+  cpSync(binaryPath, join(macOSDir, 'SheepGet'));
+  chmodSync(join(macOSDir, 'SheepGet'), 0o755);
+
+  const rawPlist = readFileSync(join(root, 'build', 'darwin', 'Info.plist'), 'utf-8');
+  const parsedPlist = rawPlist
+    .replace(/\{\{\.Info\.ProductName\}\}/g, productName)
+    .replace(/\{\{\.OutputFilename\}\}/g, 'SheepGet')
+    .replace(/\{\{safeBundleID \.Name\}\}/g, 'com.sheepget.app')
+    .replace(/\{\{\.Info\.ProductVersion\}\}/g, version)
+    .replace(/\{\{\.Info\.Comments\}\}/g, productDescription)
+    .replace(/\{\{\.Info\.Copyright\}\}/g, `Copyright © ${new Date().getFullYear()} ${companyName}`)
+    .replace(/\{\{if \.Info\.FileAssociations\}\}[\s\S]*?\{\{end\}\}/g, '')
+    .replace(/\{\{if \.Info\.Protocols\}\}[\s\S]*?\{\{end\}\}/g, '');
+  writeFileSync(join(contentsDir, 'Info.plist'), parsedPlist, 'utf-8');
+
+  writeFileSync(join(contentsDir, 'PkgInfo'), 'APPL????', 'utf-8');
+  cpSync(join(root, 'build', 'darwin', 'icon.icns'), join(resourcesDir, 'iconfile.icns'));
+}
+
 async function main() {
-  console.log(`[Package] Packaging SheepGet v${version} for ${platformName}-${archLabel}...`);
+  console.log(`[Package] Packaging SheepGet v${version} for ${platformName}...`);
 
   if (isWin) {
     await ensureWindowsTools();
   }
 
-  // 1. Build main desktop application
-  const mainExe = join(binDir, 'SheepGet' + ext);
-  console.log('[Package] Building main desktop application...');
-  const sysoTarget = isWin
-    ? join(root, `resource_windows_${arch === 'arm64' ? 'arm64' : 'amd64'}.syso`)
-    : null;
-  const tempInfoTarget = isWin
-    ? join(toolsDir, `info_windows_${arch === 'arm64' ? 'arm64' : 'amd64'}.json`)
-    : null;
-  if (isWin) {
-    const commonFields = {
-      ProductVersion: version,
-      FileVersion: version,
-      CompanyName: companyName,
-      FileDescription: productName,
-      LegalCopyright: `Copyright © ${new Date().getFullYear()} ${companyName}`,
-      ProductName: productName,
-      Comments: productDescription,
-    };
-    const infoPayload = {
-      fixed: {
-        file_version: version,
-        product_version: version,
-      },
-      info: {
-        '0409': commonFields,
-        '0804': commonFields,
-        '0000': commonFields,
-      },
-    };
-    writeFileSync(tempInfoTarget, JSON.stringify(infoPayload, null, 2), 'utf-8');
-    run(resolveWails3(), [
-      'generate',
-      'syso',
-      '-arch',
-      arch === 'arm64' ? 'arm64' : 'amd64',
-      '-icon',
-      'build/windows/icon.ico',
-      '-info',
-      tempInfoTarget,
-      '-manifest',
-      'build/windows/wails.exe.manifest',
-      '-out',
-      sysoTarget,
-    ]);
-  }
-  const mainLdflags = isWin ? '-w -s -H=windowsgui' : '-w -s';
-  try {
-    run('go', [
-      'build',
-      '-tags=production',
-      '-trimpath',
-      `-ldflags=${mainLdflags}`,
-      '-o',
-      mainExe,
-      '.',
-    ]);
-  } finally {
-    if (sysoTarget && existsSync(sysoTarget)) {
-      rmSync(sysoTarget, { force: true });
-    }
-    if (tempInfoTarget && existsSync(tempInfoTarget)) {
-      rmSync(tempInfoTarget, { force: true });
-    }
-  }
-  // 2. Build browser extension
+  // 1. Build browser extension
   console.log('[Package] Building browser extension...');
   run('bun', ['run', 'build'], { cwd: join(root, 'extension'), quiet: true });
 
@@ -194,60 +195,70 @@ async function main() {
 
   const artifacts = [];
 
-  // 3. Build Portable Distribution
-  console.log('[Package] Assembling portable distribution bundle...');
-
-  const portableDirName = isWin
-    ? `SheepGet_${version}_windows-${archLabel}-portable`
-    : `SheepGet_${version}_${platformName}-${archLabel}-portable`;
-  const portableStage = join(distDir, portableDirName);
-  rmSync(portableStage, { recursive: true, force: true });
-  mkdirSync(portableStage, { recursive: true });
-
-  cpSync(mainExe, join(portableStage, 'SheepGet' + ext));
-  cpSync(extTargetDir, join(portableStage, 'extension'), { recursive: true });
-  cpSync(join(root, 'README.md'), join(portableStage, 'README.md'));
-
-  writeFileSync(join(portableStage, 'portable'), '', 'utf8');
-  mkdirSync(join(portableStage, 'data'), { recursive: true });
-
+  // =========================================================================
+  // WINDOWS MATRIX: x64 + arm64
+  // =========================================================================
   if (isWin) {
-    // Create zip for Windows portable
-    const portableZipName = `SheepGet_${version}_windows-${archLabel}-portable.zip`;
-    const portableZipPath = join(distDir, portableZipName);
-    run('tar', ['-a', '-c', '-f', portableZipPath, '-C', distDir, portableDirName]);
-    artifacts.push({ name: portableZipName, path: portableZipPath, type: 'Portable Zip' });
-  } else {
-    if (isLinux) {
-      cpSync(
-        join(root, 'build', 'linux', 'SheepGet.desktop'),
-        join(portableStage, 'SheepGet.desktop'),
+    // A. Windows x64 Build
+    console.log('[Package] Building Windows x64 binaries & installers...');
+    const x64Exe = join(binDir, 'SheepGet.exe');
+    const { sysoTarget: x64Syso, tempInfoTarget: x64Info } = generateWindowsSyso('amd64');
+    try {
+      run(
+        'go',
+        [
+          'build',
+          '-tags=production',
+          '-trimpath',
+          '-ldflags=-w -s -H=windowsgui',
+          '-o',
+          x64Exe,
+          '.',
+        ],
+        { env: { ...process.env, GOARCH: 'amd64' } },
       );
+    } finally {
+      if (existsSync(x64Syso)) rmSync(x64Syso, { force: true });
+      if (existsSync(x64Info)) rmSync(x64Info, { force: true });
     }
-    const portableTarName = `SheepGet_${version}_${platformName}-${archLabel}.tar.gz`;
-    const portableTarPath = join(distDir, portableTarName);
-    run('tar', ['-czf', portableTarPath, '-C', distDir, portableDirName]);
-    artifacts.push({ name: portableTarName, path: portableTarPath, type: 'Portable tar.gz' });
-  }
-  // 4. Windows: Build NSIS Setup Installer (.exe) and WiX Installer (.msi)
-  if (isWin) {
-    // NSIS Setup Installer
+
+    // Windows x64 Portable
+    const x64PortDir = join(distDir, `SheepGet_${version}_windows-x64-portable`);
+    mkdirSync(x64PortDir, { recursive: true });
+    cpSync(x64Exe, join(x64PortDir, 'SheepGet.exe'));
+    cpSync(extTargetDir, join(x64PortDir, 'extension'), { recursive: true });
+    cpSync(join(root, 'README.md'), join(x64PortDir, 'README.md'));
+    writeFileSync(join(x64PortDir, 'portable'), '', 'utf8');
+    mkdirSync(join(x64PortDir, 'data'), { recursive: true });
+    const x64ZipName = `SheepGet_${version}_windows-x64-portable.zip`;
+    const x64ZipPath = join(distDir, x64ZipName);
+    run('tar', [
+      '-a',
+      '-c',
+      '-f',
+      x64ZipPath,
+      '-C',
+      distDir,
+      `SheepGet_${version}_windows-x64-portable`,
+    ]);
+    artifacts.push({ name: x64ZipName, path: x64ZipPath, type: 'Portable Zip' });
+
+    // Windows x64 NSIS
     const nsisExe = join(toolsDir, 'nsis', 'makensis.exe');
     const nsisScript = join(root, 'build', 'windows', 'installer', 'project.nsi');
     if (existsSync(nsisExe) && existsSync(nsisScript)) {
-      console.log('[Package] Building Windows NSIS setup installer (.exe)...');
+      console.log('[Package] Building Windows x64 NSIS setup installer (.exe)...');
       run(nsisExe, [
         '-DINFO_PROJECTNAME=SheepGet',
         '-DINFO_PRODUCTNAME=SheepGet',
         '-DINFO_COMPANYNAME=SheepGet',
         `-DINFO_PRODUCTVERSION=${version}`,
         '-DPRODUCT_EXECUTABLE=SheepGet.exe',
-        `-DARG_WAILS_AMD64_BINARY=${mainExe}`,
+        `-DARG_WAILS_AMD64_BINARY=${x64Exe}`,
         nsisScript,
       ]);
-
       const nsisOut = join(binDir, 'SheepGet-amd64-installer.exe');
-      const setupExeName = `SheepGet_${version}_${archLabel}-setup.exe`;
+      const setupExeName = `SheepGet_${version}_x64-setup.exe`;
       const setupExePath = join(distDir, setupExeName);
       if (existsSync(nsisOut)) {
         cpSync(nsisOut, setupExePath);
@@ -255,12 +266,12 @@ async function main() {
       }
     }
 
-    // WiX MSI Installer
+    // Windows x64 WiX MSI
     const wixCandle = join(toolsDir, 'wix', 'candle.exe');
     const wixLight = join(toolsDir, 'wix', 'light.exe');
     const wixScript = join(root, 'build', 'windows', 'installer', 'project.wxs');
     if (existsSync(wixCandle) && existsSync(wixLight) && existsSync(wixScript)) {
-      console.log('[Package] Building Windows MSI installer (.msi)...');
+      console.log('[Package] Building Windows x64 MSI installer (.msi)...');
       const wixObj = join(binDir, 'project.wixobj');
       run(wixCandle, [
         '-arch',
@@ -271,8 +282,7 @@ async function main() {
         wixObj,
         wixScript,
       ]);
-
-      const msiName = `SheepGet_${version}_${archLabel}_en-US.msi`;
+      const msiName = `SheepGet_${version}_x64_en-US.msi`;
       const msiPath = join(distDir, msiName);
       run(wixLight, [
         '-nologo',
@@ -285,15 +295,283 @@ async function main() {
         wixObj,
       ]);
       rmSync(wixObj, { force: true });
-      rmSync(join(distDir, `SheepGet_${version}_${archLabel}_en-US.wixpdb`), { force: true });
-
+      rmSync(join(distDir, `SheepGet_${version}_x64_en-US.wixpdb`), { force: true });
       if (existsSync(msiPath)) {
         artifacts.push({ name: msiName, path: msiPath, type: 'MSI Installer' });
       }
     }
+
+    // B. Windows ARM64 Build
+    console.log('[Package] Cross-compiling Windows ARM64 binary & portable...');
+    const arm64Exe = join(binDir, 'SheepGet-arm64.exe');
+    const { sysoTarget: armSyso, tempInfoTarget: armInfo } = generateWindowsSyso('arm64');
+    try {
+      run(
+        'go',
+        [
+          'build',
+          '-tags=production',
+          '-trimpath',
+          '-ldflags=-w -s -H=windowsgui',
+          '-o',
+          arm64Exe,
+          '.',
+        ],
+        { env: { ...process.env, GOARCH: 'arm64' } },
+      );
+    } finally {
+      if (existsSync(armSyso)) rmSync(armSyso, { force: true });
+      if (existsSync(armInfo)) rmSync(armInfo, { force: true });
+    }
+
+    // Windows ARM64 Portable
+    const armPortDir = join(distDir, `SheepGet_${version}_windows-arm64-portable`);
+    mkdirSync(armPortDir, { recursive: true });
+    cpSync(arm64Exe, join(armPortDir, 'SheepGet.exe'));
+    cpSync(extTargetDir, join(armPortDir, 'extension'), { recursive: true });
+    cpSync(join(root, 'README.md'), join(armPortDir, 'README.md'));
+    writeFileSync(join(armPortDir, 'portable'), '', 'utf8');
+    mkdirSync(join(armPortDir, 'data'), { recursive: true });
+    const armZipName = `SheepGet_${version}_windows-arm64-portable.zip`;
+    const armZipPath = join(distDir, armZipName);
+    run('tar', [
+      '-a',
+      '-c',
+      '-f',
+      armZipPath,
+      '-C',
+      distDir,
+      `SheepGet_${version}_windows-arm64-portable`,
+    ]);
+    artifacts.push({ name: armZipName, path: armZipPath, type: 'Portable Zip' });
+
+    // Windows ARM64 NSIS
+    if (existsSync(nsisExe) && existsSync(nsisScript)) {
+      console.log('[Package] Building Windows ARM64 NSIS setup installer (.exe)...');
+      run(nsisExe, [
+        '-DINFO_PROJECTNAME=SheepGet',
+        '-DINFO_PRODUCTNAME=SheepGet',
+        '-DINFO_COMPANYNAME=SheepGet',
+        `-DINFO_PRODUCTVERSION=${version}`,
+        '-DPRODUCT_EXECUTABLE=SheepGet.exe',
+        `-DARG_WAILS_ARM64_BINARY=${arm64Exe}`,
+        nsisScript,
+      ]);
+      const nsisArmOut = join(binDir, 'SheepGet-arm64-installer.exe');
+      const armSetupName = `SheepGet_${version}_arm64-setup.exe`;
+      const armSetupPath = join(distDir, armSetupName);
+      if (existsSync(nsisArmOut)) {
+        cpSync(nsisArmOut, armSetupPath);
+        artifacts.push({ name: armSetupName, path: armSetupPath, type: 'NSIS Setup Installer' });
+      }
+    }
   }
 
-  // 7. Generate SHA256SUMS.txt
+  // =========================================================================
+  // MACOS MATRIX: aarch64 + x64 + universal DMGs
+  // =========================================================================
+  if (isMac) {
+    console.log('[Package] Building macOS binaries for Apple Silicon & Intel...');
+    const macArmBinary = join(binDir, 'SheepGet_arm64');
+    const macX64Binary = join(binDir, 'SheepGet_x64');
+    const macUniBinary = join(binDir, 'SheepGet_universal');
+
+    // 1. Build arm64
+    run(
+      'go',
+      ['build', '-tags=production', '-trimpath', '-ldflags=-w -s', '-o', macArmBinary, '.'],
+      {
+        env: { ...process.env, CGO_ENABLED: '1', GOARCH: 'arm64' },
+      },
+    );
+
+    // 2. Build x86_64
+    let hasX64 = false;
+    try {
+      run(
+        'go',
+        ['build', '-tags=production', '-trimpath', '-ldflags=-w -s', '-o', macX64Binary, '.'],
+        {
+          env: {
+            ...process.env,
+            CGO_ENABLED: '1',
+            GOARCH: 'amd64',
+            CC: 'clang -target x86_64-apple-macos10.13',
+            CXX: 'clang++ -target x86_64-apple-macos10.13',
+          },
+        },
+      );
+      hasX64 = true;
+    } catch (e) {
+      console.warn('[Package Warning] Intel x64 compilation skipped:', e.message);
+    }
+
+    // 3. Create Universal Binary if both exist
+    let hasUniversal = false;
+    if (hasX64) {
+      try {
+        run('lipo', ['-create', '-output', macUniBinary, macArmBinary, macX64Binary]);
+        hasUniversal = true;
+      } catch (e) {
+        console.warn('[Package Warning] lipo create failed:', e.message);
+      }
+    }
+
+    // Helper: package a DMG from a binary
+    function createDmg(binaryPath, dmgFileName) {
+      const dmgStage = join(distDir, 'dmg-stage');
+      rmSync(dmgStage, { recursive: true, force: true });
+      mkdirSync(dmgStage, { recursive: true });
+
+      const appPath = join(dmgStage, 'SheepGet.app');
+      assembleMacAppBundle(binaryPath, appPath);
+
+      // Create Applications symlink for drag-and-drop install
+      run('ln', ['-s', '/Applications', join(dmgStage, 'Applications')]);
+
+      const dmgOutPath = join(distDir, dmgFileName);
+      run('hdiutil', [
+        'create',
+        '-volname',
+        'SheepGet',
+        '-srcfolder',
+        dmgStage,
+        '-ov',
+        '-format',
+        'UDZO',
+        dmgOutPath,
+      ]);
+      rmSync(dmgStage, { recursive: true, force: true });
+
+      if (existsSync(dmgOutPath)) {
+        artifacts.push({ name: dmgFileName, path: dmgOutPath, type: 'macOS DMG' });
+      }
+    }
+
+    // Generate macOS DMGs
+    console.log('[Package] Assembling Apple Silicon DMG (.dmg)...');
+    createDmg(macArmBinary, `SheepGet_${version}_aarch64.dmg`);
+
+    if (hasX64) {
+      console.log('[Package] Assembling Intel x64 DMG (.dmg)...');
+      createDmg(macX64Binary, `SheepGet_${version}_x64.dmg`);
+    }
+    if (hasUniversal) {
+      console.log('[Package] Assembling Universal DMG (.dmg)...');
+      createDmg(macUniBinary, `SheepGet_${version}_universal.dmg`);
+    }
+  }
+
+  // =========================================================================
+  // LINUX MATRIX: tar.gz + deb + AppImage
+  // =========================================================================
+  if (isLinux) {
+    console.log('[Package] Building Linux x86_64 binary...');
+    const linuxExe = join(binDir, 'SheepGet');
+    run('go', ['build', '-tags=production', '-trimpath', '-ldflags=-w -s', '-o', linuxExe, '.']);
+
+    // 1. Linux Portable tar.gz
+    console.log('[Package] Assembling Linux portable tar.gz...');
+    const linuxPortDir = join(distDir, `SheepGet_${version}_linux-x64-portable`);
+    mkdirSync(linuxPortDir, { recursive: true });
+    cpSync(linuxExe, join(linuxPortDir, 'SheepGet'));
+    cpSync(
+      join(root, 'build', 'linux', 'SheepGet.desktop'),
+      join(linuxPortDir, 'SheepGet.desktop'),
+    );
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(linuxPortDir, 'sheepget.png'));
+    cpSync(extTargetDir, join(linuxPortDir, 'extension'), { recursive: true });
+    cpSync(join(root, 'README.md'), join(linuxPortDir, 'README.md'));
+    writeFileSync(join(linuxPortDir, 'portable'), '', 'utf8');
+    mkdirSync(join(linuxPortDir, 'data'), { recursive: true });
+
+    const tarName = `SheepGet_${version}_linux-x64.tar.gz`;
+    const tarPath = join(distDir, tarName);
+    run('tar', ['-czf', tarPath, '-C', distDir, `SheepGet_${version}_linux-x64-portable`]);
+    artifacts.push({ name: tarName, path: tarPath, type: 'Portable tar.gz' });
+
+    // 2. Linux Debian Package (.deb)
+    console.log('[Package] Building Linux Debian package (.deb)...');
+    const debStage = join(distDir, 'deb-stage');
+    rmSync(debStage, { recursive: true, force: true });
+    const debBinDir = join(debStage, 'usr', 'bin');
+    const debAppDir = join(debStage, 'usr', 'share', 'applications');
+    const debIconDir = join(debStage, 'usr', 'share', 'icons', 'hicolor', '256x256', 'apps');
+    const debControlDir = join(debStage, 'DEBIAN');
+    mkdirSync(debBinDir, { recursive: true });
+    mkdirSync(debAppDir, { recursive: true });
+    mkdirSync(debIconDir, { recursive: true });
+    mkdirSync(debControlDir, { recursive: true });
+
+    cpSync(linuxExe, join(debBinDir, 'SheepGet'));
+    chmodSync(join(debBinDir, 'SheepGet'), 0o755);
+    cpSync(join(root, 'build', 'linux', 'SheepGet.desktop'), join(debAppDir, 'SheepGet.desktop'));
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(debIconDir, 'sheepget.png'));
+
+    const controlContent = [
+      'Package: sheepget',
+      `Version: ${version}`,
+      'Section: utils',
+      'Priority: optional',
+      'Architecture: amd64',
+      `Maintainer: ${companyName}`,
+      `Description: ${productDescription}`,
+      '',
+    ].join('\n');
+    writeFileSync(join(debControlDir, 'control'), controlContent, 'utf-8');
+
+    const debName = `SheepGet_${version}_amd64.deb`;
+    const debPath = join(distDir, debName);
+    run('dpkg-deb', ['--build', debStage, debPath]);
+    rmSync(debStage, { recursive: true, force: true });
+    if (existsSync(debPath)) {
+      artifacts.push({ name: debName, path: debPath, type: 'Debian Package' });
+    }
+
+    // 3. Linux AppImage
+    console.log('[Package] Building Linux AppImage (.AppImage)...');
+    const appDir = join(distDir, 'AppDir');
+    rmSync(appDir, { recursive: true, force: true });
+    const appUsrBin = join(appDir, 'usr', 'bin');
+    mkdirSync(appUsrBin, { recursive: true });
+    cpSync(linuxExe, join(appUsrBin, 'SheepGet'));
+    chmodSync(join(appUsrBin, 'SheepGet'), 0o755);
+    cpSync(join(root, 'build', 'linux', 'SheepGet.desktop'), join(appDir, 'SheepGet.desktop'));
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(appDir, 'sheepget.png'));
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(appDir, '.DirIcon'));
+
+    // AppRun launcher
+    const appRunScript = [
+      '#!/bin/sh',
+      'HERE="$(dirname "$(readlink -f "${0}")")"',
+      'exec "${HERE}/usr/bin/SheepGet" "$@"',
+      '',
+    ].join('\n');
+    writeFileSync(join(appDir, 'AppRun'), appRunScript, 'utf-8');
+    chmodSync(join(appDir, 'AppRun'), 0o755);
+
+    const appImageName = `SheepGet_${version}_amd64.AppImage`;
+    const appImagePath = join(distDir, appImageName);
+
+    // Check appimagetool in tools or path
+    const localAppImageTool = join(toolsDir, 'appimagetool');
+    const appImageToolCmd = existsSync(localAppImageTool) ? localAppImageTool : 'appimagetool';
+    try {
+      run(appImageToolCmd, [appDir, appImagePath], {
+        env: { ...process.env, ARCH: 'x86_64', APPIMAGE_EXTRACT_AND_RUN: '1' },
+      });
+      if (existsSync(appImagePath)) {
+        artifacts.push({ name: appImageName, path: appImagePath, type: 'AppImage' });
+      }
+    } catch (e) {
+      console.warn('[Package Warning] appimagetool execution failed:', e.message);
+    }
+    rmSync(appDir, { recursive: true, force: true });
+  }
+
+  // =========================================================================
+  // INTEGRITY CHECKSUM: SHA256SUMS.txt
+  // =========================================================================
   const shaLines = [];
   for (const art of artifacts) {
     const data = readFileSync(art.path);
@@ -314,8 +592,8 @@ async function main() {
   console.log(`- SHA256SUMS.txt                                 [Integrity Checksum   ]`);
   console.log('External FFmpeg:   0 B (Pure Native Go Media Processing)');
   console.log('=====================================================================\n');
-  // Clean intermediate build scratch directory
-  rmSync(binDir, { recursive: true, force: true });
+
+  // Keep binDir intact for CI verification and native-build archiver
 }
 
 main().catch((err) => {
