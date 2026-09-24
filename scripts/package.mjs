@@ -537,9 +537,13 @@ async function main() {
     cpSync(linuxExe, join(appUsrBin, 'SheepGet'));
     chmodSync(join(appUsrBin, 'SheepGet'), 0o755);
     cpSync(join(root, 'build', 'linux', 'SheepGet.desktop'), join(appDir, 'SheepGet.desktop'));
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(appDir, 'SheepGet.png'));
     cpSync(join(root, 'build', 'icons', 'icon.png'), join(appDir, 'sheepget.png'));
     cpSync(join(root, 'build', 'icons', 'icon.png'), join(appDir, '.DirIcon'));
-
+    const appIconShare = join(appDir, 'usr', 'share', 'icons', 'hicolor', '256x256', 'apps');
+    mkdirSync(appIconShare, { recursive: true });
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(appIconShare, 'SheepGet.png'));
+    cpSync(join(root, 'build', 'icons', 'icon.png'), join(appIconShare, 'sheepget.png'));
     // AppRun launcher
     const appRunScript = [
       '#!/bin/sh',
