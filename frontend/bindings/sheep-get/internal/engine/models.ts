@@ -315,43 +315,6 @@ export class CleanupScanResult {
 }
 
 /**
- * ConsistencyResult reports whether an updated URL is consistent with original task file.
- */
-export class ConsistencyResult {
-    "consistent": boolean;
-    "reason"?: string;
-    "totalBytes": number;
-    "etag": string;
-    "resumable": boolean;
-
-    /** Creates a new ConsistencyResult instance. */
-    constructor($$source: Partial<ConsistencyResult> = {}) {
-        if (!("consistent" in $$source)) {
-            this["consistent"] = false;
-        }
-        if (!("totalBytes" in $$source)) {
-            this["totalBytes"] = 0;
-        }
-        if (!("etag" in $$source)) {
-            this["etag"] = "";
-        }
-        if (!("resumable" in $$source)) {
-            this["resumable"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ConsistencyResult instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ConsistencyResult {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ConsistencyResult($$parsedSource as Partial<ConsistencyResult>);
-    }
-}
-
-/**
  * HLSProbe 是一条链接的 HLS 事实。
  */
 export class HLSProbe {

@@ -13,7 +13,6 @@ import (
 	"sheep-get/internal/browser"
 	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
-	"sheep-get/internal/credentials"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/logging"
@@ -407,7 +406,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 // GetSettings returns current active settings
 func (a *App) GetSettings() config.Settings {
 	if a.settings == nil {
-		return config.DefaultSettings(a.GetDefaultDownloadDir(), "")
+		return config.DefaultSettings(a.defaultDownloadDir(), "")
 	}
 	return a.settings.Get()
 }
@@ -441,31 +440,6 @@ func (a *App) syncLaunchAtStartup(enabled bool) {
 			_ = wailsApp.Autostart.Disable()
 		}
 	}
-}
-
-// SetLaunchAtStartup configures whether SheepGet starts at system login.
-func (a *App) SetLaunchAtStartup(enabled bool) error {
-	if a.settings == nil {
-		return fmt.Errorf("settings service not initialized")
-	}
-	current := a.settings.Get()
-	current.General.LaunchAtStartup = enabled
-	_, err := a.UpdateSettings(current)
-	return err
-}
-
-// IsLaunchAtStartup reports whether autostart is enabled in system/settings.
-func (a *App) IsLaunchAtStartup() bool {
-	wailsApp := a.getApp()
-	if wailsApp != nil && wailsApp.Autostart != nil {
-		if enabled, err := wailsApp.Autostart.IsEnabled(); err == nil {
-			return enabled
-		}
-	}
-	if a.settings != nil {
-		return a.settings.Get().General.LaunchAtStartup
-	}
-	return false
 }
 
 // RestartServer restarts the local HTTP loopback server on the specified port.
@@ -528,8 +502,8 @@ func (a *App) GetStorageInfo() map[string]string {
 	}
 }
 
-// GetDefaultDownloadDir returns the default downloads folder from settings or system fallback
-func (a *App) GetDefaultDownloadDir() string {
+// defaultDownloadDir returns the default downloads folder from settings or system fallback
+func (a *App) defaultDownloadDir() string {
 	if a.settings != nil {
 		cfg := a.settings.Get()
 		if cfg.Download.DefaultDirectory != "" {
@@ -553,7 +527,7 @@ func (a *App) ResolveDestination(filename string) DestinationInfo {
 // the matched category; the frontend uses ResolveDestination.
 func (a *App) categoryDirectory(filename string) string {
 	if a.settings == nil {
-		return a.GetDefaultDownloadDir()
+		return a.defaultDownloadDir()
 	}
 	return a.settings.Get().Download.ResolveCategoryDirectory(filename)
 }
@@ -586,24 +560,6 @@ func (a *App) SetCategoryDirectory(targetCategoryID, directory string) error {
 	current.Download = updatedDownload
 	_, err := a.settings.Update(current)
 	return err
-}
-
-// AddTask adds a new download task
-func (a *App) AddTask(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
-	if maxConn <= 0 && a.settings != nil {
-		maxConn = a.settings.Get().Download.DefaultConnectionsPerTask
-	}
-	if maxConn <= 0 {
-		maxConn = config.DefaultConnectionsPerTask
-	}
-	if dir == "" {
-		if filename != "" {
-			dir = a.categoryDirectory(filename)
-		} else {
-			dir = a.GetDefaultDownloadDir()
-		}
-	}
-	return a.manager.AddTask(a.ctx, urlStr, dir, filename, maxConn)
 }
 
 // PauseTask pauses an active or queued task
@@ -848,64 +804,6 @@ func (a *App) ResolveDuplicateDecision(urlStr, dir, filename string) duplicate.D
 	})
 }
 
-// ResolveDuplicate resolves a duplicate task using strategies "continue", "redownload", "copy", or "show_completed".
-func (a *App) ResolveDuplicate(taskID, strategy, dir, filename string, maxConn int) (*task.Task, error) {
-	if dir == "" {
-		dir = sys.DefaultDownloadDir()
-	}
-	return a.manager.ResolveDuplicate(a.ctx, taskID, strategy, dir, filename, maxConn)
-}
-
-// ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
-// cleans stale duplicate tasks, and registers the file as a completed task.
-func (a *App) ReuseExistingFile(existingTaskID, targetDir, targetFilename string) (*task.Task, error) {
-	if a.manager == nil {
-		return nil, fmt.Errorf("manager not initialized")
-	}
-	return a.manager.ReuseExistingFile(a.ctx, existingTaskID, targetDir, targetFilename)
-}
-
-// StartPreDownload starts downloading in the background while file info dialog is displayed.
-func (a *App) StartPreDownload(urlStr, dir, filename string, maxConn int) (*task.Task, error) {
-	if dir == "" {
-		if filename != "" {
-			dir = a.categoryDirectory(filename)
-		} else {
-			dir = a.GetDefaultDownloadDir()
-		}
-	}
-	return a.manager.StartPreDownload(a.ctx, urlStr, dir, filename, maxConn)
-}
-
-// ConfirmPreDownload confirms the pre-download task with final user-chosen directory and filename.
-func (a *App) ConfirmPreDownload(taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error) {
-	if finalDir == "" {
-		finalDir = sys.DefaultDownloadDir()
-	}
-	return a.manager.ConfirmPreDownload(a.ctx, taskID, finalDir, finalFilename, maxConn)
-}
-
-// CancelPreDownload handles cancellation of pre-download dialog.
-func (a *App) CancelPreDownload(taskID string) error {
-	return a.manager.CancelPreDownload(a.ctx, taskID)
-}
-
-// CheckURLConsistency decides whether a refreshed URL still serves the same file, so existing
-// progress can be reused. headers replaces the task request context when non-nil.
-func (a *App) CheckURLConsistency(taskID, newURL string, headers map[string]string) (*engine.ConsistencyResult, error) {
-	return a.manager.CheckURLConsistency(a.ctx, taskID, newURL, headers)
-}
-
-// UpdateTaskURL adopts the refreshed URL and request context, then continues the download.
-func (a *App) UpdateTaskURL(taskID, newURL string, headers map[string]string) (*task.Task, error) {
-	return a.manager.UpdateTaskURL(a.ctx, taskID, newURL, headers)
-}
-
-// ResetAndDownloadWithNewURL discards existing progress and restarts the download from the new URL.
-func (a *App) ResetAndDownloadWithNewURL(taskID, newURL string, headers map[string]string) (*task.Task, error) {
-	return a.manager.ResetAndDownloadWithNewURL(a.ctx, taskID, newURL, headers)
-}
-
 func (a *App) SelectDirectory(defaultDir string) (string, error) {
 	app := a.getApp()
 	if app == nil {
@@ -957,150 +855,6 @@ func (a *App) TriggerDownload(req window.DownloadRequest) (*window.DownloadRespo
 	return a.windowQueue.Enqueue(a.ctx, req)
 }
 
-type loopbackServerAdapter struct {
-	app *App
-}
-
-func (a *loopbackServerAdapter) HandleHandover(ctx context.Context, req *server.HandoverRequest) (*server.HandoverResponse, error) {
-	return a.app.handleHandover(ctx, req)
-}
-
-func (a *loopbackServerAdapter) HandleHLSVariants(ctx context.Context, req *server.HLSVariantsRequest) (*server.HLSVariantsResponse, error) {
-	return a.app.handleHLSVariants(ctx, req)
-}
-
-func (a *loopbackServerAdapter) HandleMediaProbe(ctx context.Context, req *server.MediaProbeRequest) (*server.MediaProbeResponse, error) {
-	return a.app.handleMediaProbe(ctx, req)
-}
-
-func (a *loopbackServerAdapter) GetTakeoverSync() server.TakeoverConfigSync {
-	return a.app.getTakeoverSync()
-}
-
-func takeoverSyncFromSettings(st *config.Settings) server.TakeoverConfigSync {
-	if st == nil {
-		return server.TakeoverConfigSync{}
-	}
-	return server.TakeoverConfigSync{
-		Extensions:    st.Download.AllExtensions(),
-		ExcludedSites: st.Takeover.ExcludedSites,
-		PauseShortcut: st.Takeover.PauseShortcut,
-		ForceShortcut: st.Takeover.ForceShortcut,
-	}
-}
-
-func (a *App) getTakeoverSync() server.TakeoverConfigSync {
-	if a.settings == nil {
-		return server.TakeoverConfigSync{}
-	}
-	st := a.settings.Get()
-	return takeoverSyncFromSettings(&st)
-}
-
-func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*server.HandoverResponse, error) {
-	if a.windowQueue == nil {
-		return &server.HandoverResponse{Accepted: false, Reason: "window queue not initialized"}, nil
-	}
-
-	st := a.GetSettings()
-	if req.SourceType == "browser_takeover" && req.PageContext.PageURL != "" {
-		if config.SiteMatchesExcluded(req.PageContext.PageURL, st.Takeover.ExcludedSites) {
-			return &server.HandoverResponse{Accepted: false, Reason: "site_excluded"}, nil
-		}
-	}
-
-	headers := make(map[string]string)
-	if req.Credentials != nil {
-		for k, v := range req.Credentials.Headers {
-			headers[k] = v
-		}
-		if req.Credentials.Cookies != "" && headers["Cookie"] == "" {
-			headers["Cookie"] = req.Credentials.Cookies
-		}
-	}
-	if req.PageContext.Referrer != "" && headers["Referer"] == "" {
-		headers["Referer"] = req.PageContext.Referrer
-	}
-
-	pageURL := req.PageContext.PageURL
-	if pageURL == "" {
-		pageURL = req.PageContext.Referrer
-	}
-
-	dlReq := window.DownloadRequest{
-		URL:        req.URL,
-		Filename:   req.FilenameSuggestion,
-		Headers:    headers,
-		VariantURI: req.VariantURI,
-		PageURL:    pageURL,
-	}
-	resp, err := a.TriggerDownload(dlReq)
-	if err != nil {
-		return &server.HandoverResponse{Accepted: false, Reason: err.Error()}, nil
-	}
-	return &server.HandoverResponse{
-		Accepted:    resp.Handled,
-		QueueItemID: resp.RequestID,
-	}, nil
-}
-
-// handleHLSVariants 读取一份清单的可选清晰度，供扩展悬浮条在交接前弹菜单。
-// 请求上下文（Referer/Cookie）与交接走同一条整理路径：扩展交过来什么就带什么。
-// 它不导出为 Wails 绑定——只被 loopback 服务器调用，绑定只会把 server 包的类型
-// 泄漏进桌面前端的模型图里。
-func (a *App) handleHLSVariants(ctx context.Context, req *server.HLSVariantsRequest) (*server.HLSVariantsResponse, error) {
-	headers := make(map[string]string)
-	if req.Credentials != nil {
-		for k, v := range req.Credentials.Headers {
-			headers[k] = v
-		}
-		if req.Credentials.Cookies != "" && headers["Cookie"] == "" {
-			headers["Cookie"] = req.Credentials.Cookies
-		}
-	}
-
-	opts, err := a.manager.HLSVariantOptions(ctx, req.URL, credentials.New(headers))
-	if err != nil {
-		return nil, err
-	}
-
-	out := &server.HLSVariantsResponse{Variants: make([]server.HLSVariantOption, 0, len(opts))}
-	for _, o := range opts {
-		out.Variants = append(out.Variants, server.HLSVariantOption{
-			URI:       o.URI,
-			Label:     o.Label,
-			Bandwidth: o.Bandwidth,
-		})
-	}
-	return out, nil
-}
-
-// handleMediaProbe 为扩展面板探测一条链接的展示信息（时长与大小）。
-// 请求上下文（Referer/Cookie）与交接走同一条整理路径：扩展交过来什么就带什么。
-// 它不导出为 Wails 绑定——只被 loopback 服务器调用，导出只会把 server 包的类型
-// 泄漏进桌面前端的模型图里。
-func (a *App) handleMediaProbe(ctx context.Context, req *server.MediaProbeRequest) (*server.MediaProbeResponse, error) {
-	headers := make(map[string]string)
-	if req.Credentials != nil {
-		for k, v := range req.Credentials.Headers {
-			headers[k] = v
-		}
-		if req.Credentials.Cookies != "" && headers["Cookie"] == "" {
-			headers["Cookie"] = req.Credentials.Cookies
-		}
-	}
-
-	ov, err := a.manager.ProbeMediaOverview(ctx, req.URL, req.Filename, req.MimeType, req.IsHls, req.TotalBytes, headers)
-	if err != nil {
-		return nil, err
-	}
-	return &server.MediaProbeResponse{
-		DurationSeconds: ov.DurationSeconds,
-		TotalBytes:      ov.TotalBytes,
-		Variants:        ov.Variants,
-	}, nil
-}
-
 // OpenNewDownload opens the FileInfo window with an empty/manual request.
 func (a *App) OpenNewDownload() (*window.DownloadResponse, error) {
 	return a.TriggerDownload(window.DownloadRequest{})
@@ -1127,7 +881,7 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 		st := a.settings.Get()
 		if st.Download.ShowProgressWindow {
 			a.ShowProgressWindow(t.ID)
-			if a.GetFileInfoQueueLength() > 0 {
+			if a.fileInfoQueueLength() > 0 {
 				if app := a.getApp(); app != nil {
 					if fileWin, ok := app.Window.GetByName(winNameFileInfo); ok {
 						window.Raise(fileWin)
@@ -1157,20 +911,12 @@ func (a *App) SelectHLSVariant(requestID, urlStr, variantURI string) error {
 	return a.windowQueue.SelectHLSVariant(a.ctx, requestID, urlStr, variantURI)
 }
 
-// GetFileInfoQueueLength returns the number of requests currently waiting in the queue.
-func (a *App) GetFileInfoQueueLength() int {
+// fileInfoQueueLength returns the number of requests currently waiting in the queue.
+func (a *App) fileInfoQueueLength() int {
 	if a.windowQueue == nil {
 		return 0
 	}
 	return a.windowQueue.QueueLength()
-}
-
-// GetFileInfoQueueItems returns all currently enqueued items in the file info window.
-func (a *App) GetFileInfoQueueItems() []*window.FileInfoItem {
-	if a.windowQueue == nil {
-		return nil
-	}
-	return a.windowQueue.GetQueueItems()
 }
 
 // SwitchFileInfoActive switches the active file info dialog item to index.
@@ -1435,7 +1181,7 @@ func (a *App) scheduleWindowIdleDestroy(name string) {
 			a.fileInfoTimer = nil
 			a.windowTimerLock.Unlock()
 
-			if a.GetFileInfoQueueLength() == 0 {
+			if a.fileInfoQueueLength() == 0 {
 				if app := a.getApp(); app != nil {
 					if win, ok := app.Window.GetByName(winNameFileInfo); ok && !win.IsVisible() {
 						a.setWindowDestroying(winNameFileInfo, true)

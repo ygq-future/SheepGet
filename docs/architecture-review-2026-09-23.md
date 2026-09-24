@@ -20,7 +20,7 @@
 | 2 | C8 | 版本一致性：做成检查，而不是清单 | 值得探索 | 小 | 已完成 |
 | 3 | C5 | 「这个名字被占了」只保留一条规则 | 强 | 小—中 | 已完成 |
 | 4 | C4 | 给环回通信契约一个归属模块 | 强 | 中 | 已完成 |
-| 5 | C1 | 让下载入口只有一个归属模块（含删死代码） | 强 | 大 | 待探讨 |
+| 5 | C1 | 让下载入口只有一个归属模块（含删死代码） | 强 | 大 | 已完成 |
 | 6 | C3 | 窗口生命周期收成一个模块，每窗口一份声明 | 强 | 中 | 待探讨 |
 | 7 | C7 | 为扩展 Service Worker 立一条「就绪」接缝 | 值得探索 | 中 | 待探讨 |
 | 8 | C6 | 把目标落点记在任务上，不让界面重推一遍 | 值得探索 | 中—大 | 待探讨 |
@@ -131,13 +131,23 @@ C2 · C8 独立，无前置
 ## 5. C1 让下载入口只有一个归属模块（含删死代码）
 
 - **强度**：强
-- **问题**：凭据/Cookie/Referer 整理、链接刷新、取消语义、提交生命周期在 `app.go` 三个处理器里各写一遍，又与 `QueueController` 形成只靠注释维持的口头协议；早期「提前下载」流程留下的 5 个绑定方法仍在发布面上（前端 0 调用）。
-- **证据**：`app.go:788-827`、`app.go:889-893`、`app.go:936-1035`（三处重复的 headers 组装）、`app.go:1041-1118`、`frontend/bindings/sheep-get/app.ts`（62 个绑定函数）。
-- **深化方向**：交接 + 队列 + 提交收敛为一个 intake 模块（`Handover` / `Enqueue` / `Submit` / `Cancel` / `SelectVariant`），删除 5 个已死转发；`App` 只保留绑定、设置与系统外壳适配。
-- **影响面**：`app.go`、`internal/window/queue.go`、`internal/server` 适配层、`frontend/bindings`（重新生成）。
-- **前置**：C5（落点预留）、C4（契约模块）。
-- **验证**：交接 → 文件信息窗口 → 提交 → 取消 全链路行为不变；`app_test.go` 中锚定已死流程的用例按新契约重写或删除。
-- **风险**：改动面最大，且触及 Wails 绑定面；建议分两步——先删死代码与收敛重复（行为不变），再移入 intake 模块。
+- **状态**：已完成（2026-09-23），门禁通过
+- **问题**：凭据/Cookie/Referer 整理、链接刷新、取消语义、提交生命周期在 `app.go` 三个处理器里各写一遍，又与 `QueueController` 形成只靠注释维持的口头协议；早期「提前下载」流程留下的绑定方法仍在发布面上（前端 0 调用）。
+- **证据**：三个处理器里逐字重复的 headers 组装（交接、清晰度列表、媒体概览，交接那份还多一条 Referer 补齐）；`frontend/bindings/sheep-get/app.ts` 的 62 个绑定函数里，14 个在生产代码里零消费者——前端 0 调用，Go 侧也只有测试在用。
+- **实际改动**：
+  - 删掉 14 个死入口/死转发：`AddTask`（绕过队列直接建任务的第二条入口，自己又决定一次目录与并发）、`StartPreDownload`/`ConfirmPreDownload`/`CancelPreDownload`（提前下载的时机由队列决定）、`ResolveDuplicate`/`ReuseExistingFile`（重复裁决由队列在提交时调引擎）、`CheckURLConsistency`/`UpdateTaskURL`/`ResetAndDownloadWithNewURL`（旧链接刷新入口，界面从未有入口）、`SetLaunchAtStartup`/`IsLaunchAtStartup`（自启动走设置：UpdateSettings → OnSettingsUpdated → 同步系统注册），以及 `GetFileInfoQueueItems`；只读辅助 `GetDefaultDownloadDir`、`GetFileInfoQueueLength` 改为不导出（调用点都在本包内）。
+  - 重新生成 Wails 绑定：62 → 48 个方法；`engine.ConsistencyResult` 随之退出前端模型图（只有被删的 `CheckURLConsistency` 引用过它）。剩下的 6 个「前端不调用」方法逐个核对都是 Go 侧接线：任务/设置监听回调，以及主程序的菜单与退出。
+  - 扩展交过来的请求上下文只整理一次：新增 `handoverHeaders`（`app_loopback.go`），交接、清晰度列表与媒体概览三条路径共用；此前同样的 8 行在三个处理器里各写一遍。
+  - 环回适配层整体移出 `app.go`：`app_loopback.go` 收下适配器、站点排除、交接、清晰度与媒体概览，`app.go` 只留绑定、设置与系统外壳适配。
+  - `app_test.go` 里锚定已死流程的用例按新契约重写：任务生命周期与「取消提前下载保留暂停任务」改走「登记 → 提交/取消」的真实入口；文件信息窗口全流程改走队列（预下载起步 → 确认 → 重复检测 → 序号副本动作）；链接刷新的端到端用例删除——能力与用例都在引擎层（`TestManager_CheckURLConsistency`、`TestManager_UpdateTaskURLResumesWithRequestHeaders`），而界面没有入口；自启动用例改走设置这条真实路径。
+  - 交接用例补上请求上下文断言（扩展给的自定义头、Cookie 与页面 Referer 都落到任务上），覆盖这次去重触及的行为。
+- **验证**（实际执行）：
+  - `go test -count=1 ./...` 全部通过；`node scripts/quality-gate.mjs` 全绿（Go 全包、前端 88 项、扩展 78 项、9 项质量设施测试）。
+  - 绑定面复算：重新生成后 48 个方法，前端未消费的只剩 6 个 Go 接线方法（逐个核对来源：engine 监听接口 ×2、设置/剪贴板监听 ×1、main.go 菜单与退出 ×3）。
+  - 全链路：登记 → 文件信息窗口 → 提交 → 取消由重写后的用例覆盖（含取消后保留暂停任务与 `.sheepget` 分片）。
+- **未做**：没有再新起一个 `intake` 包。它只能是 `window.QueueController` 的包装：五个操作里 Enqueue / Submit / Cancel / SelectVariant 已经长在那个类型上，而交接的翻译必须留在环回适配层——把 loopback 的载荷类型下沉进窗口包，正是既有注释在挡的事（不让 server 包的类型泄漏进前端模型图）。再包一层只会多一个转发者，不增加归属。
+- **影响面**：`app.go`、`app_loopback.go`（新增）、`app_test.go`、`frontend/bindings`（重新生成）。
+- **风险**：删除的都是没有消费者的绑定，行为由队列、引擎与设置路径继续覆盖。Wails v3 beta 的 `ServiceOptions` 没有排除绑定的选项，Go 侧接线用的导出方法仍会出现在发布面上——这一项到此为止，不再为此引入包装层。
 
 ## 6. C3 窗口生命周期收成一个模块，每窗口一份声明
 

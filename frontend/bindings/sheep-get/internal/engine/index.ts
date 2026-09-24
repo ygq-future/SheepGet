@@ -8,7 +8,6 @@ export {
     CleanupLogFile,
     CleanupScanOptions,
     CleanupScanResult,
-    ConsistencyResult,
     HLSProbe,
     ProbeResult
 } from "./models.js";

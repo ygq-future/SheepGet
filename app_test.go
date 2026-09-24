@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"sheep-get/internal/config"
+	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
@@ -113,6 +114,37 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	return app, store, tmpDir
 }
 
+// waitActiveItem 等文件信息窗口显示出想要的那一项。登记时的名字只是猜测，探测回来会被
+// 服务器给的真名替换掉，因此这里按名字等。
+func waitActiveItem(t *testing.T, app *App, wantFilename string) *window.FileInfoItem {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		item, err := app.GetActiveFileInfo()
+		if err == nil && item != nil && item.Filename == wantFilename {
+			return item
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file info window never showed %q", wantFilename)
+	return nil
+}
+
+// waitPreDownloadTask 等这一项的提前下载起步，返回它建出来的任务 ID。
+func waitPreDownloadTask(t *testing.T, app *App, itemID string) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		item, err := app.GetActiveFileInfo()
+		if err == nil && item != nil && item.ID == itemID && item.PreDownloadTaskID != "" {
+			return item.PreDownloadTaskID
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pre-download for item %s never started", itemID)
+	return ""
+}
+
 func waitAppTask(t *testing.T, store task.TaskStore, id string, want task.Status) *task.Task {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -129,15 +161,30 @@ func waitAppTask(t *testing.T, store task.TaskStore, id string, want task.Status
 }
 
 func TestApp_TaskLifecycle(t *testing.T) {
-	app, _, tmpDir := newTestApp(t)
+	app, store, tmpDir := newTestApp(t)
 
-	// Test AddTask with unreachable URL to verify error handling without panic
-	created, err := app.AddTask("http://127.0.0.1:59999/test.bin", tmpDir, "test.bin", 2)
-	if err != nil {
-		t.Fatalf("unexpected error adding task: %v", err)
+	// 下载入口只有一条：登记进文件信息窗口队列，再提交建任务。这里用不可达地址，
+	// 断言任务照样建得出来，并如实落到失败状态而不是静默消失。
+	if _, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       "http://127.0.0.1:59999/test.bin",
+		Filename:  "test.bin",
+		Directory: tmpDir,
+	}); err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
 	}
-	if created.Status != task.StatusError {
-		t.Fatalf("expected status error, got %v", created.Status)
+	active := waitActiveItem(t, app, "test.bin")
+	created, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  active.Filename,
+		Directory: active.Directory,
+		MaxConn:   2,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo failed: %v", err)
+	}
+	if waitAppTask(t, store, created.ID, task.StatusError) == nil {
+		t.Fatalf("expected the unreachable download to end in error")
 	}
 
 	tasks, err := app.ListTasks()
@@ -180,21 +227,33 @@ func TestApp_PreDownloadCancelKeepsPausedTask(t *testing.T) {
 	ts := serveRangedPayload(payload, "", 3*time.Millisecond)
 	defer ts.Close()
 
-	preTask, err := app.StartPreDownload(ts.URL+"/flow.bin", tmpDir, "flow.bin", 2)
-	if err != nil {
-		t.Fatalf("StartPreDownload failed: %v", err)
+	// 提前下载由文件信息窗口的队列驱动：登记时设置打开这个开关，探测落地后自己起步。
+	st := app.GetSettings()
+	st.Download.PreDownload = true
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("failed to enable pre-download: %v", err)
 	}
-	waitAppTask(t, store, preTask.ID, task.StatusDownloading)
+	if _, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       ts.URL + "/flow.bin",
+		Filename:  "flow.bin",
+		Directory: tmpDir,
+	}); err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+	active := waitActiveItem(t, app, "flow.bin")
+	preTaskID := waitPreDownloadTask(t, app, active.ID)
+	waitAppTask(t, store, preTaskID, task.StatusDownloading)
 
-	if err := app.CancelPreDownload(preTask.ID); err != nil {
-		t.Fatalf("CancelPreDownload failed: %v", err)
+	// 用户在文件信息窗口点取消：预下载停下、但保留在列表里（转为暂停），分片留着可续传。
+	if err := app.CancelCurrentFileInfo(); err != nil {
+		t.Fatalf("CancelCurrentFileInfo failed: %v", err)
 	}
 
 	tasks, err := app.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks failed: %v", err)
 	}
-	if len(tasks) != 1 || tasks[0].ID != preTask.ID {
+	if len(tasks) != 1 || tasks[0].ID != preTaskID {
 		t.Fatalf("expected the cancelled pre-download to stay listed, got %d tasks", len(tasks))
 	}
 	if tasks[0].Status != task.StatusPaused {
@@ -214,8 +273,6 @@ func TestApp_FileInfoDialogFlow(t *testing.T) {
 	}
 	ts := serveRangedPayload(payload, "", 0)
 	defer ts.Close()
-	ctx := context.Background()
-
 	// 1. Probe reports the server-provided name, size and type for the dialog.
 	probe, err := app.ProbeURL(ts.URL + "/download")
 	if err != nil {
@@ -237,16 +294,32 @@ func TestApp_FileInfoDialogFlow(t *testing.T) {
 		t.Fatalf("expected a conflict with suggestion flow (1).bin, got %+v", conflict)
 	}
 
-	// 3. The user answers "add a number": pre-download runs under the chosen name and the original survives.
-	preTask, err := app.StartPreDownload(ts.URL+"/download", saveDir, conflict.SuggestedFilename, 2)
-	if err != nil {
-		t.Fatalf("StartPreDownload failed: %v", err)
+	// 3. 用户选择「序号副本」：按这个名字登记，提前下载起步并完成，确认后成为正式任务。
+	st := app.GetSettings()
+	st.Download.PreDownload = true
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("failed to enable pre-download: %v", err)
 	}
-	waitAppTask(t, store, preTask.ID, task.StatusCompleted)
+	if _, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       ts.URL + "/download",
+		Filename:  conflict.SuggestedFilename,
+		Directory: saveDir,
+	}); err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
+	}
+	active := waitActiveItem(t, app, conflict.SuggestedFilename)
+	preTaskID := waitPreDownloadTask(t, app, active.ID)
+	waitAppTask(t, store, preTaskID, task.StatusCompleted)
 
-	confirmed, err := app.ConfirmPreDownload(preTask.ID, saveDir, conflict.SuggestedFilename, 4)
+	confirmed, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: active.ID,
+		URL:       active.URL,
+		Filename:  conflict.SuggestedFilename,
+		Directory: saveDir,
+		MaxConn:   4,
+	})
 	if err != nil {
-		t.Fatalf("ConfirmPreDownload failed: %v", err)
+		t.Fatalf("SubmitFileInfo failed: %v", err)
 	}
 	if confirmed.Filename != "flow (1).bin" || confirmed.Directory != saveDir {
 		t.Fatalf("expected flow (1).bin in %s, got %s in %s", saveDir, confirmed.Filename, confirmed.Directory)
@@ -268,92 +341,32 @@ func TestApp_FileInfoDialogFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeURL failed: %v", err)
 	}
-	if again.DuplicateTask == nil || again.DuplicateTask.ID != preTask.ID {
+	if again.DuplicateTask == nil || again.DuplicateTask.ID != confirmed.ID {
 		t.Fatalf("expected the confirmed task to be reported as a duplicate, got %+v", again.DuplicateTask)
 	}
 
-	// 5. "Save as a numbered copy" creates a separate task and does not reuse the existing name.
-	copyTask, err := app.ResolveDuplicate(preTask.ID, "copy", saveDir, "flow.bin", 2)
-	if err != nil {
-		t.Fatalf("ResolveDuplicate copy failed: %v", err)
+	// 5. 用户为这次重复选定「序号副本」：得到另一份独立的成品，不占用已有文件名。
+	if _, err := app.TriggerDownload(window.DownloadRequest{
+		URL:       ts.URL + "/download",
+		Filename:  "flow.bin",
+		Directory: saveDir,
+	}); err != nil {
+		t.Fatalf("TriggerDownload failed: %v", err)
 	}
-	if copyTask.ID == preTask.ID || copyTask.Filename == confirmed.Filename {
+	copyActive := waitActiveItem(t, app, "flow.bin")
+	copyTask, err := app.SubmitFileInfo(window.FileInfoSubmission{
+		RequestID: copyActive.ID,
+		URL:       copyActive.URL,
+		Filename:  "flow.bin",
+		Directory: saveDir,
+		MaxConn:   2,
+		Action:    duplicate.ActionCopy,
+	})
+	if err != nil {
+		t.Fatalf("SubmitFileInfo with copy action failed: %v", err)
+	}
+	if copyTask.ID == confirmed.ID || copyTask.Filename == confirmed.Filename {
 		t.Fatalf("expected a distinct task with a free name, got %s / %s", copyTask.ID, copyTask.Filename)
-	}
-
-	// 6. Cancelling a completed task keeps it and its finished file.
-	if err := app.CancelPreDownload(preTask.ID); err != nil {
-		t.Fatalf("CancelPreDownload failed: %v", err)
-	}
-	completed, err := store.Get(ctx, preTask.ID)
-	if err != nil || completed.Status != task.StatusCompleted {
-		t.Fatalf("expected the completed task to survive cancel, got %+v", completed)
-	}
-	if _, err := os.Stat(filepath.Join(saveDir, "flow (1).bin")); err != nil {
-		t.Fatalf("completed file must survive cancel: %v", err)
-	}
-}
-
-func TestApp_ExpiredLinkRecovery(t *testing.T) {
-	app, store, tmpDir := newTestApp(t)
-	payload := make([]byte, 64*1024)
-	for i := range payload {
-		payload[i] = byte((i * 7) % 251)
-	}
-	const referer = "https://player.example/watch"
-	ts := serveRangedPayload(payload, referer, 0)
-	defer ts.Close()
-
-	// A task whose link expired before any byte was written: the probe fails, the task survives.
-	if _, err := app.ProbeURL(ts.URL + "/download"); err == nil {
-		t.Fatalf("expected probing an expired link to fail")
-	}
-	expired, err := app.AddTask(ts.URL+"/download", tmpDir, "flow.bin", 2)
-	if err != nil {
-		t.Fatalf("AddTask failed: %v", err)
-	}
-	waitAppTask(t, store, expired.ID, task.StatusError)
-
-	// Without the required request information the refreshed link cannot be verified.
-	verification, err := app.CheckURLConsistency(expired.ID, ts.URL+"/download", nil)
-	if err != nil {
-		t.Fatalf("CheckURLConsistency failed: %v", err)
-	}
-	if verification.Consistent {
-		t.Fatalf("expected the link to stay unverified without request info")
-	}
-	if verification.Reason == "" {
-		t.Errorf("expected an explanation for the unverified link")
-	}
-
-	headers := map[string]string{"Referer": referer}
-	verification, err = app.CheckURLConsistency(expired.ID, ts.URL+"/download", headers)
-	if err != nil {
-		t.Fatalf("CheckURLConsistency failed: %v", err)
-	}
-	if !verification.Consistent {
-		t.Fatalf("expected the link to be verifiable with request info, got: %s", verification.Reason)
-	}
-
-	updated, err := app.UpdateTaskURL(expired.ID, ts.URL+"/download", headers)
-	if err != nil {
-		t.Fatalf("UpdateTaskURL failed: %v", err)
-	}
-	if updated.RequestHeaders == nil || updated.RequestHeaders.RawHeaders()["Referer"] != referer {
-		t.Errorf("expected the request info to be stored on the task, got %v", updated.RequestHeaders)
-	}
-
-	// Updating the link continues the transfer rather than leaving the task paused.
-	final := waitAppTask(t, store, expired.ID, task.StatusCompleted)
-	if final.Downloaded != int64(len(payload)) {
-		t.Errorf("expected %d downloaded bytes, got %d", len(payload), final.Downloaded)
-	}
-	content, err := os.ReadFile(filepath.Join(tmpDir, "flow.bin"))
-	if err != nil {
-		t.Fatalf("failed to read recovered download: %v", err)
-	}
-	if string(content) != string(payload) {
-		t.Fatalf("recovered download does not match the served resource")
 	}
 }
 
@@ -374,8 +387,8 @@ func TestApp_WindowQueue_Lifecycle(t *testing.T) {
 	if !resp.Handled || resp.Action != "enqueued" {
 		t.Fatalf("expected enqueued response, got %+v", resp)
 	}
-	if app.GetFileInfoQueueLength() != 1 {
-		t.Fatalf("expected queue length 1, got %d", app.GetFileInfoQueueLength())
+	if app.fileInfoQueueLength() != 1 {
+		t.Fatalf("expected queue length 1, got %d", app.fileInfoQueueLength())
 	}
 
 	var active *window.FileInfoItem
@@ -408,8 +421,8 @@ func TestApp_WindowQueue_Lifecycle(t *testing.T) {
 	if submittedTask == nil {
 		t.Fatalf("expected created task from submission")
 	}
-	if app.GetFileInfoQueueLength() != 0 {
-		t.Fatalf("queue should be empty after submission, got %d", app.GetFileInfoQueueLength())
+	if app.fileInfoQueueLength() != 0 {
+		t.Fatalf("queue should be empty after submission, got %d", app.fileInfoQueueLength())
 	}
 
 	// 3. Wait for completed task
@@ -573,7 +586,7 @@ func TestApp_CheckURLFilesExist_ReadOnlySuggestion_AllMissing(t *testing.T) {
 	}
 
 	// When user resolves with "copy" strategy, stale copies 1-5 are deleted and new task is created
-	newTask, err := app.ResolveDuplicate("t_base", "copy", tmpDir, "item.zip", 2)
+	newTask, err := app.manager.ResolveDuplicate(ctx, "t_base", "copy", tmpDir, "item.zip", 2)
 	if err != nil {
 		t.Fatalf("ResolveDuplicate copy failed: %v", err)
 	}
@@ -628,7 +641,7 @@ func TestApp_CheckURLFilesExist_ReadOnlySuggestion_HoleMissing(t *testing.T) {
 	}
 
 	// Confirm download with copy strategy: copy 3 is removed, new task is item (3).zip
-	newTask, err := app.ResolveDuplicate("t_base", "copy", tmpDir, "item.zip", 2)
+	newTask, err := app.manager.ResolveDuplicate(ctx, "t_base", "copy", tmpDir, "item.zip", 2)
 	if err != nil {
 		t.Fatalf("ResolveDuplicate copy failed: %v", err)
 	}
@@ -770,7 +783,7 @@ func TestApp_CheckURLFilesExist_CrossDirectoryReuse(t *testing.T) {
 	}
 
 	// 2. Perform ReuseExistingFile
-	reusedTask, err := app.ReuseExistingFile(oldTask.ID, dirNew, "reuse_target.bin")
+	reusedTask, err := app.manager.ReuseExistingFile(context.Background(), oldTask.ID, dirNew, "reuse_target.bin")
 	if err != nil {
 		t.Fatalf("ReuseExistingFile failed: %v", err)
 	}
@@ -1115,6 +1128,21 @@ func TestApp_HandleHandover(t *testing.T) {
 	if createdTask.PageURL != "https://normal.com/download.html" {
 		t.Errorf("expected createdTask.PageURL = %q, got %q", "https://normal.com/download.html", createdTask.PageURL)
 	}
+
+	// 交接带过来的请求上下文按同一份整理落到任务上：扩展给的自定义头保留，Cookie 与 Referer 补齐。
+	if createdTask.RequestHeaders == nil {
+		t.Fatalf("expected the handover request context to be stored on the task")
+	}
+	headers := createdTask.RequestHeaders.RawHeaders()
+	for name, want := range map[string]string{
+		"User-Agent": "TestAgent",
+		"Cookie":     "session=xyz123",
+		"Referer":    "https://normal.com/index.html",
+	} {
+		if headers[name] != want {
+			t.Errorf("expected header %s=%q on the created task, got %q", name, want, headers[name])
+		}
+	}
 }
 
 func TestApp_ProgressWindowAlwaysOnTop(t *testing.T) {
@@ -1162,25 +1190,23 @@ func TestApp_OpenFile_NonExistent(t *testing.T) {
 func TestApp_LaunchAtStartup(t *testing.T) {
 	app, _, _ := newTestApp(t)
 
-	// By default, launch at startup is false
-	if app.IsLaunchAtStartup() {
-		t.Errorf("expected launch at startup to be false by default")
+	// 自启动的开关走设置这一条路：界面改设置，桌面端在设置落地时把系统注册同步过去。
+	if app.GetSettings().General.LaunchAtStartup {
+		t.Errorf("expected launch at startup to be off by default")
 	}
-
-	// Enable
-	if err := app.SetLaunchAtStartup(true); err != nil {
-		t.Fatalf("SetLaunchAtStartup(true) failed: %v", err)
-	}
-	if !app.IsLaunchAtStartup() {
-		t.Errorf("expected launch at startup to be true")
-	}
-
-	// Disable
-	if err := app.SetLaunchAtStartup(false); err != nil {
-		t.Fatalf("SetLaunchAtStartup(false) failed: %v", err)
-	}
-	if app.IsLaunchAtStartup() {
-		t.Errorf("expected launch at startup to be false after disabling")
+	for _, enabled := range []bool{true, false} {
+		current := app.GetSettings()
+		current.General.LaunchAtStartup = enabled
+		updated, err := app.UpdateSettings(current)
+		if err != nil {
+			t.Fatalf("UpdateSettings failed: %v", err)
+		}
+		if updated.General.LaunchAtStartup != enabled {
+			t.Errorf("expected updated settings to report %v", enabled)
+		}
+		if app.GetSettings().General.LaunchAtStartup != enabled {
+			t.Errorf("expected the stored setting to be %v", enabled)
+		}
 	}
 }
 
