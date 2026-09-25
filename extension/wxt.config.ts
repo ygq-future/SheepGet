@@ -12,7 +12,7 @@ export default defineConfig({
   manifest: {
     name: 'SheepGet Integration Module',
     description: 'Browser integration and media download helper for SheepGet',
-    version: '1.0.0',
+    version: '1.0.1',
     key: FIXED_PUBLIC_KEY,
     // 接管按次进行（onCreated 里 pause → 交接成功 cancel / 失败 resume），因此申请不到
     // downloads.ui 也够用：它的 setUiOptions 作用于整个 profile，会把「不接管」的下载也

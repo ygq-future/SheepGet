@@ -8,4 +8,4 @@
 package version
 
 // Version is the released desktop version in X.Y.Z form.
-const Version = "1.0.0"
+const Version = "1.0.1"

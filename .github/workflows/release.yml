@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release tag (e.g. v1.0.0)'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.0.1'
 
 concurrency:
   group: release-${{ github.ref }}
@@ -115,7 +115,7 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${{ github.ref_name }}"
           else
-            TAG="${{ github.event.inputs.tag || 'v1.0.0' }}"
+            TAG="${{ github.event.inputs.tag || 'v1.0.1' }}"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           if [ -f ".github/release-note/${TAG}.md" ]; then

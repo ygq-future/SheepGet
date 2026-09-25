@@ -716,7 +716,7 @@ export default function App() {
             )}
           </div>
         )}
-        <span style={{ color: '#475569' }}>v1.0.0</span>
+        <span style={{ color: '#475569' }}>v1.0.1</span>
       </div>
     </div>
   );
