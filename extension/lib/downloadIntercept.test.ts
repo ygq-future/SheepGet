@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type * as backgroundModule from '../entrypoints/background';
 import { KEY_MASKS } from './shortcuts';
@@ -22,6 +22,23 @@ interface GlobalStubs {
   defineBackground?: unknown;
   fetch?: typeof fetch;
 }
+
+const realFetch = globalThis.fetch;
+const offlineFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : (input as Request).url;
+  if (url.includes('127.0.0.1') || url.includes('localhost')) {
+    throw new Error('桌面端没运行');
+  }
+  return realFetch(input, init);
+}) as typeof fetch;
+
+// 测试执行期间全局拦截本地回环请求，防止 Service Worker 异步残留重试穿透到本机运行中的桌面端
+globalThis.fetch = offlineFetch;
 
 // 判定只读这几个字段，其余由 chrome 的类型要求补齐。
 const downloadItem = {
@@ -198,12 +215,11 @@ let instances = 0;
  */
 async function startServiceWorker(fakeChrome: unknown): Promise<() => void> {
   const globals = globalThis as unknown as GlobalStubs;
-  const original = { ...globals };
+  const originalChrome = globals.chrome;
+  const originalDefine = globals.defineBackground;
   globals.chrome = fakeChrome;
   globals.defineBackground = (main: () => void) => main;
-  globals.fetch = async () => {
-    throw new Error('桌面端没运行');
-  };
+  globals.fetch = offlineFetch;
 
   const definition = (await import(
     `../entrypoints/background?case=${++instances}`
@@ -213,9 +229,10 @@ async function startServiceWorker(fakeChrome: unknown): Promise<() => void> {
   start();
 
   return () => {
-    globals.chrome = original.chrome;
-    globals.defineBackground = original.defineBackground;
-    globals.fetch = original.fetch;
+    globals.chrome = originalChrome;
+    globals.defineBackground = originalDefine;
+    // 单个用例结束时仍保持回环阻断，防止未结算的异步重试穿透到本地桌面端
+    globals.fetch = offlineFetch;
   };
 }
 
@@ -244,6 +261,10 @@ async function withTimeout<T>(signal: Promise<T>, label: string, ms = 2000): Pro
  * 后面的用例不依赖具体清单：暂停键与强制键都排在「后缀是否命中」之前，任何清单下都成立。
  */
 describe('冷启动的下载事件', () => {
+  after(() => {
+    globalThis.fetch = realFetch;
+  });
+
   it('规则没读回来之前不判定；读回来之后按已恢复的清单接管', async () => {
     const configReadGate = Promise.withResolvers<void>();
     const browser = createHarness({
