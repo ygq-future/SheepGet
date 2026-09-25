@@ -104,6 +104,9 @@ func webviewOptions(o windowing.Options) application.WebviewWindowOptions {
 		Hidden:          o.Hidden,
 		InitialPosition: application.WindowCentered,
 	}
+	if o.DisableMaximise {
+		options.MaximiseButtonState = application.ButtonDisabled
+	}
 	if o.Positioned {
 		options.InitialPosition = application.WindowXY
 		options.X, options.Y = o.X, o.Y
@@ -128,14 +131,15 @@ func (a *App) declareWindows(host windowing.Host) {
 	a.windows.Declare(
 		windowing.Spec{
 			Options: windowing.Options{
-				Name:       winNameMain,
-				Title:      "SheepGet",
-				URL:        "/",
-				Width:      mainWindowWidth,
-				Height:     mainWindowHeight,
-				MinWidth:   mainWindowWidth,
-				MinHeight:  mainWindowHeight,
-				Background: a.mainWindowBackground(),
+				Name:            winNameMain,
+				Title:           "SheepGet",
+				URL:             "/",
+				Width:           mainWindowWidth,
+				Height:          mainWindowHeight,
+				MinWidth:        mainWindowWidth,
+				MinHeight:       mainWindowHeight,
+				DisableMaximise: true,
+				Background:      a.mainWindowBackground(),
 			},
 			Policy: windowing.Policy{
 				// 轻量模式不拦关闭，让 Wails 销毁窗口与 WebView 渲染进程；其余情况关到托盘。

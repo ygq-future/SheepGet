@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
+
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
@@ -152,6 +154,7 @@ func waitPreDownloadTask(t *testing.T, app *App, itemID string) string {
 // 无头环境里没有真窗口，但窗口的声明与策略就在 App 上：用一个记录型宿主把声明驱动起来，
 // 就能验证「关到托盘」「关掉文件信息窗口等于取消这次下载」这类应用侧策略。
 type headlessWindow struct {
+	options   windowing.Options
 	onClose   func() bool
 	visible   bool
 	closed    bool
@@ -174,7 +177,7 @@ type headlessHost struct {
 }
 
 func (h *headlessHost) Open(options windowing.Options, onClose func() bool) (windowing.Window, bool) {
-	win := &headlessWindow{onClose: onClose}
+	win := &headlessWindow{options: options, onClose: onClose}
 	if h.windows == nil {
 		h.windows = map[string]*headlessWindow{}
 	}
@@ -1492,5 +1495,36 @@ func TestApp_FileInfoWindowCloseCancelsCurrent(t *testing.T) {
 	}
 	if length := app.fileInfoQueueLength(); length != 0 {
 		t.Errorf("closing the file info window must cancel the current item, %d left", length)
+	}
+}
+
+func TestWebviewOptions_DisableMaximise(t *testing.T) {
+	opts := webviewOptions(windowing.Options{
+		Name:            "test",
+		DisableMaximise: true,
+	})
+	if opts.MaximiseButtonState != application.ButtonDisabled {
+		t.Errorf("expected MaximiseButtonState to be ButtonDisabled, got %v", opts.MaximiseButtonState)
+	}
+
+	optsNormal := webviewOptions(windowing.Options{
+		Name: "test-normal",
+	})
+	if optsNormal.MaximiseButtonState != application.ButtonEnabled {
+		t.Errorf("expected MaximiseButtonState to be ButtonEnabled by default, got %v", optsNormal.MaximiseButtonState)
+	}
+}
+
+func TestApp_MainWindowDisableMaximise(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	host := &headlessHost{}
+	app.declareWindows(host)
+
+	if _, ok := app.windows.Show(winNameMain, "/"); !ok {
+		t.Fatalf("expected the main window to be created")
+	}
+	win := host.windows[winNameMain]
+	if !win.options.DisableMaximise {
+		t.Errorf("main window declaration must have DisableMaximise enabled")
 	}
 }

@@ -26,20 +26,21 @@ type Rect struct {
 
 // Options 是一个窗口的声明。它只用桌面端自己的词汇描述窗口，宿主适配器负责翻译。
 type Options struct {
-	Name          string
-	Title         string
-	URL           string
-	Width         int
-	Height        int
-	MinWidth      int // 0 表示不限制
-	MinHeight     int // 0 表示不限制
-	MaxWidth      int // 0 表示不限制
-	MaxHeight     int // 0 表示不限制
-	Frameless     bool
-	Transparent   bool
-	DisableResize bool
-	Hidden        bool
-	Background    Colour
+	Name            string
+	Title           string
+	URL             string
+	Width           int
+	Height          int
+	MinWidth        int // 0 表示不限制
+	MinHeight       int // 0 表示不限制
+	MaxWidth        int // 0 表示不限制
+	MaxHeight       int // 0 表示不限制
+	Frameless       bool
+	Transparent     bool
+	DisableResize   bool
+	DisableMaximise bool
+	Hidden          bool
+	Background      Colour
 
 	// X / Y / Positioned 是创建时的初始位置：Positioned 为 true 时用 X/Y，否则由宿主按
 	// 自己的缺省（居中）处理。注册表按 Policy.Position 填这三项。
