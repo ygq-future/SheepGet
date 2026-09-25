@@ -195,6 +195,14 @@ async function main() {
 
   const artifacts = [];
 
+  // Standalone browser extension zip for decoupled extension updates
+  const extZipName = `SheepGet_${version}_extension-chrome-mv3.zip`;
+  const extZipPath = join(distDir, extZipName);
+  run('tar', ['-a', '-c', '-f', extZipPath, '-C', extTargetDir, '.']);
+  if (existsSync(extZipPath)) {
+    artifacts.push({ name: extZipName, path: extZipPath, type: 'Browser Extension Zip' });
+  }
+
   // =========================================================================
   // WINDOWS MATRIX: x64 + arm64
   // =========================================================================

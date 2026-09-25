@@ -28,6 +28,9 @@ import * as task$0 from "./internal/task/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as window$0 from "./internal/window/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as update$0 from "./internal/update/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -407,6 +410,51 @@ export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config
  */
 export function ValidateDirectory(dirPath: string): $CancellablePromise<[boolean, string]> {
     return $Call.ByID(2018273234, dirPath);
+}
+
+/**
+ * CheckAppUpdate checks for desktop application updates.
+ */
+export function CheckAppUpdate(): $CancellablePromise<update$0.AppUpdateResult> {
+    return $Call.ByName("main.App.CheckAppUpdate").then(($result: unknown) => {
+        return new update$0.AppUpdateResult($result as Partial<update$0.AppUpdateResult>);
+    });
+}
+
+/**
+ * CheckExtensionUpdate checks for updates to the browser extension.
+ */
+export function CheckExtensionUpdate(): $CancellablePromise<update$0.ExtensionUpdateResult> {
+    return $Call.ByName("main.App.CheckExtensionUpdate").then(($result: unknown) => {
+        return new update$0.ExtensionUpdateResult($result as Partial<update$0.ExtensionUpdateResult>);
+    });
+}
+/**
+ * GetInstalledExtensionVersion returns the version of the currently bundled extension.
+ */
+export function GetInstalledExtensionVersion(): $CancellablePromise<string> {
+    return $Call.ByName("main.App.GetInstalledExtensionVersion");
+}
+
+/**
+ * DownloadAppUpdate downloads the app update and broadcasts progress events.
+ */
+export function DownloadAppUpdate(assetURL: string): $CancellablePromise<string> {
+    return $Call.ByName("main.App.DownloadAppUpdate", assetURL);
+}
+
+/**
+ * ApplyAppUpdate applies the downloaded app update (launches portable updater or installer).
+ */
+export function ApplyAppUpdate(downloadedPath: string): $CancellablePromise<void> {
+    return $Call.ByName("main.App.ApplyAppUpdate", downloadedPath);
+}
+
+/**
+ * UpdateExtension downloads and updates the browser extension, broadcasting progress events.
+ */
+export function UpdateExtension(assetURL: string): $CancellablePromise<void> {
+    return $Call.ByName("main.App.UpdateExtension", assetURL);
 }
 
 // Private type creation functions

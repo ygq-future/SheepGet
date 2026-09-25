@@ -15,4 +15,6 @@ export const Event = {
   FileInfoUpdated: 'fileinfo:updated',
   AppOpenSettings: 'app:open-settings',
   ServerStatusChanged: 'server:status_changed',
+  UpdateAppProgress: 'update:app_progress',
+  UpdateExtensionProgress: 'update:extension_progress',
 } as const;

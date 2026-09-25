@@ -19,6 +19,7 @@ import (
 	"sheep-get/internal/storage"
 	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
+	"sheep-get/internal/update"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
 	"strings"
@@ -57,6 +58,7 @@ type App struct {
 	loopbackServer      *server.Server
 	logger              atomic.Pointer[logging.Logger]
 	logError            error
+	updater             *update.Service
 }
 
 // log 返回日志出口；尚未接上日志（测试直接构造 App）时丢弃日志。
@@ -187,6 +189,11 @@ func NewApp() *App {
 		}
 	})
 	app.loopbackServer = loopbackSrv
+
+	updater := update.NewService(storeDir, nil)
+	_ = updater.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr)
+	app.updater = updater
+
 	return app
 }
 
@@ -300,6 +307,9 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 	}
 	if app := a.getApp(); app != nil {
 		app.Event.Emit(protocol.EventSettingsUpdated, s)
+	}
+	if a.updater != nil && s != nil {
+		_ = a.updater.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr)
 	}
 	if a.windows != nil && s != nil {
 		a.windows.SetBackground(winNameMain, a.mainWindowBackground())
@@ -895,4 +905,73 @@ func (a *App) PrepareExtensionPage(browserName string) (string, error) {
 	}
 
 	return plan.Address, nil
+}
+
+// CheckAppUpdate checks for desktop application updates.
+func (a *App) CheckAppUpdate() (*update.AppUpdateResult, error) {
+	if a.updater == nil {
+		return nil, fmt.Errorf("updater service not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return a.updater.CheckAppUpdate(ctx)
+}
+
+// CheckExtensionUpdate checks for updates to the browser extension.
+func (a *App) CheckExtensionUpdate() (*update.ExtensionUpdateResult, error) {
+	if a.updater == nil {
+		return nil, fmt.Errorf("updater service not initialized")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return a.updater.CheckExtensionUpdate(ctx)
+}
+
+// GetInstalledExtensionVersion returns the version of the currently bundled extension.
+func (a *App) GetInstalledExtensionVersion() (string, error) {
+	if a.updater == nil {
+		return "", fmt.Errorf("updater service not initialized")
+	}
+	return a.updater.GetInstalledExtensionVersion()
+}
+
+// DownloadAppUpdate downloads the app update and broadcasts progress events.
+func (a *App) DownloadAppUpdate(assetURL string) (string, error) {
+	if a.updater == nil {
+		return "", fmt.Errorf("updater service not initialized")
+	}
+	return a.updater.DownloadAppUpdate(context.Background(), assetURL, func(p update.DownloadProgress) {
+		if app := a.getApp(); app != nil {
+			app.Event.Emit(protocol.EventUpdateAppProgress, p)
+		}
+	})
+}
+
+// ApplyAppUpdate applies the downloaded app update (launches portable updater or installer).
+func (a *App) ApplyAppUpdate(downloadedPath string) error {
+	if a.updater == nil {
+		return fmt.Errorf("updater service not initialized")
+	}
+	if err := a.updater.ApplyAppUpdate(downloadedPath); err != nil {
+		return err
+	}
+	if app := a.getApp(); app != nil {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			app.Quit()
+		}()
+	}
+	return nil
+}
+
+// UpdateExtension downloads and updates the browser extension, broadcasting progress events.
+func (a *App) UpdateExtension(assetURL string) error {
+	if a.updater == nil {
+		return fmt.Errorf("updater service not initialized")
+	}
+	return a.updater.UpdateExtension(context.Background(), assetURL, func(p update.DownloadProgress) {
+		if app := a.getApp(); app != nil {
+			app.Event.Emit(protocol.EventUpdateExtensionProgress, p)
+		}
+	})
 }

@@ -65,17 +65,19 @@ const (
 //
 // mirror frontend.events
 const (
-	EventTaskUpdated            = "task:updated"
-	EventTaskDeleted            = "task:deleted"
-	EventSettingsUpdated        = "settings:updated"
-	EventProgressClearViewed    = "progress:clear_viewed"
-	EventProgressFocusCompleted = "progress:focus_completed"
-	EventProgressFocusTask      = "progress:focus_task"
-	EventFileInfoNext           = "fileinfo:next"
-	EventFileInfoQueueUpdated   = "fileinfo:queue_updated"
-	EventFileInfoUpdated        = "fileinfo:updated"
-	EventAppOpenSettings        = "app:open-settings"
-	EventServerStatusChanged    = "server:status_changed"
+	EventTaskUpdated             = "task:updated"
+	EventTaskDeleted             = "task:deleted"
+	EventSettingsUpdated         = "settings:updated"
+	EventProgressClearViewed     = "progress:clear_viewed"
+	EventProgressFocusCompleted  = "progress:focus_completed"
+	EventProgressFocusTask       = "progress:focus_task"
+	EventFileInfoNext            = "fileinfo:next"
+	EventFileInfoQueueUpdated    = "fileinfo:queue_updated"
+	EventFileInfoUpdated         = "fileinfo:updated"
+	EventAppOpenSettings         = "app:open-settings"
+	EventServerStatusChanged     = "server:status_changed"
+	EventUpdateAppProgress       = "update:app_progress"
+	EventUpdateExtensionProgress = "update:extension_progress"
 )
 
 // 扩展身份。ExtensionID 由 extension/wxt.config.ts 里的固定公钥推导而来（ADR-0005 决策 3），

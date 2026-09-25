@@ -38,6 +38,7 @@ import {
   ExternalLink,
   Sparkles,
 } from 'lucide-react';
+import { AboutUpdatesView } from './AboutUpdatesView';
 import { CleanupModal } from './CleanupModal';
 import { Badge } from './ui/Badge';
 import { normalizeExtensions } from '../lib/category';
@@ -1306,6 +1307,15 @@ export function SettingsPanel() {
                 </Button>
               </SettingRow>
             </SettingSection>
+
+            <SettingSection
+              title="版本与更新"
+              description="主程序与配套浏览器扩展的版本检查、差异更新与便携升级"
+            >
+              <div className="p-3">
+                <AboutUpdatesView />
+              </div>
+            </SettingSection>
           </div>
         )}
 
@@ -1476,7 +1486,7 @@ export function SettingsPanel() {
               }
             >
               <SettingRow label="默认保存位置" description="新建任务时的默认本地存储路径">
-                <div className="flex max-w-sm min-w-[200px] flex-1 items-center gap-1.5">
+                <div className="flex w-80 max-w-lg flex-1 items-center gap-1.5 sm:w-[380px]">
                   <Input
                     type="text"
                     value={dirInput}
@@ -1504,7 +1514,7 @@ export function SettingsPanel() {
               </SettingRow>
 
               <SettingRow label="临时缓存目录" description="分块下载临时暂存路径，完成后自动转存">
-                <div className="flex max-w-sm min-w-[200px] flex-1 items-center gap-1.5">
+                <div className="flex w-80 max-w-lg flex-1 items-center gap-1.5 sm:w-[380px]">
                   <Input
                     type="text"
                     value={tempDirInput}
