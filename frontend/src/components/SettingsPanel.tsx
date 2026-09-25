@@ -16,6 +16,8 @@ import {
   RestartServer,
   SelectDirectory,
   ValidateDirectory,
+  CheckDirectoryHasFiles,
+  MigrateDownloadDirectory,
 } from '../../bindings/sheep-get/app';
 import {
   Sun,
@@ -40,6 +42,7 @@ import {
 } from 'lucide-react';
 import { AboutUpdatesView } from './AboutUpdatesView';
 import { CleanupModal } from './CleanupModal';
+import { DirectoryMigrationModal } from './DirectoryMigrationModal';
 import { Badge } from './ui/Badge';
 import { normalizeExtensions } from '../lib/category';
 import { motion, Reorder, useDragControls } from 'motion/react';
@@ -274,25 +277,17 @@ function CustomCategoryItem({
             className="h-7 w-28 px-2 text-xs font-semibold"
           />
         </div>
-
-        <div className="flex max-w-sm min-w-0 flex-1 items-center justify-end gap-1.5">
-          <Input
-            value={cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''}
-            onChange={(e) => {
-              setCatDirDrafts((prev) => ({ ...prev, [cat.id]: e.target.value }));
-            }}
-            onBlur={() => {
-              const val = cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
-              void handleCommitCategoryDirectory(true, idx, val);
-              setCatDirDrafts((prev) => {
-                const next = { ...prev };
-                delete next[cat.id];
-                return next;
-              });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
+        <div className="flex max-w-md min-w-0 flex-1 items-center justify-end gap-1.5">
+          <div className="flex flex-1 items-center overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/40 focus-within:border-[var(--border-focus)]">
+            <span className="shrink-0 px-2 font-mono text-[11px] text-[var(--text-muted)] select-none">
+              默认路径 /
+            </span>
+            <Input
+              value={cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''}
+              onChange={(e) => {
+                setCatDirDrafts((prev) => ({ ...prev, [cat.id]: e.target.value }));
+              }}
+              onBlur={() => {
                 const val = cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
                 void handleCommitCategoryDirectory(true, idx, val);
                 setCatDirDrafts((prev) => {
@@ -300,11 +295,23 @@ function CustomCategoryItem({
                   delete next[cat.id];
                   return next;
                 });
-              }
-            }}
-            placeholder="默认保存位置"
-            className="h-7 flex-1 px-2 font-mono text-xs"
-          />
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const val = cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
+                  void handleCommitCategoryDirectory(true, idx, val);
+                  setCatDirDrafts((prev) => {
+                    const next = { ...prev };
+                    delete next[cat.id];
+                    return next;
+                  });
+                }
+              }}
+              placeholder="子目录 (留空存入根目录)"
+              className="h-7 flex-1 border-0 bg-transparent px-1 font-mono text-xs shadow-none focus-visible:ring-0"
+            />
+          </div>
           <Button
             variant="secondary"
             size="sm"
@@ -443,7 +450,9 @@ export function SettingsPanel() {
   >(null);
   const [serverPortDraft, setServerPortDraft] = useState<string | null>(null);
   const [restartingServer, setRestartingServer] = useState(false);
-
+  const [migrationModalOpen, setMigrationModalOpen] = useState(false);
+  const [pendingNewDir, setPendingNewDir] = useState<string | null>(null);
+  const [isMigrating, setIsMigrating] = useState(false);
   if (!settings) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-xs text-[var(--text-muted)]">
@@ -742,19 +751,77 @@ export function SettingsPanel() {
     });
   };
 
+  const requestChangeDefaultDir = async (newDir: string) => {
+    const trimmed = newDir.trim();
+    const oldDir = download.defaultDirectory || '';
+    if (!trimmed || trimmed === oldDir) {
+      setDirInput(oldDir);
+      return;
+    }
+
+    try {
+      const [valid, errorMsg] = await ValidateDirectory(trimmed);
+      if (!valid) {
+        setDirInput(oldDir);
+        showToast(errorMsg || '所选路径不存在或不可写入', 'error', '保存路径无效');
+        return;
+      }
+
+      let hasFiles = false;
+      if (oldDir) {
+        try {
+          hasFiles = await CheckDirectoryHasFiles(oldDir);
+        } catch {
+          hasFiles = false;
+        }
+      }
+
+      if (hasFiles) {
+        setPendingNewDir(trimmed);
+        setMigrationModalOpen(true);
+        return;
+      }
+
+      await applyNewDefaultDir(trimmed, false);
+    } catch {
+      setDirInput(oldDir);
+      showToast('目录校验异常，已恢复原路径', 'error');
+    }
+  };
+
+  const applyNewDefaultDir = async (targetDir: string, moveFiles: boolean) => {
+    const oldDir = download.defaultDirectory || '';
+    setIsMigrating(true);
+    try {
+      if (moveFiles && oldDir) {
+        await MigrateDownloadDirectory(oldDir, targetDir);
+      }
+      setDirInput(targetDir);
+      setLastSavedDir(targetDir);
+      await updateSettings({
+        download: new configModels.DownloadConfig({
+          ...download,
+          defaultDirectory: targetDir,
+        }),
+      });
+      showToast(
+        moveFiles ? '默认保存目录已更新，已有文件已同步移动' : '默认保存目录已更新',
+        'success',
+      );
+      setMigrationModalOpen(false);
+      setPendingNewDir(null);
+    } catch (err) {
+      showToast(`更新目录或移动文件失败: ${String(err)}`, 'error');
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
   const handleSelectDefaultDir = async () => {
     try {
       const selected = await SelectDirectory(dirInput);
       if (selected) {
-        setDirInput(selected);
-        setLastSavedDir(selected);
-        await updateSettings({
-          download: new configModels.DownloadConfig({
-            ...download,
-            defaultDirectory: selected,
-          }),
-        });
-        showToast('默认保存目录已更新', 'success');
+        await requestChangeDefaultDir(selected);
       }
     } catch (err) {
       console.error('Failed to select default directory:', err);
@@ -762,32 +829,7 @@ export function SettingsPanel() {
   };
 
   const handleCommitDirectory = async (rawPath: string) => {
-    const trimmed = rawPath.trim();
-    if (!trimmed || trimmed === download.defaultDirectory) {
-      setDirInput(download.defaultDirectory || '');
-      return;
-    }
-
-    try {
-      const [valid, errorMsg] = await ValidateDirectory(trimmed);
-      if (valid) {
-        setDirInput(trimmed);
-        setLastSavedDir(trimmed);
-        await updateSettings({
-          download: new configModels.DownloadConfig({
-            ...download,
-            defaultDirectory: trimmed,
-          }),
-        });
-        showToast('默认保存目录已更新', 'success');
-      } else {
-        setDirInput(download.defaultDirectory || '');
-        showToast(errorMsg || '所选路径不存在或不可写入', 'error', '保存路径无效');
-      }
-    } catch {
-      setDirInput(download.defaultDirectory || '');
-      showToast('目录校验异常，已恢复原路径', 'error');
-    }
+    await requestChangeDefaultDir(rawPath);
   };
 
   const handleDuplicatePolicyChange = async (policy: string) => {
@@ -1039,6 +1081,21 @@ export function SettingsPanel() {
       }),
     });
   };
+  const normalizeInputCategoryDir = (raw: string, defaultDir: string): string => {
+    let clean = raw.trim();
+    if (!clean || clean === '.') return '';
+    if (defaultDir) {
+      const normDefault = defaultDir.replace(/\\/g, '/').replace(/\/+$/, '');
+      const normClean = clean.replace(/\\/g, '/');
+      if (normClean.toLowerCase().startsWith(normDefault.toLowerCase() + '/')) {
+        clean = normClean.slice(normDefault.length + 1);
+      } else if (normClean.toLowerCase() === normDefault.toLowerCase()) {
+        return '';
+      }
+    }
+    clean = clean.replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
+    return clean;
+  };
 
   const handleSelectCategoryDirectory = async (isCustom: boolean, index: number) => {
     try {
@@ -1047,14 +1104,29 @@ export function SettingsPanel() {
         : download.builtinCategories?.[index];
       const draftVal =
         cat?.id && cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat?.directory || '';
-      const selected = await SelectDirectory(draftVal);
+      const defaultDir = (download.defaultDirectory || '').trim();
+      let initialPath = draftVal.trim();
+      if (
+        initialPath &&
+        !initialPath.includes(':') &&
+        !initialPath.startsWith('/') &&
+        !initialPath.startsWith('\\')
+      ) {
+        initialPath = defaultDir
+          ? `${defaultDir.replace(/[/\\]+$/, '')}/${initialPath}`
+          : initialPath;
+      } else if (!initialPath) {
+        initialPath = defaultDir;
+      }
+      const selected = await SelectDirectory(initialPath);
       if (selected) {
+        const relDir = normalizeInputCategoryDir(selected, download.defaultDirectory || '');
         if (isCustom) {
-          await handleUpdateCustomCategory(index, { directory: selected });
+          await handleUpdateCustomCategory(index, { directory: relDir });
         } else {
-          await handleUpdateBuiltinCategory(index, { directory: selected });
+          await handleUpdateBuiltinCategory(index, { directory: relDir });
         }
-        showToast('分类目录已更新', 'success');
+        showToast('分类子目录已更新', 'success');
       }
     } catch (err) {
       console.error('Failed to select category directory:', err);
@@ -1067,33 +1139,17 @@ export function SettingsPanel() {
     rawPath: string,
   ) => {
     const trimmed = rawPath.trim();
+    const relDir = normalizeInputCategoryDir(trimmed, download.defaultDirectory || '');
     const cat = isCustom ? download.customCategories?.[index] : download.builtinCategories?.[index];
-    if (!cat || trimmed === (cat.directory || '')) {
+    if (!cat || relDir === (cat.directory || '')) {
       return;
     }
-    if (!trimmed) {
-      if (isCustom) {
-        await handleUpdateCustomCategory(index, { directory: '' });
-      } else {
-        await handleUpdateBuiltinCategory(index, { directory: '' });
-      }
-      return;
+    if (isCustom) {
+      await handleUpdateCustomCategory(index, { directory: relDir });
+    } else {
+      await handleUpdateBuiltinCategory(index, { directory: relDir });
     }
-    try {
-      const [valid, errorMsg] = await ValidateDirectory(trimmed);
-      if (valid) {
-        if (isCustom) {
-          await handleUpdateCustomCategory(index, { directory: trimmed });
-        } else {
-          await handleUpdateBuiltinCategory(index, { directory: trimmed });
-        }
-        showToast('分类目录已更新', 'success');
-      } else {
-        showToast(errorMsg || '所选路径不存在或不可写入', 'error', '保存路径无效');
-      }
-    } catch {
-      showToast('目录校验异常', 'error');
-    }
+    showToast('分类子目录已更新', 'success');
   };
 
   const handleRemoveExtension = async (isCustom: boolean, index: number, extToRemove: string) => {
@@ -2008,25 +2064,19 @@ export function SettingsPanel() {
                           </Badge>
                         </div>
 
-                        <div className="flex max-w-sm min-w-0 flex-1 items-center justify-end gap-1.5">
-                          <Input
-                            value={
-                              cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
-                            }
-                            onChange={(e) => {
-                              setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
-                            }}
-                            onBlur={() => {
-                              const val =
-                                cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || '';
-                              void handleCommitCategoryDirectory(false, idx, val);
-                              const next = { ...catDirDrafts };
-                              delete next[cat.id];
-                              setCatDirDrafts(next);
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
+                        <div className="flex max-w-md min-w-0 flex-1 items-center justify-end gap-1.5">
+                          <div className="flex flex-1 items-center overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/40 focus-within:border-[var(--border-focus)]">
+                            <span className="shrink-0 px-2 font-mono text-[11px] text-[var(--text-muted)] select-none">
+                              默认路径 /
+                            </span>
+                            <Input
+                              value={
+                                cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
+                              }
+                              onChange={(e) => {
+                                setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
+                              }}
+                              onBlur={() => {
                                 const val =
                                   cat.id in catDirDrafts
                                     ? catDirDrafts[cat.id]
@@ -2035,11 +2085,24 @@ export function SettingsPanel() {
                                 const next = { ...catDirDrafts };
                                 delete next[cat.id];
                                 setCatDirDrafts(next);
-                              }
-                            }}
-                            placeholder="留空则使用默认保存位置"
-                            className="h-7 flex-1 px-2 font-mono text-xs"
-                          />
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  const val =
+                                    cat.id in catDirDrafts
+                                      ? catDirDrafts[cat.id]
+                                      : cat.directory || '';
+                                  void handleCommitCategoryDirectory(false, idx, val);
+                                  const next = { ...catDirDrafts };
+                                  delete next[cat.id];
+                                  setCatDirDrafts(next);
+                                }
+                              }}
+                              placeholder="子目录 (留空存入根目录)"
+                              className="h-7 flex-1 border-0 bg-transparent px-1 font-mono text-xs shadow-none focus-visible:ring-0"
+                            />
+                          </div>
                           <Button
                             variant="secondary"
                             size="sm"
@@ -2120,6 +2183,20 @@ export function SettingsPanel() {
         )}
       </div>
       <CleanupModal open={cleanupOpen} onOpenChange={setCleanupOpen} />
+      <DirectoryMigrationModal
+        open={migrationModalOpen}
+        onOpenChange={(open) => {
+          setMigrationModalOpen(open);
+          if (!open) {
+            setDirInput(download.defaultDirectory || '');
+            setPendingNewDir(null);
+          }
+        }}
+        oldDir={download.defaultDirectory || ''}
+        newDir={pendingNewDir || ''}
+        onConfirm={(moveFiles) => applyNewDefaultDir(pendingNewDir || '', moveFiles)}
+        isMigrating={isMigrating}
+      />
     </div>
   );
 }

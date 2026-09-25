@@ -457,6 +457,20 @@ export function UpdateExtension(assetURL: string): $CancellablePromise<void> {
     return $Call.ByName("main.App.UpdateExtension", assetURL);
 }
 
+/**
+ * CheckDirectoryHasFiles checks whether the specified directory exists and contains any files or folders.
+ */
+export function CheckDirectoryHasFiles(dir: string): $CancellablePromise<boolean> {
+    return $Call.ByName("main.App.CheckDirectoryHasFiles", dir);
+}
+
+/**
+ * MigrateDownloadDirectory moves all files and folders from oldDir to newDir.
+ */
+export function MigrateDownloadDirectory(oldDir: string, newDir: string): $CancellablePromise<void> {
+    return $Call.ByName("main.App.MigrateDownloadDirectory", oldDir, newDir);
+}
+
 // Private type creation functions
 const $$createType0 = $models.FileConflictResult.createFrom;
 const $$createType1 = engine$0.CleanupExecuteResult.createFrom;

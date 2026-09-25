@@ -170,56 +170,74 @@ type Settings struct {
 	Clipboard  ClipboardConfig  `json:"clipboard"`
 }
 
-// DefaultBuiltinCategories returns the 6 preset built-in categories with their default directories and extensions.
+// DefaultBuiltinCategories returns the 6 preset built-in categories with their relative subdirectories and extensions.
 func DefaultBuiltinCategories(defaultDownloadDir string) []CategoryConfig {
-	base := defaultDownloadDir
-	if base == "" {
-		base = "Downloads"
-	}
 	return []CategoryConfig{
 		{
 			ID:         "builtin-video",
 			Name:       "视频",
-			Directory:  filepath.Join(base, "Videos"),
+			Directory:  "Videos",
 			Extensions: []string{"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts", "m3u8"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-audio",
 			Name:       "音频",
-			Directory:  filepath.Join(base, "Audio"),
+			Directory:  "Audio",
 			Extensions: []string{"mp3", "wav", "flac", "aac", "ogg", "m4a", "wma", "opus"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-image",
 			Name:       "图片",
-			Directory:  filepath.Join(base, "Images"),
+			Directory:  "Images",
 			Extensions: []string{"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tiff"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-archive",
 			Name:       "压缩包",
-			Directory:  filepath.Join(base, "Archives"),
+			Directory:  "Archives",
 			Extensions: []string{"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-software",
 			Name:       "软件",
-			Directory:  filepath.Join(base, "Software"),
+			Directory:  "Software",
 			Extensions: []string{"exe", "msi", "dmg", "pkg", "deb", "rpm", "apk", "appimage", "iso"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-file",
 			Name:       "文件",
-			Directory:  filepath.Join(base, "Files"),
+			Directory:  "Files",
 			Extensions: []string{"doc", "docx", "pdf", "txt", "xls", "xlsx", "ppt", "pptx", "epub"},
 			IsBuiltin:  true,
 		},
 	}
+}
+
+// NormalizeCategorySubdirectory converts an absolute or relative directory into a clean relative
+// subdirectory path anchored under defaultDir. Returns "" if it targets defaultDir itself.
+func NormalizeCategorySubdirectory(dir, defaultDir string) string {
+	clean := strings.TrimSpace(dir)
+	if clean == "" || clean == "." {
+		return ""
+	}
+	if defaultDir != "" && filepath.IsAbs(clean) {
+		rel, err := filepath.Rel(defaultDir, clean)
+		if err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
+			return rel
+		}
+		if err == nil && rel == "." {
+			return ""
+		}
+	}
+	if !filepath.IsAbs(clean) {
+		return filepath.Clean(clean)
+	}
+	return clean
 }
 
 // NormalizeExtensions trims, lowercases, removes leading dots and eliminates duplicates.
@@ -449,10 +467,15 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 				} else {
 					exts = defCat.Extensions
 				}
+				normalizedDir := NormalizeCategorySubdirectory(dir, s.Download.DefaultDirectory)
+				// If old config stored absolute path matching built-in suffix, restore relative name
+				if filepath.IsAbs(normalizedDir) && strings.EqualFold(filepath.Base(normalizedDir), defCat.Directory) {
+					normalizedDir = defCat.Directory
+				}
 				merged = append(merged, CategoryConfig{
 					ID:         defCat.ID,
 					Name:       defCat.Name,
-					Directory:  dir,
+					Directory:  normalizedDir,
 					Extensions: exts,
 					IsBuiltin:  true,
 				})
@@ -548,14 +571,10 @@ func (d DownloadConfig) ResolveCategory(filename string) (CategoryConfig, bool) 
 	ext := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(filepath.Ext(filename), ".")))
 
 	buildResult := func(cat CategoryConfig) (CategoryConfig, bool) {
-		dir := cat.Directory
-		if dir == "" {
-			dir = d.DefaultDirectory
-		}
 		return CategoryConfig{
 			ID:         cat.ID,
 			Name:       cat.Name,
-			Directory:  dir,
+			Directory:  cat.Directory,
 			Extensions: cat.Extensions,
 			IsBuiltin:  cat.IsBuiltin,
 		}, true
@@ -612,13 +631,18 @@ func (d DownloadConfig) ResolveCategory(filename string) (CategoryConfig, bool) 
 	}, false
 }
 
-// ResolveDestination returns the matched category and its save directory for a filename
-// in one step. 这是"文件名 → 落点"的唯一规则入口：目录、分类、界面展示都以它的结果为准。
+// ResolveDestination returns the matched category and its dynamic save directory for a filename
+// in one step. 统一根据当前 DefaultDirectory 动态拼装相对子目录，保证前缀变动时所有分类实时联动。
 func (d DownloadConfig) ResolveDestination(filename string) (CategoryConfig, string) {
 	cat, _ := d.ResolveCategory(filename)
-	dir := cat.Directory
-	if dir == "" {
+	subDir := strings.TrimSpace(cat.Directory)
+	var dir string
+	if subDir == "" || subDir == "." {
 		dir = d.DefaultDirectory
+	} else if filepath.IsAbs(subDir) {
+		dir = subDir
+	} else {
+		dir = filepath.Join(d.DefaultDirectory, subDir)
 	}
 	return cat, dir
 }
@@ -764,29 +788,30 @@ func (d DownloadConfig) AssignExtensionToCategory(ext, targetCategoryID string) 
 }
 
 // SetCategoryDirectory updates the save directory for a category (custom or builtin) by ID.
+// It automatically normalizes absolute paths under DefaultDirectory to relative subdirectories.
 func (d DownloadConfig) SetCategoryDirectory(targetCategoryID, dir string) (DownloadConfig, bool) {
 	if targetCategoryID == "" {
 		return d, false
 	}
-	cleanDir := strings.TrimSpace(dir)
+	normalized := NormalizeCategorySubdirectory(dir, d.DefaultDirectory)
 	changed := false
 
-	// 1. Check custom categories
+	// 1. Try custom categories
 	for i := range d.CustomCategories {
 		if d.CustomCategories[i].ID == targetCategoryID {
-			if d.CustomCategories[i].Directory != cleanDir {
-				d.CustomCategories[i].Directory = cleanDir
+			if d.CustomCategories[i].Directory != normalized {
+				d.CustomCategories[i].Directory = normalized
 				changed = true
 			}
 			return d, changed
 		}
 	}
 
-	// 2. Check builtin categories
+	// 2. Try builtin categories
 	for i := range d.BuiltinCategories {
 		if d.BuiltinCategories[i].ID == targetCategoryID {
-			if d.BuiltinCategories[i].Directory != cleanDir {
-				d.BuiltinCategories[i].Directory = cleanDir
+			if d.BuiltinCategories[i].Directory != normalized {
+				d.BuiltinCategories[i].Directory = normalized
 				changed = true
 			}
 			return d, changed

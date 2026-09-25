@@ -782,8 +782,11 @@ func TestApp_SetCategoryDirectory(t *testing.T) {
 	for _, b := range settings.Download.BuiltinCategories {
 		if b.ID == "builtin-video" {
 			found = true
-			if b.Directory != customDir {
-				t.Errorf("expected %s, got %s", customDir, b.Directory)
+			if b.Directory != "custom_video" {
+				t.Errorf("expected relative dir 'custom_video', got %s", b.Directory)
+			}
+			if _, resolvedDir := settings.Download.ResolveDestination("clip.mp4"); resolvedDir != customDir {
+				t.Errorf("expected resolved destination %s, got %s", customDir, resolvedDir)
 			}
 		}
 	}

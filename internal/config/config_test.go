@@ -228,8 +228,11 @@ func TestResolveCategory_BuiltinAndFallback(t *testing.T) {
 	if !ok || vCat.Name != "视频" {
 		t.Errorf("expected video category for movie.mp4, got %v (%v)", vCat.Name, ok)
 	}
-	if vCat.Directory != filepath.Join("/downloads", "Videos") {
-		t.Errorf("expected video dir, got %s", vCat.Directory)
+	if vCat.Directory != "Videos" {
+		t.Errorf("expected relative video dir 'Videos', got %s", vCat.Directory)
+	}
+	if _, destDir := s.Download.ResolveDestination("movie.mp4"); destDir != filepath.Join("/downloads", "Videos") {
+		t.Errorf("expected destination dir %s, got %s", filepath.Join("/downloads", "Videos"), destDir)
 	}
 
 	// Audio
@@ -267,8 +270,11 @@ func TestResolveCategory_BuiltinAndFallback(t *testing.T) {
 	if !ok || unmatchedCat.Name != "文件" {
 		t.Errorf("expected fallback to file category for mystery.xyz123, got %v (%v)", unmatchedCat.Name, ok)
 	}
-	if unmatchedCat.Directory != filepath.Join("/downloads", "Files") {
-		t.Errorf("expected fallback to Files directory, got %s", unmatchedCat.Directory)
+	if unmatchedCat.Directory != "Files" {
+		t.Errorf("expected relative Files dir 'Files', got %s", unmatchedCat.Directory)
+	}
+	if _, destDir := s.Download.ResolveDestination("mystery.xyz123"); destDir != filepath.Join("/downloads", "Files") {
+		t.Errorf("expected fallback destination dir, got %s", destDir)
 	}
 
 	// No extension: falls back into "文件"
@@ -311,8 +317,11 @@ func TestResolveCategory_OverlappingRulesAndCustomPrecedence(t *testing.T) {
 	if !ok || fallbackRes.Name != "压缩包" {
 		t.Fatalf("expected fallback to builtin 压缩包 after deleting custom category, got %s", fallbackRes.Name)
 	}
-	if fallbackRes.Directory != filepath.Join("/downloads", "Archives") {
-		t.Errorf("expected builtin Archives directory, got %s", fallbackRes.Directory)
+	if fallbackRes.Directory != "Archives" {
+		t.Errorf("expected builtin relative Archives directory, got %s", fallbackRes.Directory)
+	}
+	if _, destDir := s.Download.ResolveDestination("package.rar"); destDir != filepath.Join("/downloads", "Archives") {
+		t.Errorf("expected destination dir to be Archives under default download dir, got %s", destDir)
 	}
 }
 
@@ -542,22 +551,22 @@ func TestSettings_SetCategoryDirectory(t *testing.T) {
 	}
 
 	// 1. Update custom category directory
-	updated, changed := s.Download.SetCategoryDirectory("custom-1", "/new/custom")
+	updated, changed := s.Download.SetCategoryDirectory("custom-1", "new/custom")
 	if !changed {
 		t.Fatalf("expected changed=true for custom category")
 	}
-	if updated.CustomCategories[0].Directory != "/new/custom" {
-		t.Errorf("expected /new/custom, got %s", updated.CustomCategories[0].Directory)
+	if updated.CustomCategories[0].Directory != filepath.Clean("new/custom") {
+		t.Errorf("expected new/custom, got %s", updated.CustomCategories[0].Directory)
 	}
 
 	// 2. Same directory -> no change
-	_, changed = updated.SetCategoryDirectory("custom-1", "/new/custom")
+	_, changed = updated.SetCategoryDirectory("custom-1", "new/custom")
 	if changed {
 		t.Errorf("expected changed=false when directory is identical")
 	}
 
 	// 3. Update builtin category directory
-	updatedBuiltin, changedBuiltin := s.Download.SetCategoryDirectory("builtin-video", "/new/videos")
+	updatedBuiltin, changedBuiltin := s.Download.SetCategoryDirectory("builtin-video", "new/videos")
 	if !changedBuiltin {
 		t.Fatalf("expected changed=true for builtin category")
 	}
@@ -565,8 +574,8 @@ func TestSettings_SetCategoryDirectory(t *testing.T) {
 	for _, b := range updatedBuiltin.BuiltinCategories {
 		if b.ID == "builtin-video" {
 			found = true
-			if b.Directory != "/new/videos" {
-				t.Errorf("expected /new/videos, got %s", b.Directory)
+			if b.Directory != filepath.Clean("new/videos") {
+				t.Errorf("expected new/videos, got %s", b.Directory)
 			}
 		}
 	}
@@ -637,13 +646,14 @@ func TestResolveDestination_SingleRule(t *testing.T) {
 	d := DownloadConfig{
 		DefaultDirectory: "/downloads",
 		BuiltinCategories: []CategoryConfig{
-			{ID: "builtin-video", Name: "视频", Directory: "/downloads/Videos", Extensions: []string{"mp4"}},
-			{ID: "builtin-file", Name: "文件", Directory: "/downloads/Files", Extensions: []string{"pdf"}},
+			{ID: "builtin-video", Name: "视频", Directory: "Videos", Extensions: []string{"mp4"}},
+			{ID: "builtin-file", Name: "文件", Directory: "Files", Extensions: []string{"pdf"}},
 		},
 	}
 
 	cat, dir := d.ResolveDestination("clip.mp4")
-	if cat.ID != "builtin-video" || dir != "/downloads/Videos" {
+	expectedVideoDir := filepath.Join("/downloads", "Videos")
+	if cat.ID != "builtin-video" || dir != expectedVideoDir {
 		t.Fatalf("expected video category and its directory, got %q / %q", cat.ID, dir)
 	}
 	if onlyDir := d.ResolveCategoryDirectory("clip.mp4"); onlyDir != dir {
@@ -654,6 +664,25 @@ func TestResolveDestination_SingleRule(t *testing.T) {
 	d.BuiltinCategories[0].Directory = ""
 	if _, dir := d.ResolveDestination("clip.mp4"); dir != "/downloads" {
 		t.Fatalf("expected default directory fallback, got %q", dir)
+	}
+}
+
+func TestResolveDestination_DynamicPrefixUpdate(t *testing.T) {
+	d := DownloadConfig{
+		DefaultDirectory:  "/initial/downloads",
+		BuiltinCategories: DefaultBuiltinCategories("/initial/downloads"),
+	}
+
+	_, dir1 := d.ResolveDestination("test.mp4")
+	if dir1 != filepath.Join("/initial/downloads", "Videos") {
+		t.Fatalf("expected initial dir, got %s", dir1)
+	}
+
+	// Change default download directory -> category destinations must dynamically reflect the new prefix
+	d.DefaultDirectory = "/new/target/downloads"
+	_, dir2 := d.ResolveDestination("test.mp4")
+	if dir2 != filepath.Join("/new/target/downloads", "Videos") {
+		t.Fatalf("expected updated dir to dynamically reflect new defaultDirectory, got %s", dir2)
 	}
 }
 

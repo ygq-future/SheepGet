@@ -750,15 +750,30 @@ func (a *App) SelectDirectory(defaultDir string) (string, error) {
 
 	targetDir := strings.TrimSpace(defaultDir)
 	if targetDir != "" {
+		if !filepath.IsAbs(targetDir) && a.settings != nil {
+			base := a.settings.Get().Download.DefaultDirectory
+			if base != "" {
+				targetDir = filepath.Join(base, targetDir)
+			}
+		}
 		cleaned := filepath.Clean(targetDir)
 		if info, err := os.Stat(cleaned); err == nil && info.IsDir() {
 			targetDir = cleaned
 		} else {
-			targetDir = ""
+			if err := os.MkdirAll(cleaned, 0755); err == nil {
+				targetDir = cleaned
+			} else {
+				parent := filepath.Dir(cleaned)
+				if pInfo, pErr := os.Stat(parent); pErr == nil && pInfo.IsDir() {
+					targetDir = parent
+				} else {
+					targetDir = ""
+				}
+			}
 		}
 	}
 	if targetDir == "" {
-		targetDir = sys.DefaultDownloadDir()
+		targetDir = a.defaultDownloadDir()
 	}
 
 	return app.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
@@ -974,4 +989,27 @@ func (a *App) UpdateExtension(assetURL string) error {
 			app.Event.Emit(protocol.EventUpdateExtensionProgress, p)
 		}
 	})
+}
+
+// CheckDirectoryHasFiles checks whether the specified directory exists and contains any files or folders.
+func (a *App) CheckDirectoryHasFiles(dir string) (bool, error) {
+	clean := strings.TrimSpace(dir)
+	if clean == "" {
+		return false, nil
+	}
+	entries, err := os.ReadDir(clean)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return len(entries) > 0, nil
+}
+
+// MigrateDownloadDirectory moves all files and folders from oldDir to newDir.
+// It prioritizes instant filesystem renaming (near-zero latency on the same volume)
+// and falls back to streaming copy + delete across different drives.
+func (a *App) MigrateDownloadDirectory(oldDir, newDir string) error {
+	return config.MigrateFiles(oldDir, newDir)
 }
