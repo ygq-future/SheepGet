@@ -716,7 +716,12 @@ export default function App() {
             )}
           </div>
         )}
-        <span style={{ color: '#475569' }}>v1.0.1</span>
+        <span style={{ color: '#475569' }}>
+          v
+          {typeof chrome !== 'undefined' && chrome.runtime?.getManifest?.()?.version
+            ? chrome.runtime.getManifest().version
+            : '1.0.0'}
+        </span>
       </div>
     </div>
   );

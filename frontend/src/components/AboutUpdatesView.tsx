@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Events } from '@wailsio/runtime';
 import {
+  GetAppVersion,
   CheckAppUpdate,
   CheckExtensionUpdate,
   GetInstalledExtensionVersion,
@@ -12,8 +13,14 @@ import {
 import type {
   AppUpdateResult,
   ExtensionUpdateResult,
-  DownloadProgress,
 } from '../../bindings/sheep-get/internal/update/models';
+
+interface DownloadProgress {
+  downloadedBytes: number;
+  totalBytes: number;
+  percentage: number;
+  speedBps: number;
+}
 import { Event } from '../lib/protocol.generated';
 import { Button } from './ui/Button';
 import { Badge } from './ui/Badge';
@@ -41,12 +48,18 @@ function formatBytes(bytes: number): string {
 function formatSpeed(bps: number): string {
   return `${formatBytes(bps)}/s`;
 }
+function formatVersionLabel(raw: string): string {
+  if (!raw) return '读取中...';
+  if (raw.includes('...') || raw.includes('未')) return raw;
+  return raw.startsWith('v') ? raw : `v${raw}`;
+}
 
 export function AboutUpdatesView() {
   const { storageInfo } = useSettingsStore();
   const isPortable = storageInfo?.mode === 'portable';
 
   // App Update State
+  const [appVersion, setAppVersion] = useState<string>('读取中...');
   const [checkingApp, setCheckingApp] = useState(false);
   const [appUpdate, setAppUpdate] = useState<AppUpdateResult | null>(null);
   const [downloadingApp, setDownloadingApp] = useState(false);
@@ -61,8 +74,17 @@ export function AboutUpdatesView() {
   const [updatingExt, setUpdatingExt] = useState(false);
   const [extProgress, setExtProgress] = useState<DownloadProgress | null>(null);
 
-  // Load installed extension version on mount
+  // Load installed app and extension version on mount
   useEffect(() => {
+    void (async () => {
+      try {
+        const ver = await GetAppVersion();
+        setAppVersion(ver || '未知版本');
+      } catch {
+        setAppVersion('未知版本');
+      }
+    })();
+
     void (async () => {
       try {
         const ver = await GetInstalledExtensionVersion();
@@ -106,7 +128,7 @@ export function AboutUpdatesView() {
     try {
       const res = await CheckAppUpdate();
       setAppUpdate(res);
-      if (res.hasUpdate) {
+      if (res?.hasUpdate) {
         showToast(`发现应用新版本 v${res.latestVersion}`, 'info');
       } else {
         showToast('当前已是最新应用版本', 'success');
@@ -165,7 +187,7 @@ export function AboutUpdatesView() {
     try {
       const res = await CheckExtensionUpdate();
       setExtUpdate(res);
-      if (res.hasUpdate) {
+      if (res?.hasUpdate) {
         showToast(`发现浏览器扩展新版本 v${res.latestVersion}`, 'info');
       } else {
         showToast('浏览器扩展已是最新版本', 'success');
@@ -224,7 +246,7 @@ export function AboutUpdatesView() {
             <p className="text-xs text-[var(--text-secondary)]">
               当前版本：
               <span className="font-mono font-medium text-[var(--text-primary)]">
-                v{appUpdate?.currentVersion || '1.0.0'}
+                {formatVersionLabel(appUpdate?.currentVersion || appVersion)}
               </span>
             </p>
           </div>
@@ -362,7 +384,7 @@ export function AboutUpdatesView() {
             <p className="text-xs text-[var(--text-secondary)]">
               本地扩展版本：
               <span className="font-mono font-medium text-[var(--text-primary)]">
-                v{installedExtVer}
+                {formatVersionLabel(installedExtVer)}
               </span>
             </p>
           </div>

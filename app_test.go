@@ -21,6 +21,7 @@ import (
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
+	"sheep-get/internal/version"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
 )
@@ -1529,5 +1530,12 @@ func TestApp_MainWindowDisableMaximise(t *testing.T) {
 	win := host.windows[winNameMain]
 	if !win.options.DisableMaximise {
 		t.Errorf("main window declaration must have DisableMaximise enabled")
+	}
+}
+
+func TestApp_GetAppVersion(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	if ver := app.GetAppVersion(); ver != version.Version {
+		t.Errorf("expected GetAppVersion to return %q, got %q", version.Version, ver)
 	}
 }

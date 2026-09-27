@@ -65,3 +65,23 @@ func TestMatchAssets(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractExtensionVersion(t *testing.T) {
+	cases := []struct {
+		filename string
+		expected string
+	}{
+		{"SheepGet_1.0.1_extension-chrome-mv3.zip", "1.0.1"},
+		{"SheepGet_extension_1.0.2.zip", "1.0.2"},
+		{"SheepGet_extension_v2.0.0.zip", "2.0.0"},
+		{"extension-chrome-mv3-1.0.0.zip", "1.0.0"},
+		{"no-version-extension.zip", ""},
+	}
+
+	for _, c := range cases {
+		actual := ExtractExtensionVersion(c.filename)
+		if actual != c.expected {
+			t.Errorf("ExtractExtensionVersion(%q) = %q, expected %q", c.filename, actual, c.expected)
+		}
+	}
+}

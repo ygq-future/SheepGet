@@ -20,6 +20,7 @@ import (
 	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
 	"sheep-get/internal/update"
+	"sheep-get/internal/version"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
 	"strings"
@@ -940,6 +941,11 @@ func (a *App) CheckExtensionUpdate() (*update.ExtensionUpdateResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return a.updater.CheckExtensionUpdate(ctx)
+}
+
+// GetAppVersion returns the current version of the desktop application.
+func (a *App) GetAppVersion() string {
+	return version.Version
 }
 
 // GetInstalledExtensionVersion returns the version of the currently bundled extension.

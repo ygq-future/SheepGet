@@ -177,8 +177,6 @@ test('version check rejects drifted copies and --set rewrites every source', () 
     assert.equal(readInfo(fixture).version, target);
     assert.match(read('build/windows/info.json'), /"ProductVersion": "2\.5\.0"/);
     assert.match(read('internal/version/version.go'), /Version = "2\.5\.0"/);
-    assert.match(read('extension/wxt.config.ts'), /version: '2\.5\.0'/);
-    assert.match(read('extension/entrypoints/popup/App.tsx'), />v2\.5\.0<\/span>/);
     assert.match(read('.github/workflows/release.yml'), /default: 'v2\.5\.0'/);
     assert.match(read('README.md'), /SheepGet_2\.5\.0_x64-setup\.exe/);
     assert.equal(readInfo(root).version, version);

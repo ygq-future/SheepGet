@@ -35,21 +35,6 @@ const MIRRORS = [
     pattern: /"ProductVersion":\s*"(?<version>\d+\.\d+\.\d+)"/dg,
   },
   {
-    file: 'extension/package.json',
-    label: 'version',
-    pattern: /"version":\s*"(?<version>\d+\.\d+\.\d+)"/dg,
-  },
-  {
-    file: 'extension/wxt.config.ts',
-    label: 'manifest.version',
-    pattern: /version:\s*'(?<version>\d+\.\d+\.\d+)'/dg,
-  },
-  {
-    file: 'extension/entrypoints/popup/App.tsx',
-    label: 'displayed version',
-    pattern: /v(?<version>\d+\.\d+\.\d+)<\/span>/dg,
-  },
-  {
     file: '.github/workflows/release.yml',
     label: 'release tag',
     pattern: /v(?<version>\d+\.\d+\.\d+)(?=')/dg,
@@ -135,7 +120,9 @@ export function checkVersion(root) {
   }
   if (drift.length) {
     throw new Error(
-      `${drift.length} version source(s) disagree with ${SSOT_FILE} (${version}):\n  ${drift.join('\n  ')}`,
+      `${drift.length} version source(s) disagree with ${SSOT_FILE} (${version}):\n  ${drift.join(
+        '\n  ',
+      )}`,
     );
   }
   return version;

@@ -5,7 +5,7 @@
 - 项目已完成工程脚手架初始化并配置质量门禁，且已交付 Ticket 01（核心下载引擎与主界面）、01A（Wails v3 架构迁移）、02（独立文件信息窗口与重复链接策略闭环）、02A（配置中心）、03（共享下载进度窗口）、04（文件与分类）、05（常规与下载行为）、06（浏览器扩展与媒体入口）、07（HLS 媒体下载完整流程）以及 Ticket 08（跨平台安装包与整体验收）的完整实现与闭环验证。
 - 项目第一版产品规划中所有实施阶段均已全部落地并完成质量门禁校验。
 - 当前目标为 Windows、macOS、Linux 桌面下载管理器，技术方向为 Wails v3 Beta (`v3.0.0-beta.20`) + Go (1.27) + Web 前端，配套浏览器为 Chrome 和 Edge。
-- 产品范围与验收以 GitHub 母 issue #1 为依据；任务范围与状态以对应实施 issue（#2～#11）为准。
+- 产品范围与验收以 GitHub 母 issue #1 为依据；任务范围与状态以对应实施 issue（#2 ～#11）为准。
 - 探索领域前读取 `CONTEXT.md` 和相关 `docs/adr/`。术语表仅记录领域语言，架构决策写入 ADR，功能与验收直接在 GitHub Issues 闭环跟踪。
 - 最新用户明确决定优先于旧文档；发现冲突应指出具体出处和影响，不得静默更换产品规则或扩大支持范围。
 - 技术选型已确认：
@@ -96,7 +96,7 @@
 版本一致性由 `scripts/version.mjs` 统一判定，不再依赖人工清单：
 
 1. **唯一事实来源（SSOT）**：`build/config.yml` (`info.version`)。版本号格式固定为 `X.Y.Z` 三段数字——Windows PE 版本资源、MSI `ProductVersion` 与 Chrome manifest 都只接受该形式。`scripts/package.mjs` 与版本模块共用同一套 `info` 块解析，并向下注入 Windows PE Version Info (`.syso`)、NSIS (`INFO_PRODUCTVERSION`) 以及 WiX MSI (`ProductVersion`)，不存在第二份版本读取实现。
-2. **镜像位置只在模块内声明一次**：`scripts/version.mjs` 的 `MIRRORS` 表是全部镜像的唯一定义，当前覆盖根 `package.json`、`build/windows/info.json`（`file_version` 与 `ProductVersion`）、`internal/version/version.go`、扩展 `package.json` 与 `wxt.config.ts`、扩展 popup 的版本显示、`.github/workflows/release.yml` 的发布 tag、`README.md` 的安装包命名示例。新增版本出现位置时必须在该表登记，不得另建文字清单。
+2. **镜像位置只在模块内声明一次**：`scripts/version.mjs` 的 `MIRRORS` 表是全部镜像的唯一定义，当前覆盖根 `package.json`、`build/windows/info.json`（`file_version` 与 `ProductVersion`）、`internal/version/version.go`、`.github/workflows/release.yml` 的发布 tag、`README.md` 的安装包命名示例；浏览器扩展已实现解耦，由 `extension/package.json` 独立维护版本与 `ext-v*` 工作流发布，不再受桌面端发版强制捆绑。新增版本出现位置时必须在该表登记，不得另建文字清单。
 3. **升级与核验**：
    - `node scripts/version.mjs --set X.Y.Z` 一次性改写 SSOT 与全部镜像，改写后自动复核；
    - `node scripts/version.mjs --check` 是质量门禁阶段（stage `version`），任一处漂移或声明被改名都会直接失败；

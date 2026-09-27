@@ -1,8 +1,20 @@
 package update
 
 import (
+	"regexp"
 	"strings"
 )
+
+var extVersionRegex = regexp.MustCompile(`(?i)(?:^|[_-])v?(\d+\.\d+\.\d+)(?:[_-]|\.zip$)`)
+
+// ExtractExtensionVersion parses the semantic version string from an extension asset name.
+func ExtractExtensionVersion(assetName string) string {
+	matches := extVersionRegex.FindStringSubmatch(assetName)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+	return ""
+}
 
 // MatchAppAsset finds the best matching release asset for the given platform and mode.
 func MatchAppAsset(assets []GitHubAsset, goos, goarch string, isPortable bool) *GitHubAsset {

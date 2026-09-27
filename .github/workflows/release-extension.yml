@@ -1,0 +1,77 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'ext-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Extension release tag (e.g. ext-v1.0.0)'
+        required: false
+        default: 'ext-v1.0.0'
+
+concurrency:
+  group: release-ext-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Package Extension
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.2'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build extension
+        run: bun run --cwd extension build
+
+      - name: Package extension artifact
+        id: package_ext
+        shell: bash
+        run: |
+          mkdir -p build/dist
+          EXT_VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('extension/package.json','utf8')).version)")
+          ZIP_NAME="SheepGet_${EXT_VERSION}_extension-chrome-mv3.zip"
+          ZIP_PATH="build/dist/${ZIP_NAME}"
+          tar -a -c -f "${ZIP_PATH}" -C build/dist-extension/chrome-mv3 .
+          echo "zip_path=${ZIP_PATH}" >> $GITHUB_OUTPUT
+          echo "ext_version=${EXT_VERSION}" >> $GITHUB_OUTPUT
+          cd build/dist
+          sha256sum "${ZIP_NAME}" > SHA256SUMS.txt
+
+      - name: Determine Tag Name
+        id: tag_info
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="${{ github.event.inputs.tag || 'ext-v1.0.0' }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Upload Extension to Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag_info.outputs.tag }}
+          name: 'SheepGet Extension ${{ steps.tag_info.outputs.tag }}'
+          body: 'Browser extension release v${{ steps.package_ext.outputs.ext_version }}'
+          draft: false
+          prerelease: false
+          files: |
+            build/dist/*.zip
+            build/dist/SHA256SUMS.txt

@@ -195,8 +195,17 @@ async function main() {
 
   const artifacts = [];
 
-  // Standalone browser extension zip for decoupled extension updates
-  const extZipName = `SheepGet_${version}_extension-chrome-mv3.zip`;
+  // Standalone browser extension zip for decoupled extension updates (independent extension version)
+  let extVersion = '1.0.0';
+  try {
+    const extManifest = JSON.parse(readFileSync(join(extTargetDir, 'manifest.json'), 'utf8'));
+    if (extManifest.version) {
+      extVersion = extManifest.version;
+    }
+  } catch {
+    extVersion = version;
+  }
+  const extZipName = `SheepGet_${extVersion}_extension-chrome-mv3.zip`;
   const extZipPath = join(distDir, extZipName);
   run('tar', ['-a', '-c', '-f', extZipPath, '-C', extTargetDir, '.']);
   if (existsSync(extZipPath)) {

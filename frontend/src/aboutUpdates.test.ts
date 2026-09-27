@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as appBindings from '../bindings/sheep-get/app';
 import * as updateModels from '../bindings/sheep-get/internal/update/models';
 
 describe('update models and contracts', () => {
@@ -55,16 +56,8 @@ describe('update models and contracts', () => {
     expect(res.assetName).toContain('extension');
   });
 
-  it('instantiates DownloadProgress correctly', () => {
-    const progress = new updateModels.DownloadProgress({
-      downloadedBytes: 5242880,
-      totalBytes: 10485760,
-      percentage: 50.0,
-      speedBps: 1048576,
-    });
-
-    expect(progress.percentage).toBe(50.0);
-    expect(progress.downloadedBytes).toBe(5242880);
-    expect(progress.speedBps).toBe(1048576);
+  it('exports GetAppVersion and GetInstalledExtensionVersion bindings', () => {
+    expect(typeof appBindings.GetAppVersion).toBe('function');
+    expect(typeof appBindings.GetInstalledExtensionVersion).toBe('function');
   });
 });

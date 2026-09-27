@@ -27,14 +27,21 @@ import * as server$0 from "./internal/server/models.js";
 import * as task$0 from "./internal/task/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as window$0 from "./internal/window/models.js";
+import * as update$0 from "./internal/update/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as update$0 from "./internal/update/models.js";
+import * as window$0 from "./internal/window/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
+
+/**
+ * ApplyAppUpdate applies the downloaded app update (launches portable updater or installer).
+ */
+export function ApplyAppUpdate(downloadedPath: string): $CancellablePromise<void> {
+    return $Call.ByID(2113984303, downloadedPath);
+}
 
 /**
  * AssignExtensionToCategory assigns an extension to a target category and updates settings.
@@ -51,11 +58,36 @@ export function CancelCurrentFileInfo(): $CancellablePromise<void> {
 }
 
 /**
+ * CheckAppUpdate checks for desktop application updates.
+ */
+export function CheckAppUpdate(): $CancellablePromise<update$0.AppUpdateResult | null> {
+    return $Call.ByID(3342248195).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * CheckDirectoryHasFiles checks whether the specified directory exists and contains any files or folders.
+ */
+export function CheckDirectoryHasFiles(dir: string): $CancellablePromise<boolean> {
+    return $Call.ByID(1363914297, dir);
+}
+
+/**
+ * CheckExtensionUpdate checks for updates to the browser extension.
+ */
+export function CheckExtensionUpdate(): $CancellablePromise<update$0.ExtensionUpdateResult | null> {
+    return $Call.ByID(438902857).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
  * CheckFileConflict checks if filename exists in dir and returns conflict status and suggested name.
  */
 export function CheckFileConflict(dir: string, filename: string): $CancellablePromise<$models.FileConflictResult> {
     return $Call.ByID(3123179907, dir, filename).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType4($result);
     });
 }
 
@@ -64,7 +96,7 @@ export function CheckFileConflict(dir: string, filename: string): $CancellablePr
  */
 export function CheckURLFilesExist(urlStr: string, dir: string, filename: string): $CancellablePromise<$models.FileConflictResult> {
     return $Call.ByID(3122187214, urlStr, dir, filename).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType4($result);
     });
 }
 
@@ -73,11 +105,18 @@ export function DeleteTask(id: string, deleteDiskFile: boolean): $CancellablePro
 }
 
 /**
+ * DownloadAppUpdate downloads the app update and broadcasts progress events.
+ */
+export function DownloadAppUpdate(assetURL: string): $CancellablePromise<string> {
+    return $Call.ByID(43663745, assetURL);
+}
+
+/**
  * ExecuteCleanup executes deletion of selected cleanable items.
  */
 export function ExecuteCleanup(opts: engine$0.CleanupExecuteOptions): $CancellablePromise<engine$0.CleanupExecuteResult | null> {
     return $Call.ByID(130478972, opts).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType6($result);
     });
 }
 
@@ -86,8 +125,22 @@ export function ExecuteCleanup(opts: engine$0.CleanupExecuteOptions): $Cancellab
  */
 export function GetActiveFileInfo(): $CancellablePromise<window$0.FileInfoItem | null> {
     return $Call.ByID(1899710323).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType8($result);
     });
+}
+
+/**
+ * GetAppVersion returns the current version of the desktop application.
+ */
+export function GetAppVersion(): $CancellablePromise<string> {
+    return $Call.ByID(1780012486);
+}
+
+/**
+ * GetInstalledExtensionVersion returns the version of the currently bundled extension.
+ */
+export function GetInstalledExtensionVersion(): $CancellablePromise<string> {
+    return $Call.ByID(2372708620);
 }
 
 /**
@@ -95,7 +148,7 @@ export function GetActiveFileInfo(): $CancellablePromise<window$0.FileInfoItem |
  */
 export function GetServerStatus(): $CancellablePromise<server$0.Status> {
     return $Call.ByID(880383150).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType9($result);
     });
 }
 
@@ -104,7 +157,7 @@ export function GetServerStatus(): $CancellablePromise<server$0.Status> {
  */
 export function GetSettings(): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType10($result);
     });
 }
 
@@ -113,7 +166,7 @@ export function GetSettings(): $CancellablePromise<config$0.Settings> {
  */
 export function GetStorageInfo(): $CancellablePromise<{ [_ in string]?: string }> {
     return $Call.ByID(3330596760).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType11($result);
     });
 }
 
@@ -136,8 +189,17 @@ export function IsProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> {
  */
 export function ListTasks(): $CancellablePromise<(task$0.Task | null)[]> {
     return $Call.ByID(3109076673).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType14($result);
     });
+}
+
+/**
+ * MigrateDownloadDirectory moves all files and folders from oldDir to newDir.
+ * It prioritizes instant filesystem renaming (near-zero latency on the same volume)
+ * and falls back to streaming copy + delete across different drives.
+ */
+export function MigrateDownloadDirectory(oldDir: string, newDir: string): $CancellablePromise<void> {
+    return $Call.ByID(3325850245, oldDir, newDir);
 }
 
 /**
@@ -202,7 +264,7 @@ export function OpenFolder(folderPath: string): $CancellablePromise<void> {
  */
 export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(3018225713).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType16($result);
     });
 }
 
@@ -242,7 +304,7 @@ export function ProbeMediaDuration(urlStr: string, filename: string, totalBytes:
  */
 export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResult | null> {
     return $Call.ByID(3944315818, urlStr).then(($result: any) => {
-        return $$createType14($result);
+        return $$createType18($result);
     });
 }
 
@@ -252,7 +314,7 @@ export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResu
  */
 export function ResolveDestination(filename: string): $CancellablePromise<$models.DestinationInfo> {
     return $Call.ByID(177293617, filename).then(($result: any) => {
-        return $$createType15($result);
+        return $$createType19($result);
     });
 }
 
@@ -263,7 +325,7 @@ export function ResolveDestination(filename: string): $CancellablePromise<$model
  */
 export function ResolveDuplicateDecision(urlStr: string, dir: string, filename: string): $CancellablePromise<duplicate$0.Decision> {
     return $Call.ByID(687526930, urlStr, dir, filename).then(($result: any) => {
-        return $$createType16($result);
+        return $$createType20($result);
     });
 }
 
@@ -301,7 +363,7 @@ export function RetryTask(id: string): $CancellablePromise<void> {
  */
 export function ScanCleanup(opts: engine$0.CleanupScanOptions): $CancellablePromise<engine$0.CleanupScanResult | null> {
     return $Call.ByID(1154903260, opts).then(($result: any) => {
-        return $$createType18($result);
+        return $$createType22($result);
     });
 }
 
@@ -367,7 +429,7 @@ export function Shutdown(): $CancellablePromise<void> {
  */
 export function SubmitFileInfo(sub: window$0.FileInfoSubmission): $CancellablePromise<task$0.Task | null> {
     return $Call.ByID(915235023, sub).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType13($result);
     });
 }
 
@@ -376,7 +438,7 @@ export function SubmitFileInfo(sub: window$0.FileInfoSubmission): $CancellablePr
  */
 export function SwitchFileInfoActive(index: number): $CancellablePromise<window$0.FileInfoItem | null> {
     return $Call.ByID(2168286885, index).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType8($result);
     });
 }
 
@@ -392,8 +454,15 @@ export function ToggleProgressWindowAlwaysOnTop(): $CancellablePromise<boolean> 
  */
 export function TriggerDownload(req: window$0.DownloadRequest): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(2473743423, req).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType16($result);
     });
+}
+
+/**
+ * UpdateExtension downloads and updates the browser extension, broadcasting progress events.
+ */
+export function UpdateExtension(assetURL: string): $CancellablePromise<void> {
+    return $Call.ByID(1714638529, assetURL);
 }
 
 /**
@@ -401,7 +470,7 @@ export function TriggerDownload(req: window$0.DownloadRequest): $CancellableProm
  */
 export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2894041249, s).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType10($result);
     });
 }
 
@@ -412,82 +481,27 @@ export function ValidateDirectory(dirPath: string): $CancellablePromise<[boolean
     return $Call.ByID(2018273234, dirPath);
 }
 
-/**
- * CheckAppUpdate checks for desktop application updates.
- */
-export function CheckAppUpdate(): $CancellablePromise<update$0.AppUpdateResult> {
-    return $Call.ByName("main.App.CheckAppUpdate").then(($result: unknown) => {
-        return new update$0.AppUpdateResult($result as Partial<update$0.AppUpdateResult>);
-    });
-}
-
-/**
- * CheckExtensionUpdate checks for updates to the browser extension.
- */
-export function CheckExtensionUpdate(): $CancellablePromise<update$0.ExtensionUpdateResult> {
-    return $Call.ByName("main.App.CheckExtensionUpdate").then(($result: unknown) => {
-        return new update$0.ExtensionUpdateResult($result as Partial<update$0.ExtensionUpdateResult>);
-    });
-}
-/**
- * GetInstalledExtensionVersion returns the version of the currently bundled extension.
- */
-export function GetInstalledExtensionVersion(): $CancellablePromise<string> {
-    return $Call.ByName("main.App.GetInstalledExtensionVersion");
-}
-
-/**
- * DownloadAppUpdate downloads the app update and broadcasts progress events.
- */
-export function DownloadAppUpdate(assetURL: string): $CancellablePromise<string> {
-    return $Call.ByName("main.App.DownloadAppUpdate", assetURL);
-}
-
-/**
- * ApplyAppUpdate applies the downloaded app update (launches portable updater or installer).
- */
-export function ApplyAppUpdate(downloadedPath: string): $CancellablePromise<void> {
-    return $Call.ByName("main.App.ApplyAppUpdate", downloadedPath);
-}
-
-/**
- * UpdateExtension downloads and updates the browser extension, broadcasting progress events.
- */
-export function UpdateExtension(assetURL: string): $CancellablePromise<void> {
-    return $Call.ByName("main.App.UpdateExtension", assetURL);
-}
-
-/**
- * CheckDirectoryHasFiles checks whether the specified directory exists and contains any files or folders.
- */
-export function CheckDirectoryHasFiles(dir: string): $CancellablePromise<boolean> {
-    return $Call.ByName("main.App.CheckDirectoryHasFiles", dir);
-}
-
-/**
- * MigrateDownloadDirectory moves all files and folders from oldDir to newDir.
- */
-export function MigrateDownloadDirectory(oldDir: string, newDir: string): $CancellablePromise<void> {
-    return $Call.ByName("main.App.MigrateDownloadDirectory", oldDir, newDir);
-}
-
 // Private type creation functions
-const $$createType0 = $models.FileConflictResult.createFrom;
-const $$createType1 = engine$0.CleanupExecuteResult.createFrom;
-const $$createType2 = $Create.Nullable($$createType1);
-const $$createType3 = window$0.FileInfoItem.createFrom;
-const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = server$0.Status.createFrom;
-const $$createType6 = config$0.Settings.createFrom;
-const $$createType7 = $Create.Map($Create.Any, $Create.Any);
-const $$createType8 = task$0.Task.createFrom;
-const $$createType9 = $Create.Nullable($$createType8);
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = window$0.DownloadResponse.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = engine$0.ProbeResult.createFrom;
-const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = $models.DestinationInfo.createFrom;
-const $$createType16 = duplicate$0.Decision.createFrom;
-const $$createType17 = engine$0.CleanupScanResult.createFrom;
+const $$createType0 = update$0.AppUpdateResult.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = update$0.ExtensionUpdateResult.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = $models.FileConflictResult.createFrom;
+const $$createType5 = engine$0.CleanupExecuteResult.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = window$0.FileInfoItem.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = server$0.Status.createFrom;
+const $$createType10 = config$0.Settings.createFrom;
+const $$createType11 = $Create.Map($Create.Any, $Create.Any);
+const $$createType12 = task$0.Task.createFrom;
+const $$createType13 = $Create.Nullable($$createType12);
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = window$0.DownloadResponse.createFrom;
+const $$createType16 = $Create.Nullable($$createType15);
+const $$createType17 = engine$0.ProbeResult.createFrom;
 const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = $models.DestinationInfo.createFrom;
+const $$createType20 = duplicate$0.Decision.createFrom;
+const $$createType21 = engine$0.CleanupScanResult.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
