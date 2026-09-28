@@ -112,7 +112,9 @@ const stages = {
     });
   },
   version() {
-    node('scripts/version.mjs', ['--check']);
+    const isRelease =
+      process.env.GITHUB_REF?.startsWith('refs/tags/') || process.argv.includes('--release');
+    node('scripts/version.mjs', ['--check', ...(isRelease ? ['--release'] : [])]);
   },
   protocol() {
     node('scripts/protocol.mjs', ['--check']);

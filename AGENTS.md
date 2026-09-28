@@ -96,10 +96,15 @@
 版本一致性由 `scripts/version.mjs` 统一判定，不再依赖人工清单：
 
 1. **唯一事实来源（SSOT）**：`build/config.yml` (`info.version`)。版本号格式固定为 `X.Y.Z` 三段数字——Windows PE 版本资源、MSI `ProductVersion` 与 Chrome manifest 都只接受该形式。`scripts/package.mjs` 与版本模块共用同一套 `info` 块解析，并向下注入 Windows PE Version Info (`.syso`)、NSIS (`INFO_PRODUCTVERSION`) 以及 WiX MSI (`ProductVersion`)，不存在第二份版本读取实现。
-2. **镜像位置只在模块内声明一次**：`scripts/version.mjs` 的 `MIRRORS` 表是全部镜像的唯一定义，当前覆盖根 `package.json`、`build/windows/info.json`（`file_version` 与 `ProductVersion`）、`internal/version/version.go`、`.github/workflows/release.yml` 的发布 tag、`README.md` 的安装包命名示例；浏览器扩展已实现解耦，由 `extension/package.json` 独立维护版本与 `ext-v*` 工作流发布，不再受桌面端发版强制捆绑。新增版本出现位置时必须在该表登记，不得另建文字清单。
+2. **双轨发布与镜像唯一定义**：
+   - **桌面端**：`scripts/version.mjs` 的 `MIRRORS` 表是全部镜像的唯一定义，当前覆盖根 `package.json`、`build/windows/info.json`（`file_version` 与 `ProductVersion`）、`internal/version/version.go`、`.github/workflows/release.yml` 的发布 tag、`README.md` 的安装包命名示例；
+   - **浏览器扩展端**：浏览器扩展已实现解耦，版本完全由 `extension/package.json` 独立维护，发布由 `ext-v*` tag 驱动独立工作流（`release-extension.yml`）；
+   - **发版前强制范围审计（Pre-release Scope Audit）**：在执行发版前，必须先执行 `git diff <last-release-tag>..HEAD` 审计变更集分布。若涉及桌面端代码，按桌面端发版流程演进；若涉及 `extension/` 源码或依赖，必须明确升级 `extension/package.json` 并发布对应扩展版本（`ext-v*`）；若双端均有改动，必须向用户明确汇报双端发版计划，严禁默认为仅发桌面端单轨；
+   - **扩展版本防漂移硬约束**：凡自上一个扩展发布 tag（或解耦基线）以来 `extension/` 存在代码变更，`extension/package.json` 必须完成版本号自增；质量门禁 stage `version` 会自动对比 Git 历史进行强校验，未自增版本将直接阻断门禁与发版。
 3. **升级与核验**：
-   - `node scripts/version.mjs --set X.Y.Z` 一次性改写 SSOT 与全部镜像，改写后自动复核；
-   - `node scripts/version.mjs --check` 是质量门禁阶段（stage `version`），任一处漂移或声明被改名都会直接失败；
+   - 桌面端升级：`node scripts/version.mjs --set X.Y.Z` 一次性改写 SSOT 与全部镜像，改写后自动复核；
+   - 扩展端升级：`node scripts/version.mjs --set-ext X.Y.Z` 改写 `extension/package.json` 并复核；
+   - 全链路核验：`node scripts/version.mjs --check` 作为质量门禁阶段（stage `version`），任一处桌面端镜像漂移、声明改名或扩展版本漂移都会直接阻断失败；
    - 禁止手工逐处修改版本号，禁止在其他文档里维护第二份同步清单。
 4. **发版验收硬指标（人工，Windows）**：
    - 发布前必须在 Windows 下检查生成的 `SheepGet.exe`“属性 -> 详细信息”中的“产品版本”与“文件版本”，确认已与目标版本号严格一致，严禁残留模板占位符；

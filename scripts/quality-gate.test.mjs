@@ -186,6 +186,45 @@ test('version check rejects drifted copies and --set rewrites every source', () 
   }
 });
 
+test('extension version check validates format and detects drift', () => {
+  const base = join(root, '.tools');
+  mkdirSync(base, { recursive: true });
+  const fixture = mkdtempSync(join(base, 'ext-version-probe-'));
+  const cli = join(fixture, 'scripts/version.mjs');
+  try {
+    for (const file of [...versionFiles(), 'scripts/version.mjs']) {
+      mkdirSync(dirname(join(fixture, file)), { recursive: true });
+      copyFileSync(join(root, file), join(fixture, file));
+    }
+    const extDir = join(fixture, 'extension');
+    mkdirSync(extDir, { recursive: true });
+    writeFileSync(
+      join(extDir, 'package.json'),
+      JSON.stringify({ name: 'test-ext', version: 'invalid-ver' }),
+      'utf8',
+    );
+
+    // Rejects invalid version format
+    const invalidVer = exec(process.execPath, [cli, '--check']);
+    assert.notEqual(invalidVer.status, 0);
+    assert.match(invalidVer.stderr, /must be X\.Y\.Z/);
+
+    // Accepts valid version format via --set-ext
+    const setExt = exec(process.execPath, [cli, '--set-ext', '1.0.1']);
+    assert.equal(setExt.status, 0, setExt.stderr);
+    const parsed = JSON.parse(readFileSync(join(extDir, 'package.json'), 'utf8'));
+    assert.equal(parsed.version, '1.0.1');
+
+    // --check passes when valid
+    const valid = exec(process.execPath, [cli, '--check']);
+    assert.equal(valid.status, 0, valid.stderr);
+    assert.match(valid.stdout, /extension 1\.0\.1/);
+  } finally {
+    assert.ok(resolve(fixture).startsWith(resolve(base) + sep));
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test('frozen dependency validation rejects manifest drift', () => {
   const base = join(root, '.tools');
   const fixture = mkdtempSync(join(base, 'lock-probe-'));
