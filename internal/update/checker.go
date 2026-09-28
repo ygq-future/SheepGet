@@ -128,17 +128,26 @@ func (c *Checker) CheckAppUpdate(ctx context.Context, currentVersion string, goo
 		return nil, err
 	}
 
-	// Find the newest desktop application release (skips standalone extension tags like ext-v*)
+	// Find the desktop application release with the highest semantic version (skips standalone extension tags like ext-v*)
 	var rel *GitHubRelease
+	var bestAppVer string
 	for i := range releases {
 		tagLower := strings.ToLower(releases[i].TagName)
 		if strings.HasPrefix(tagLower, "ext-") {
 			continue
 		}
-		rel = &releases[i]
-		break
+		ver := strings.TrimPrefix(releases[i].TagName, "v")
+		if bestAppVer == "" {
+			rel = &releases[i]
+			bestAppVer = ver
+			continue
+		}
+		cmp, err := CompareVersions(ver, bestAppVer)
+		if err == nil && cmp > 0 {
+			rel = &releases[i]
+			bestAppVer = ver
+		}
 	}
-
 	if rel == nil {
 		return &AppUpdateResult{
 			HasUpdate:      false,
@@ -174,26 +183,45 @@ func (c *Checker) CheckAppUpdate(ctx context.Context, currentVersion string, goo
 	return res, nil
 }
 
-// CheckExtensionUpdate compares currentExtVersion with the latest release extension asset.
+// CheckExtensionUpdate compares currentExtVersion with the highest version extension asset across all releases.
 func (c *Checker) CheckExtensionUpdate(ctx context.Context, currentExtVersion string) (*ExtensionUpdateResult, error) {
 	releases, err := c.FetchReleases(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Find the newest release containing a browser extension asset
-	var rel *GitHubRelease
-	var matched *GitHubAsset
+	var bestRel *GitHubRelease
+	var bestMatched *GitHubAsset
+	var bestVer string
+
 	for i := range releases {
 		m := MatchExtensionAsset(releases[i].Assets)
-		if m != nil {
-			rel = &releases[i]
-			matched = m
-			break
+		if m == nil {
+			continue
+		}
+
+		v := ExtractExtensionVersion(m.Name)
+		if v == "" {
+			v = strings.TrimPrefix(releases[i].TagName, "v")
+			v = strings.TrimPrefix(v, "ext-v")
+		}
+
+		if bestVer == "" {
+			bestRel = &releases[i]
+			bestMatched = m
+			bestVer = v
+			continue
+		}
+
+		cmp, err := CompareVersions(v, bestVer)
+		if err == nil && cmp > 0 {
+			bestRel = &releases[i]
+			bestMatched = m
+			bestVer = v
 		}
 	}
 
-	if rel == nil || matched == nil {
+	if bestRel == nil || bestMatched == nil {
 		return &ExtensionUpdateResult{
 			HasUpdate:      false,
 			CurrentVersion: currentExtVersion,
@@ -201,26 +229,19 @@ func (c *Checker) CheckExtensionUpdate(ctx context.Context, currentExtVersion st
 		}, nil
 	}
 
-	extVer := ExtractExtensionVersion(matched.Name)
-	if extVer == "" {
-		// Fallback to release tag name if asset name does not contain parseable version
-		extVer = strings.TrimPrefix(rel.TagName, "v")
-	}
-
-	cmp, err := CompareVersions(extVer, currentExtVersion)
+	cmp, err := CompareVersions(bestVer, currentExtVersion)
 	if err != nil {
 		return nil, fmt.Errorf("compare versions failed: %w", err)
 	}
-
 	res := &ExtensionUpdateResult{
 		HasUpdate:      cmp > 0,
 		CurrentVersion: currentExtVersion,
-		LatestVersion:  extVer,
-		ReleaseTitle:   rel.Name,
-		ReleaseNotes:   rel.Body,
-		AssetName:      matched.Name,
-		AssetURL:       matched.BrowserDownloadURL,
-		AssetSize:      matched.Size,
+		LatestVersion:  bestVer,
+		ReleaseTitle:   bestRel.Name,
+		ReleaseNotes:   bestRel.Body,
+		AssetName:      bestMatched.Name,
+		AssetURL:       bestMatched.BrowserDownloadURL,
+		AssetSize:      bestMatched.Size,
 	}
 
 	return res, nil

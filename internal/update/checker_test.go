@@ -168,4 +168,47 @@ func TestChecker_CheckAppUpdate(t *testing.T) {
 			t.Errorf("expected Ext LatestVersion = 1.0.2, got %s", extRes.LatestVersion)
 		}
 	})
+
+	t.Run("Release order independence: older extension asset in newer desktop release does not shadow higher extension release", func(t *testing.T) {
+		releases := []GitHubRelease{
+			{
+				TagName: "v1.0.2",
+				Name:    "SheepGet v1.0.2",
+				Assets: []GitHubAsset{
+					{Name: "SheepGet_1.0.2_windows-x64-portable.zip", BrowserDownloadURL: "https://dl/win-port-1.0.2.zip"},
+					{Name: "SheepGet_1.0.0_extension-chrome-mv3.zip", BrowserDownloadURL: "https://dl/ext-1.0.0.zip"},
+				},
+			},
+			{
+				TagName: "ext-v1.0.1",
+				Name:    "SheepGet Extension ext-v1.0.1",
+				Assets: []GitHubAsset{
+					{Name: "SheepGet_1.0.1_extension-chrome-mv3.zip", BrowserDownloadURL: "https://dl/ext-1.0.1.zip"},
+				},
+			},
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(releases)
+		}))
+		defer server.Close()
+
+		c := NewChecker(WithBaseURL(server.URL))
+
+		// Extension check must find 1.0.1 even though 1.0.0 was in the first release
+		extRes, err := c.CheckExtensionUpdate(context.Background(), "1.0.0")
+		if err != nil {
+			t.Fatalf("CheckExtensionUpdate failed: %v", err)
+		}
+		if !extRes.HasUpdate {
+			t.Errorf("expected HasUpdate = true")
+		}
+		if extRes.LatestVersion != "1.0.1" {
+			t.Errorf("expected LatestVersion = 1.0.1, got %s", extRes.LatestVersion)
+		}
+		if extRes.AssetName != "SheepGet_1.0.1_extension-chrome-mv3.zip" {
+			t.Errorf("expected AssetName to be 1.0.1 zip, got %s", extRes.AssetName)
+		}
+	})
 }
