@@ -2,6 +2,7 @@ import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type * as backgroundModule from '../entrypoints/background';
 import { KEY_MASKS } from './shortcuts';
+import { applyConfig } from './takeoverConfig';
 import { STORAGE_KEYS } from './storage';
 import type { ExtensionMessage, TakeoverConfigSync } from './types';
 
@@ -122,7 +123,7 @@ function createHarness(options: {
   stored: Record<string, unknown>;
   /** 卡住首次规则读取：模拟「这次唤醒就是下载事件，存储还没读回来」。 */
   configReadGate?: Promise<void>;
-  tabs?: number[];
+  tabs?: (number | { id: number; url?: string })[];
   pageKeyMask?: number;
 }): Harness {
   const created = Promise.withResolvers<(item: chrome.downloads.DownloadItem) => void>();
@@ -132,8 +133,8 @@ function createHarness(options: {
   const paused: number[] = [];
   const pageQueries: { tabId: number; type: string }[] = [];
   const pageKeyMask = options.pageKeyMask ?? 0;
-  const tabs = options.tabs ?? [7];
-
+  const rawTabs = options.tabs ?? [7];
+  const tabObjects = rawTabs.map((t) => (typeof t === 'number' ? { id: t } : t));
   const fakeChrome = {
     runtime: {
       onMessage: {
@@ -156,7 +157,8 @@ function createHarness(options: {
         }
         return { keyMask: pageKeyMask };
       },
-      query: async () => tabs.map((id) => ({ id })),
+      query: async () => tabObjects,
+      get: async (tabId: number) => tabObjects.find((t) => t.id === tabId) ?? { id: tabId },
     },
     downloads: {
       onCreated: {
@@ -359,6 +361,68 @@ describe('冷启动的下载事件', () => {
       const second = await withTimeout(log.at(1), '第二次下载照样要判定');
       assert.equal(second.reason, 'force_shortcut_active');
       assert.equal(browser.pageQueries.length, 2, '每次判定都要现问一次页面：上一次的答案会过期');
+    } finally {
+      restore();
+      log.restore();
+    }
+  });
+
+  it('当下载项没有 referrer 时，优先从当前激活标签页读取地址栏并按该页面进行站点排除', async () => {
+    await applyConfig({
+      ...rules(8, ['zip']),
+      excludedSites: ['excluded.example.com'],
+    });
+    const browser = createHarness({
+      stored: {},
+      tabs: [{ id: 7, url: 'https://excluded.example.com/download-page' }],
+    });
+    const log = captureDecisionLog();
+    const restore = await startServiceWorker(browser.chrome);
+
+    try {
+      const intercept = await browser.created;
+      const itemWithoutReferrer = {
+        ...downloadItem,
+        referrer: '',
+      };
+      intercept(itemWithoutReferrer);
+
+      const decision = await withTimeout(log.at(0), '依据当前激活标签页的地址栏排除该站点');
+      assert.equal(decision.takeover, false);
+      assert.equal(
+        decision.reason,
+        'site_excluded',
+        '即使下载项 referrer 为空，也应当从当前激活标签页地址栏中识别出排除站点',
+      );
+    } finally {
+      restore();
+      log.restore();
+    }
+  });
+
+  it('当当前激活标签页是 chrome:// 特权页且下载无 referrer 时，安全放行规则判定', async () => {
+    await applyConfig({
+      ...rules(9, ['zip']),
+      excludedSites: ['chrome'],
+    });
+    const browser = createHarness({
+      stored: {},
+      tabs: [{ id: 7, url: 'chrome://extensions' }],
+    });
+    const log = captureDecisionLog();
+    const restore = await startServiceWorker(browser.chrome);
+
+    try {
+      const intercept = await browser.created;
+      const itemWithoutReferrer = {
+        ...downloadItem,
+        referrer: '',
+      };
+      intercept(itemWithoutReferrer);
+
+      const decision = await withTimeout(log.at(0), '特权页地址不作为有效网页源站');
+      assert.equal(decision.takeover, true);
+      assert.equal(decision.reason, 'extension_matched');
     } finally {
       restore();
       log.restore();

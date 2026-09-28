@@ -45,7 +45,7 @@ export function TaskActions({
     if (!t.pageUrl) return;
     try {
       await Browser.OpenURL(t.pageUrl);
-      showToast('已在浏览器中打开源网页');
+      showToast('已在浏览器中打开源网页', 'info');
     } catch (err) {
       console.error('Failed to open webpage:', err);
       showToast('无法打开源网页', 'error');

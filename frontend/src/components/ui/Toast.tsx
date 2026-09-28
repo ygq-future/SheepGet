@@ -85,7 +85,7 @@ export function getToastStyle(
 
 let toastListener: ((toast: ToastMessage) => void) | null = null;
 
-export function showToast(message: string, type: ToastType = 'error', title?: string) {
+export function showToast(message: string, type: ToastType = 'info', title?: string) {
   if (toastListener) {
     toastListener({
       id: Math.random().toString(36).substring(2, 9),

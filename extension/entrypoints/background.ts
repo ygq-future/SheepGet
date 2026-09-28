@@ -244,6 +244,7 @@ export default defineBackground(() => {
       return true;
     } else if (msg?.type === 'GET_MEDIA_PROBE') {
       void (async () => {
+        const livePageUrl = await resolvePageUrl(sender.tab?.id);
         sendResponse(
           await fetchMediaProbe({
             url: msg.url,
@@ -251,7 +252,7 @@ export default defineBackground(() => {
             mimeType: msg.mimeType,
             isHls: msg.isHls,
             totalBytes: msg.totalBytes,
-            pageUrl: msg.pageUrl,
+            pageUrl: livePageUrl || msg.pageUrl,
           }),
         );
       })();
@@ -268,13 +269,15 @@ export default defineBackground(() => {
         const result = await handleMediaHandover(
           msg.resource as MediaResource,
           msg.resource.variantUri,
+          sender.tab?.id,
         );
         sendResponse(result);
       })();
       return true;
     } else if (msg?.type === 'GET_HLS_VARIANTS') {
       void (async () => {
-        sendResponse(await fetchHLSVariants(msg.url, msg.pageUrl));
+        const livePageUrl = await resolvePageUrl(sender.tab?.id);
+        sendResponse(await fetchHLSVariants(msg.url, livePageUrl || msg.pageUrl));
       })();
       return true;
     } else if (msg?.type === 'GET_STATUS') {
@@ -504,9 +507,57 @@ async function updateBadge(tabId: number) {
   }
 }
 
+/** 检查给定的 URL 是否为有效的外部 HTTP/HTTPS 网页地址。 */
+function isValidWebPageUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  return url.startsWith('http://') || url.startsWith('https://');
+}
+
+/**
+ * 获取可信的来源网页地址栏 URL（PageURL）。
+ * 优先按 tabId 读取该标签页当前地址；若未指定或读取失败，则查当前激活窗口中的激活标签页。
+ * 只有以 http:// 或 https:// 开头的网络地址才视作有效源站，自动过滤 chrome:// 等特权内置页。
+ */
+async function resolvePageUrl(tabId?: number): Promise<string | undefined> {
+  if (tabId !== undefined && tabId >= 0 && chrome?.tabs?.get) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (isValidWebPageUrl(tab?.url)) {
+        return tab.url;
+      }
+    } catch {
+      // 标签页可能已关闭或无权限读取
+    }
+  }
+
+  if (chrome?.tabs?.query) {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const activeUrl = tabs?.[0]?.url;
+      if (isValidWebPageUrl(activeUrl)) {
+        return activeUrl;
+      }
+    } catch {
+      // query 失败
+    }
+    try {
+      const tabs = await chrome.tabs.query({ active: true });
+      const activeUrl = tabs?.[0]?.url;
+      if (isValidWebPageUrl(activeUrl)) {
+        return activeUrl;
+      }
+    } catch {
+      // query 失败
+    }
+  }
+
+  return undefined;
+}
+
 async function handleMediaHandover(
   resource: MediaResource,
   variantUri?: string,
+  preferredTabId?: number,
 ): Promise<HandoverResponse> {
   let cookiesStr = '';
   try {
@@ -516,6 +567,10 @@ async function handleMediaHandover(
     // Ignore cookie error
   }
 
+  const livePageUrl = await resolvePageUrl(preferredTabId ?? resource.tabId);
+  const effectivePageUrl =
+    livePageUrl || (isValidWebPageUrl(resource.pageUrl) ? resource.pageUrl : undefined);
+
   const handoverReq: HandoverRequest = {
     sourceType: 'resource_list',
     url: resource.url,
@@ -523,14 +578,14 @@ async function handleMediaHandover(
     totalBytes: resource.totalBytes,
     mimeType: resource.mimeType,
     pageContext: {
-      pageUrl: resource.pageUrl || resource.url,
+      pageUrl: effectivePageUrl || resource.url,
       pageTitle: resource.pageTitle,
     },
     credentials: {
       cookies: cookiesStr,
       headers: {
         'User-Agent': navigator.userAgent,
-        ...(resource.pageUrl ? { Referer: resource.pageUrl } : {}),
+        ...(effectivePageUrl ? { Referer: effectivePageUrl } : {}),
       },
     },
     mediaMeta: resource.isHls ? { isHls: true } : undefined,
@@ -916,6 +971,11 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   // 规则必须先就绪再判定：这次唤醒可能就是一个下载事件引起的，本地缓存里的清单
   // 还没读回来时判定，等于拿空清单回答「不接管」（见 lib/takeoverConfig.ts）。
   const config = await readyConfig();
+  // 优先从浏览器当前激活标签页读取地址栏真实 URL，避免 no-referrer 导致排除规则失效或源站丢失
+  const activePageUrl = await resolvePageUrl();
+  const hostPageUrl =
+    activePageUrl || (isValidWebPageUrl(item.referrer) ? item.referrer : undefined);
+
   // 按住的快捷键以页面为准：SW 被挂起重建后手上没有这些按键，页面里还有（见 queryPageKeyMask）。
   currentKeyMask |= await queryPageKeyMask();
   // `item.mime` 是这次响应真实的 Content-Type：后缀命中但内容其实是页面/脚本时
@@ -927,14 +987,7 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
     recentShortcutClicks,
     url,
   );
-  const decision = decideTakeover(
-    url,
-    filename,
-    item.referrer,
-    config,
-    effectiveKeyMask,
-    item.mime,
-  );
+  const decision = decideTakeover(url, filename, hostPageUrl, config, effectiveKeyMask, item.mime);
   logDownloadDecision({
     downloadId: item.id,
     url,
@@ -965,6 +1018,8 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
       // Cookie access may fail or be restricted
     }
 
+    const effectivePageUrl =
+      activePageUrl || (isValidWebPageUrl(item.referrer) ? item.referrer : undefined);
     const handoverReq: HandoverRequest = {
       sourceType: 'browser_takeover',
       url,
@@ -973,14 +1028,18 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
       totalBytes: item.totalBytes && item.totalBytes > 0 ? item.totalBytes : undefined,
       mimeType: item.mime,
       pageContext: {
-        pageUrl: item.referrer || url,
+        pageUrl: effectivePageUrl || item.referrer || url,
         referrer: item.referrer,
       },
       credentials: {
         cookies: cookiesStr,
         headers: {
           'User-Agent': navigator.userAgent,
-          ...(item.referrer ? { Referer: item.referrer } : {}),
+          ...(item.referrer
+            ? { Referer: item.referrer }
+            : effectivePageUrl
+              ? { Referer: effectivePageUrl }
+              : {}),
         },
       },
     };
