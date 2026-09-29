@@ -44,9 +44,14 @@ const (
 	// retryBaseDelay / retryMaxDelay 是传输失败后重试的退避区间：指数增长并封顶。
 	// 固定小间隔会把被限速的站点越推越远（429 只会更多），封顶则保证网络恢复后能及时续上。
 	retryBaseDelay = 300 * time.Millisecond
-	retryMaxDelay  = 10 * time.Second
+	retryMaxDelay  = 30 * time.Second
 	// retryMaxShift 限制指数增长的位移，避免移位溢出；到达它之后退避停在 retryMaxDelay。
-	retryMaxShift = 6
+	retryMaxShift = 7
+
+	// maxChunkRetries 是单分块在无有效数据推进时的最大连续重试次数。
+	// 6 次重试累计约 40~50 秒退避，最大退避封顶 30 秒；持续失败时及时退出向任务上报错误，
+	// 既给临时网络抖动与限流留足自愈窗口，又避免在断网或服务端异常时无休止卡在正在下载状态。
+	maxChunkRetries = 6
 )
 
 // retryBackoff 返回第 attempt 次（从 0 起）重试前的等待时长。
@@ -68,6 +73,43 @@ var (
 	ErrRangeNotSupported = errors.New("range not supported")
 	ErrVersionMismatch   = errors.New("file version changed during download")
 )
+
+// FatalError 表示传输期间遭遇的不可恢复错误（如 401/403/404/618 等致命状态码）。
+// 遇到此类错误时分块下载器不应继续重试，应立即中断传输上报失败。
+type FatalError struct {
+	Err error
+}
+
+func (e *FatalError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *FatalError) Unwrap() error {
+	return e.Err
+}
+
+// IsFatalError 检查目标错误是否为不可恢复错误。
+func IsFatalError(err error) bool {
+	var fatal *FatalError
+	return errors.As(err, &fatal)
+}
+
+// isFatalStatusCode 检查 HTTP 状态码是否属于不可恢复的致命状态。
+// 4xx 客户端错误（除 408 请求超时和 429 限流外）如 400, 401, 403, 404, 410 等，
+// 以及 6xx 鉴权/过期状态（如 Azure/CDN 私有错误 618 jwt:expired 等），均代表链接失效、无权访问或资源丢失，
+// 再次重试不会改变结果，必须直接中止。
+func isFatalStatusCode(code int) bool {
+	if code == http.StatusRequestTimeout || code == http.StatusTooManyRequests {
+		return false
+	}
+	if code >= 400 && code < 500 {
+		return true
+	}
+	if code >= 600 && code < 700 {
+		return true
+	}
+	return false
+}
 
 // HTTPProbeInfo holds the result of probing an HTTP/HTTPS resource.
 type HTTPProbeInfo struct {
@@ -835,7 +877,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 	}()
 
 	logger := coord.downloader.log()
-	attempt := 0
+	retries := 0
 
 	for {
 		select {
@@ -873,7 +915,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		}
 
 		// Fatal errors abort immediately
-		if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) {
+		if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) || IsFatalError(chunkErr) {
 			return chunkErr
 		}
 
@@ -882,16 +924,19 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		gained := coord.t.Chunks[chunkIdx].Downloaded - downloadedBefore
 		coord.mu.Unlock()
 		if gained > 0 {
-			attempt = 0
+			retries = 0
 		}
 
-		delay := retryBackoff(attempt)
-		attempt++
+		if retries >= maxChunkRetries {
+			return fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, retries, chunkErr)
+		}
+
+		delay := retryBackoff(retries)
+		retries++
 		logger.Warn("chunk request failed, retrying",
-			"chunk", chunkIdx, "attempt", attempt, "backoffMs", delay.Milliseconds(),
+			"chunk", chunkIdx, "retry", retries, "backoffMs", delay.Milliseconds(),
 			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
 			"ms", time.Since(requestStart).Milliseconds(), "error", logging.SafeError(chunkErr).Error())
-
 		// Transient network drop, stall or 429 rate limit: back off and retry.
 		select {
 		case <-ctx.Done():
@@ -949,6 +994,9 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	if resp.StatusCode != http.StatusPartialContent {
 		if resp.StatusCode == http.StatusOK {
 			return fmt.Errorf("%w: server returned 200 OK instead of partial content", ErrRangeNotSupported)
+		}
+		if isFatalStatusCode(resp.StatusCode) {
+			return &FatalError{Err: fmt.Errorf("download failed: server returned status %s", resp.Status)}
 		}
 		return fmt.Errorf("download failed: server returned status %s", resp.Status)
 	}

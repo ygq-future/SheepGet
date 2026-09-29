@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -351,5 +352,102 @@ func TestHTTPDownloader_ServerLastModifiedTime(t *testing.T) {
 		if info.ModTime().Year() == 2015 {
 			t.Errorf("expected local mod time (recent), got 2015")
 		}
+	}
+}
+
+func TestHTTPDownloader_FatalStatusCodeAbortsWithoutRetry(t *testing.T) {
+	fatalCodes := []struct {
+		name       string
+		statusCode int
+		statusText string
+	}{
+		{"jwt expired status 618", 618, "618 jwt:expired"},
+		{"forbidden status 403", http.StatusForbidden, "403 Forbidden"},
+		{"unauthorized status 401", http.StatusUnauthorized, "401 Unauthorized"},
+		{"not found status 404", http.StatusNotFound, "404 Not Found"},
+	}
+
+	for _, tc := range fatalCodes {
+		t.Run(tc.name, func(t *testing.T) {
+			var requestCount atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount.Add(1)
+				w.WriteHeader(tc.statusCode)
+			}))
+			defer ts.Close()
+
+			downloader := engine.NewHTTPDownloader(ts.Client())
+			destDir := t.TempDir()
+
+			dlTask := &task.Task{
+				ID:             "task-fatal-status",
+				URL:            ts.URL,
+				Filename:       "fatal.bin",
+				Directory:      destDir,
+				TotalBytes:     1024,
+				MaxConcurrency: 1,
+				Resumable:      true,
+				Chunks: []task.Chunk{
+					{Index: 0, Start: 0, End: 1023, Downloaded: 0, Completed: false},
+				},
+			}
+
+			err := downloader.Download(context.Background(), dlTask, nil)
+			if err == nil {
+				t.Fatalf("expected download to fail, got nil")
+			}
+
+			if !engine.IsFatalError(err) {
+				t.Errorf("expected error to be FatalError, got %v", err)
+			}
+
+			// 致命错误必须立即中止，禁止循环重试；由于单分块单并发，请求数应恰好为 1
+			if count := requestCount.Load(); count != 1 {
+				t.Errorf("expected exactly 1 request (no retries), got %d requests", count)
+			}
+		})
+	}
+}
+
+func TestHTTPDownloader_RetryLimitExceeded(t *testing.T) {
+	var requestCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		// 返回 503 临时服务端错误（属于可重试错误）
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	destDir := t.TempDir()
+
+	dlTask := &task.Task{
+		ID:             "task-retry-limit",
+		URL:            ts.URL,
+		Filename:       "retry_limit.bin",
+		Directory:      destDir,
+		TotalBytes:     1024,
+		MaxConcurrency: 1,
+		Resumable:      true,
+		Chunks: []task.Chunk{
+			{Index: 0, Start: 0, End: 1023, Downloaded: 0, Completed: false},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := downloader.Download(ctx, dlTask, nil)
+	if err == nil {
+		t.Fatalf("expected download to fail after max retries, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "failed after 6 retries") {
+		t.Errorf("expected error to mention retry limit (6 retries), got: %v", err)
+	}
+
+	// 首次尝试 (1) + 6 次重试 = 7 次请求，封顶停止，绝不无限循环
+	if count := requestCount.Load(); count != 7 {
+		t.Errorf("expected exactly 7 requests (1 initial + 6 retries), got %d", count)
 	}
 }

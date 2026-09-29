@@ -17,7 +17,8 @@ func TestRetryBackoff_GrowsAndCaps(t *testing.T) {
 		{1, 600 * time.Millisecond},
 		{2, 1200 * time.Millisecond},
 		{5, 9600 * time.Millisecond},
-		{6, retryMaxDelay},
+		{6, 19200 * time.Millisecond},
+		{7, retryMaxDelay},
 		{50, retryMaxDelay},
 	}
 	for _, tc := range tests {
