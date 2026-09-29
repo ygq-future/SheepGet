@@ -13,9 +13,8 @@ export default defineConfig({
     name: 'SheepGet Integration Module',
     description: 'Browser integration and media download helper for SheepGet',
     key: FIXED_PUBLIC_KEY,
-    // 接管按次进行（onCreated 里 pause → 交接成功 cancel / 失败 resume），因此申请不到
-    // downloads.ui 也够用：它的 setUiOptions 作用于整个 profile，会把「不接管」的下载也
-    // 一起压掉，用户看不到任何反馈——那正是「文件静默丢失」的来源。
+    // 接管按次进行（网页点击层超前拦截 + onCreated 极速 pause），不依赖 downloads.ui：
+    // downloads.ui 的 setUiOptions 作用于整个 profile，会压制未接管与快捷键放行的下载反馈。
     // alarms 用于链路保活探测：桌面端重启会换端口，服务 worker 被挂起后单靠启动时
     // 那一次初始化无法发现，需要周期性重算链路状态（见 entrypoints/background.ts）。
     permissions: [

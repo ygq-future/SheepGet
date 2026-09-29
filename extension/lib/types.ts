@@ -135,6 +135,15 @@ export interface HandoverMediaMessage {
   };
 }
 
+/** 网页端在捕获阶段直接拦截点击事件后发起的超前交接（从根源杜绝浏览器原生下载动画）。 */
+export interface DirectClickHandoverMessage {
+  type: 'DIRECT_CLICK_HANDOVER';
+  url: string;
+  pageUrl: string;
+  pageTitle?: string;
+  referrer?: string;
+}
+
 /** 清晰度选项，桌面端与文件信息窗口共用同一份命名。 */
 export interface HLSVariantOption {
   uri: string;
@@ -206,4 +215,5 @@ export type ExtensionMessage =
   | GetStatusMessage
   | ReconnectMessage
   | SetTargetPortMessage
-  | ShortcutClickMessage;
+  | ShortcutClickMessage
+  | DirectClickHandoverMessage;

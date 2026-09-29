@@ -428,4 +428,43 @@ describe('冷启动的下载事件', () => {
       log.restore();
     }
   });
+
+  it('当按住 Delete 键放行下载时，绝对不调用 pauseDownload，原生下载不受任何阻碍', async () => {
+    const browser = createHarness({
+      stored: { [CONFIG_KEY]: rules(10, ['zip']) },
+      pageKeyMask: KEY_MASKS.Delete,
+    });
+    const log = captureDecisionLog();
+    const restore = await startServiceWorker(browser.chrome);
+    try {
+      const intercept = await browser.created;
+      intercept(downloadItem);
+      const decision = await withTimeout(log.at(0), 'Delete 放行时应给出结论');
+      assert.equal(decision.takeover, false);
+      assert.equal(decision.reason, 'pause_shortcut_active');
+      assert.deepEqual(browser.paused, [], 'Delete 放行时绝对不可挂起下载');
+    } finally {
+      restore();
+      log.restore();
+    }
+  });
+
+  it('当内存配置已就绪且命中接管时，下载被零延迟前置冻结并顺利交接', async () => {
+    await applyConfig(rules(11, ['zip']));
+    const browser = createHarness({
+      stored: {},
+    });
+    const log = captureDecisionLog();
+    const restore = await startServiceWorker(browser.chrome);
+    try {
+      const intercept = await browser.created;
+      intercept(downloadItem);
+      const decision = await withTimeout(log.at(0), '应成功接管');
+      assert.equal(decision.takeover, true);
+      assert.deepEqual(browser.paused, [downloadItem.id], '命中接管时应冻结原生下载');
+    } finally {
+      restore();
+      log.restore();
+    }
+  });
 });

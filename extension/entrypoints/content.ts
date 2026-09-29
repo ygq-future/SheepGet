@@ -2,13 +2,18 @@ import { MediaBarManager } from '../lib/mediabar';
 import { inferPageTitle, type MediaResource } from '../lib/media';
 import { safeSendMessage } from '../lib/runtime';
 import { KEY_MASKS, keyStateReply, normalizeKeyName, updateKeyMask } from '../lib/shortcuts';
+import { decideTakeover } from '../lib/rules';
+import { DEFAULT_TAKEOVER_CONFIG, STORAGE_KEYS } from '../lib/storage';
 import type {
   BackgroundMessage,
+  DirectClickHandoverMessage,
   ExtensionMessage,
+  HandoverResponse,
   KeyStateMessage,
   KeyStateReport,
   ResetKeysMessage,
   ShortcutClickMessage,
+  TakeoverConfigSync,
 } from '../lib/types';
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -19,6 +24,26 @@ export default defineContentScript({
   matchAboutBlank: true,
   main() {
     let localKeyMask = 0;
+    let localConfig: TakeoverConfigSync = DEFAULT_TAKEOVER_CONFIG;
+
+    // 同步本地接管配置副本，供点击事件捕获阶段做零延迟同步快判
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        chrome.storage.local.get([STORAGE_KEYS.TAKEOVER_CONFIG], (res) => {
+          if (res?.[STORAGE_KEYS.TAKEOVER_CONFIG]) {
+            localConfig = res[STORAGE_KEYS.TAKEOVER_CONFIG] as TakeoverConfigSync;
+          }
+        });
+        chrome.storage.onChanged?.addListener((changes, areaName) => {
+          const cfgChange = changes[STORAGE_KEYS.TAKEOVER_CONFIG];
+          if (areaName === 'local' && cfgChange?.newValue) {
+            localConfig = cfgChange.newValue as TakeoverConfigSync;
+          }
+        });
+      }
+    } catch {
+      // Ignore storage error
+    }
 
     function cleanUpKeyListeners() {
       window.removeEventListener('keydown', handleKeyEvent, true);
@@ -57,7 +82,6 @@ export default defineContentScript({
       if (e.altKey) clickMask |= KEY_MASKS.Alt;
       if (e.ctrlKey) clickMask |= KEY_MASKS.Control;
       if (e.shiftKey) clickMask |= KEY_MASKS.Shift;
-      if (clickMask === 0) return;
 
       let targetUrl: string | undefined;
       let el: Element | null = e.target instanceof Element ? e.target : null;
@@ -69,15 +93,53 @@ export default defineContentScript({
         el = el.parentElement;
       }
 
-      const msg: ShortcutClickMessage = {
-        type: 'SHORTCUT_CLICKED',
-        keyMask: clickMask,
-        url: targetUrl,
-        timestamp: Date.now(),
-      };
-      safeSendMessage(msg, undefined, {
-        onContextInvalidated: cleanUpKeyListeners,
-      });
+      if (clickMask > 0) {
+        const msg: ShortcutClickMessage = {
+          type: 'SHORTCUT_CLICKED',
+          keyMask: clickMask,
+          url: targetUrl,
+          timestamp: Date.now(),
+        };
+        safeSendMessage(msg, undefined, {
+          onContextInvalidated: cleanUpKeyListeners,
+        });
+      }
+
+      // 网页端捕获阶段超前判定与拦截：
+      // 若点击的是有效的 HTTP/HTTPS 下载链接，且命中接管规则：
+      // 在 DOM 捕获阶段立即阻止默认导航事件，彻底杜绝浏览器内部创建原生下载条目（从物理根源上消除飞入动画与气泡）。
+      if (
+        targetUrl &&
+        (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) &&
+        e.button === 0 // 仅对鼠标主键（左键）直接点击拦截，中键/右键留给浏览器原生菜单
+      ) {
+        const decision = decideTakeover(
+          targetUrl,
+          undefined,
+          window.location.href,
+          localConfig,
+          clickMask,
+        );
+
+        if (decision.takeover) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          const handoverMsg: DirectClickHandoverMessage = {
+            type: 'DIRECT_CLICK_HANDOVER',
+            url: targetUrl,
+            pageUrl: window.location.href,
+            pageTitle: document.title,
+            referrer: document.referrer,
+          };
+          safeSendMessage<HandoverResponse>(handoverMsg, (resp) => {
+            // 若交接被桌面端拒绝且原因属于桌面端未连接（离线），回退将链接放行还给浏览器
+            if (resp && !resp.accepted && resp.failure === 'not_delivered') {
+              window.location.assign(targetUrl!);
+            }
+          });
+        }
+      }
     }
 
     function handleBlur() {

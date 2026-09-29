@@ -26,6 +26,7 @@ import {
 import { applyConfig, readyConfig } from '../lib/takeoverConfig';
 import type {
   DesktopStatus,
+  DirectClickHandoverMessage,
   ExtensionMessage,
   HandoverRequest,
   HandoverResponse,
@@ -85,6 +86,8 @@ const HEALTH_ALARM_PERIOD_MINUTES = 0.5;
 
 // Track downloads being processed to prevent duplicate interception loops
 const inFlightDownloads = new Set<number>();
+// 记录最近由网页点击直接交接的 URL 与时间戳，供 onCreated 快速防重
+const recentDirectHandoverUrls = new Map<string, number>();
 
 // In-memory media resource pool indexed by tabId
 const tabMediaPool = new Map<number, MediaResource[]>();
@@ -285,6 +288,12 @@ export default defineBackground(() => {
     } else if (msg?.type === 'RECONNECT') {
       void (async () => {
         sendResponse(await reverifyLink('popup'));
+      })();
+      return true;
+    } else if (msg?.type === 'DIRECT_CLICK_HANDOVER') {
+      void (async () => {
+        const result = await handleDirectClickHandover(msg, sender.tab?.id);
+        sendResponse(result);
       })();
       return true;
     } else if (msg?.type === 'SET_TARGET_PORT') {
@@ -593,6 +602,52 @@ async function handleMediaHandover(
   };
 
   return await handOverWithRetry(handoverReq, 3000, 'media-handover');
+}
+
+async function handleDirectClickHandover(
+  msg: DirectClickHandoverMessage,
+  preferredTabId?: number,
+): Promise<HandoverResponse> {
+  const url = msg.url;
+  recentDirectHandoverUrls.set(url, Date.now());
+
+  let cookiesStr = '';
+  try {
+    const cookies = await chrome.cookies.getAll({ url });
+    cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+  } catch {
+    // Cookie access may fail or be restricted
+  }
+
+  const livePageUrl = await resolvePageUrl(preferredTabId);
+  const effectivePageUrl =
+    livePageUrl || (isValidWebPageUrl(msg.pageUrl) ? msg.pageUrl : undefined);
+
+  const responseFilename = responseFilenames.lookup(url, url);
+
+  const handoverReq: HandoverRequest = {
+    sourceType: 'browser_takeover',
+    url,
+    filenameSuggestion: responseFilename,
+    pageContext: {
+      pageUrl: effectivePageUrl || msg.pageUrl || url,
+      pageTitle: msg.pageTitle,
+      referrer: msg.referrer,
+    },
+    credentials: {
+      cookies: cookiesStr,
+      headers: {
+        'User-Agent': navigator.userAgent,
+        ...(msg.referrer
+          ? { Referer: msg.referrer }
+          : effectivePageUrl
+            ? { Referer: effectivePageUrl }
+            : {}),
+      },
+    },
+  };
+
+  return await handOverWithRetry(handoverReq, HANDOVER_TIMEOUT_MS, 'direct-click-takeover');
 }
 
 /** 拉取一份清单的可选清晰度：带 cookies/referer 转发给桌面端解析。 */
@@ -924,7 +979,11 @@ async function queryPageKeyMask(): Promise<number> {
 
 async function collectPageKeyMasks(): Promise<number> {
   let mask = 0;
-  const tabs = await chrome.tabs.query({});
+  // 优先直接询问当前激活标签页，避免全量广播造成时延拖慢判定
+  let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tabs || tabs.length === 0) {
+    tabs = await chrome.tabs.query({});
+  }
   await Promise.all(
     tabs.map(async (tab) => {
       if (tab.id === undefined) return;
@@ -944,12 +1003,10 @@ async function collectPageKeyMasks(): Promise<number> {
 /**
  * 一次下载该不该接管，同时决定这次下载的浏览器反馈归谁。
  *
- * 接管按次进行：判定要接管就地 pause 这一次下载（下一行就发出来，不等任何网络），
- * 交接成功 cancel、失败 resume；判定不接管则完全不插手——浏览器该有的气泡、动画、
- * downloads 页记录一个不少。
- *
- * 注意 downloads.ui 的 setUiOptions：它作用于整个 profile，一旦压下，连「不接管」的下载
- * 也没有任何可见反馈，用户看到的就是文件静默丢失。接管只动被接管的那一次。
+ * 接管按次进行：
+ * 1. 同步快判：若用户明确按下了暂停键（Delete），立刻放行，绝不 pause，原生下载毫秒级畅行；
+ * 2. 零延迟前置冻结：在配置就绪时第 1 毫秒原位挂起（pause），彻底冻结 Chrome 自带飞入动画与网络；
+ * 3. 异步权威判定：交接成功 cancel 并 erase 抹掉浏览器临时记录；若判定不接管或交接失败则立即 resume 恢复。
  */
 async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   if (!item || !item.id || inFlightDownloads.has(item.id)) {
@@ -961,25 +1018,37 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
     return;
   }
+  // 若该 URL 在 5 秒内已被网页端直接超前拦截交接，无需二次创建任务，直接取消原生下载
+  const lastDirectTime = recentDirectHandoverUrls.get(url);
+  if (lastDirectTime && Date.now() - lastDirectTime < 5000) {
+    await cancelDownload(item.id);
+    return;
+  }
+
+  // 1. 同步快判按键意图：若当前按键或最近点击明确带暂停键（Delete），立刻放行，绝不 pause
+  const immediateKeyMask = resolveEffectiveKeyMask(
+    currentKeyMask,
+    recentReleaseMask,
+    recentReleaseTime,
+    recentShortcutClicks,
+    url,
+  );
+  if (immediateKeyMask & KEY_MASKS.Delete) {
+    return;
+  }
 
   // 判定用的文件名优先取响应头里的真名：Chrome 在 onCreated 给出的名字是从 URL 推出来的，
   // 路径里没有后缀时（GitHub 资产链接的末段是 GUID）按它判定必然漏接。
   const responseFilename = responseFilenames.lookup(item.finalUrl, item.url);
   const filename = responseFilename || item.filename;
 
-  // Check takeover rules
-  // 规则必须先就绪再判定：这次唤醒可能就是一个下载事件引起的，本地缓存里的清单
-  // 还没读回来时判定，等于拿空清单回答「不接管」（见 lib/takeoverConfig.ts）。
+  // 3. 异步权威判定：确保规则就绪、读取标签页真实地址栏与页面实时按键状态
   const config = await readyConfig();
-  // 优先从浏览器当前激活标签页读取地址栏真实 URL，避免 no-referrer 导致排除规则失效或源站丢失
   const activePageUrl = await resolvePageUrl();
   const hostPageUrl =
     activePageUrl || (isValidWebPageUrl(item.referrer) ? item.referrer : undefined);
 
-  // 按住的快捷键以页面为准：SW 被挂起重建后手上没有这些按键，页面里还有（见 queryPageKeyMask）。
   currentKeyMask |= await queryPageKeyMask();
-  // `item.mime` 是这次响应真实的 Content-Type：后缀命中但内容其实是页面/脚本时
-  // （`.ts` 的 TypeScript 源码、签名过期后返回 HTML 错误页的 `.mp4`），规则会否决接管。
   const effectiveKeyMask = resolveEffectiveKeyMask(
     currentKeyMask,
     recentReleaseMask,
@@ -1004,10 +1073,8 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
 
   inFlightDownloads.add(item.id);
 
-  // 原位挂起能让交接失败时把原连接还给浏览器（ADR-0005 选项 A），但它只是手段不是前提：
-  // 挂不上也要继续交接，否则这次下载会被静默放回浏览器，用户既看不到窗口也看不到原因。
+  // 判定接管后第一时间调用 pauseDownload 将原生下载原位冻结
   const paused = await pauseDownload(item.id);
-
   try {
     // Gather cookies if available
     let cookiesStr = '';
@@ -1109,8 +1176,16 @@ function stripQuery(rawUrl: string): string {
 
 /** 挂起下载并返回是否真的挂上了；调用方据此决定失败时是否还有东西需要还给浏览器。 */
 async function pauseDownload(downloadId: number): Promise<boolean> {
+  const pauseFn = (
+    globalThis as unknown as {
+      chrome?: { downloads?: { pause?: (id: number) => Promise<unknown> } };
+    }
+  )?.chrome?.downloads?.pause;
+  if (typeof pauseFn !== 'function') {
+    return false;
+  }
   try {
-    await chrome.downloads.pause(downloadId);
+    await pauseFn(downloadId);
     return true;
   } catch (err) {
     console.warn('[SheepGet] Failed to pause download, continuing with handover:', downloadId, err);
@@ -1120,9 +1195,24 @@ async function pauseDownload(downloadId: number): Promise<boolean> {
 
 /** 交接被接受：取消浏览器这一份，并擦掉下载条上的痕迹。 */
 async function cancelDownload(downloadId: number) {
+  const downloads = (
+    globalThis as unknown as {
+      chrome?: {
+        downloads?: {
+          cancel?: (id: number) => Promise<unknown>;
+          erase?: (q: { id: number }) => Promise<unknown>;
+        };
+      };
+    }
+  )?.chrome?.downloads;
+  if (typeof downloads?.cancel !== 'function') {
+    return;
+  }
   try {
-    await chrome.downloads.cancel(downloadId);
-    await chrome.downloads.erase({ id: downloadId });
+    await downloads.cancel(downloadId);
+    if (typeof downloads.erase === 'function') {
+      await downloads.erase({ id: downloadId });
+    }
   } catch (err) {
     console.warn('[SheepGet] Failed to cancel the browser download:', downloadId, err);
   }
@@ -1133,8 +1223,16 @@ async function resumeDownload(downloadId: number, paused: boolean) {
   if (!paused) {
     return;
   }
+  const resumeFn = (
+    globalThis as unknown as {
+      chrome?: { downloads?: { resume?: (id: number) => Promise<unknown> } };
+    }
+  )?.chrome?.downloads?.resume;
+  if (typeof resumeFn !== 'function') {
+    return;
+  }
   try {
-    await chrome.downloads.resume(downloadId);
+    await resumeFn(downloadId);
   } catch (err) {
     console.warn(
       '[SheepGet] Failed to resume download, it stays paused in the browser:',
