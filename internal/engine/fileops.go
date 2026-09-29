@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -14,14 +15,140 @@ import (
 // DefaultFilename 是 URL 与服务器都没有给出文件名时使用的兜底名称。
 const DefaultFilename = "download.bin"
 
-// URLFilename 提取 URL 路径中的文件名，例如 https://host/a/b.mp4 得到 b.mp4。
-// URL 只用 "/" 作为路径分隔符，因此这里使用 path.Base 而不是随平台变化的 filepath.Base；
-// 路径中没有可用文件名时返回空字符串，由调用方决定兜底名称或继续等待探测结果。
+// sanitizeDispositionFilename 清理 Content-Disposition 或 Query 提取的文件名，
+// 剥离路径分隔符防止路径穿越，去除首尾空白与包裹引号。
+func sanitizeDispositionFilename(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, `"'`)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	// 统一转为 / 后取 base，防范各种目录穿越
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = path.Base(name)
+	if name == "" || name == "." || name == "/" || name == ".." {
+		return ""
+	}
+	return name
+}
+
+// ParseContentDispositionFilename 从 Content-Disposition 标头或参数值中提取文件名。
+// 优先提取并解码 RFC 5987 / RFC 6266 规范的 filename*=，若无则提取普通 filename=。
+func ParseContentDispositionFilename(cd string) string {
+	if cd == "" {
+		return ""
+	}
+	parts := strings.Split(cd, ";")
+	var fallbackName string
+
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		lower := strings.ToLower(trimmed)
+
+		// 1. 优先处理 filename*=（RFC 5987 / RFC 6266）
+		if strings.HasPrefix(lower, "filename*=") {
+			val := strings.TrimSpace(trimmed[len("filename*="):])
+			val = strings.Trim(val, `"'`)
+			// 格式通常为: UTF-8''encoded_name 或 charset'lang'encoded_name
+			quoteIdx1 := strings.Index(val, "'")
+			if quoteIdx1 != -1 {
+				quoteIdx2 := strings.Index(val[quoteIdx1+1:], "'")
+				if quoteIdx2 != -1 {
+					quoteIdx2 += quoteIdx1 + 1
+					encoded := val[quoteIdx2+1:]
+					if unescaped, err := url.QueryUnescape(encoded); err == nil {
+						if clean := sanitizeDispositionFilename(unescaped); clean != "" {
+							return clean
+						}
+					} else if unescaped, err := url.PathUnescape(encoded); err == nil {
+						if clean := sanitizeDispositionFilename(unescaped); clean != "" {
+							return clean
+						}
+					}
+				}
+			}
+			if unescaped, err := url.QueryUnescape(val); err == nil {
+				if clean := sanitizeDispositionFilename(unescaped); clean != "" {
+					return clean
+				}
+			}
+		}
+
+		// 2. 普通 filename=
+		if fallbackName == "" && strings.HasPrefix(lower, "filename=") {
+			val := strings.TrimSpace(trimmed[len("filename="):])
+			val = strings.Trim(val, `"'`)
+			if strings.Contains(val, "%") {
+				if unescaped, err := url.QueryUnescape(val); err == nil && unescaped != "" {
+					val = unescaped
+				}
+			}
+			if clean := sanitizeDispositionFilename(val); clean != "" {
+				fallbackName = clean
+			}
+		}
+	}
+
+	return fallbackName
+}
+
+// URLFilename 提取 URL 中的文件名。
+// 优先解析 Query 中的 response-content-disposition、rscd、filename 等云存储/直链参数；
+// 若未提供或未解析出有效名称，则回退提取 URL 路径中的末尾段（path.Base）。
 func URLFilename(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+
+	// 1. 尝试解析 Query 参数中的文件名信息
+	if u, err := url.Parse(rawURL); err == nil {
+		q := u.Query()
+		if len(q) > 0 {
+			lowerQuery := make(map[string]string, len(q))
+			for k, v := range q {
+				if len(v) > 0 && strings.TrimSpace(v[0]) != "" {
+					lowerQuery[strings.ToLower(k)] = v[0]
+				}
+			}
+
+			// a. 优先从 Content-Disposition 类参数解析（如 S3、Azure Blob、GitHub Release Assets 等）
+			for _, key := range []string{"response-content-disposition", "rscd"} {
+				if val, ok := lowerQuery[key]; ok {
+					if fn := ParseContentDispositionFilename(val); fn != "" {
+						return fn
+					}
+				}
+			}
+
+			// b. 检查直接带有 filename 的参数（如 filename、file_name、attname）
+			for _, key := range []string{"filename", "file_name", "attname"} {
+				if val, ok := lowerQuery[key]; ok {
+					val = strings.Trim(strings.TrimSpace(val), `"'`)
+					if strings.Contains(val, "%") {
+						if unescaped, err := url.QueryUnescape(val); err == nil && unescaped != "" {
+							val = unescaped
+						}
+					}
+					if clean := sanitizeDispositionFilename(val); clean != "" {
+						return clean
+					}
+				}
+			}
+		}
+	}
+
+	// 2. 回退到提取 URL 路径末尾部分
 	clean, _, _ := strings.Cut(rawURL, "?")
+	clean, _, _ = strings.Cut(clean, "#")
 	base := path.Base(clean)
 	if base == "" || base == "/" || base == "." {
 		return ""
+	}
+	if strings.Contains(base, "%") {
+		if unescaped, err := url.PathUnescape(base); err == nil && unescaped != "" && unescaped != "/" && unescaped != "." {
+			return unescaped
+		}
 	}
 	return base
 }

@@ -389,10 +389,8 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 
 	// Parse filename from Content-Disposition if present
 	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
-		if _, params, err := parseContentDisposition(cd); err == nil {
-			if fn, ok := params["filename"]; ok {
-				info.Filename = fn
-			}
+		if fn := ParseContentDispositionFilename(cd); fn != "" {
+			info.Filename = fn
 		}
 	}
 	if info.Filename == "" {
@@ -407,20 +405,6 @@ func applyRequestHeaders(req *http.Request, creds credentials.RequestCredentials
 	if creds != nil {
 		creds.ApplyToHTTPRequest(req)
 	}
-}
-func parseContentDisposition(cd string) (string, map[string]string, error) {
-	parts := strings.Split(cd, ";")
-	disposition := strings.TrimSpace(parts[0])
-	params := make(map[string]string)
-	for _, part := range parts[1:] {
-		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
-		if len(kv) == 2 {
-			k := strings.ToLower(strings.TrimSpace(kv[0]))
-			v := strings.Trim(strings.TrimSpace(kv[1]), "\"")
-			params[k] = v
-		}
-	}
-	return disposition, params, nil
 }
 
 func extractFilenameFromURL(urlStr string) string {
