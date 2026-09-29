@@ -231,3 +231,53 @@ func TestManager_DuplicateURLDetection(t *testing.T) {
 		t.Fatalf("expected duplicate URL error, got %v", err)
 	}
 }
+func TestManager_PageURL_PreservedThroughoutDownload(t *testing.T) {
+	payload := []byte("hello world metadata retention test")
+	store, mgr, ts := newTestManager(t, payload, 0, "")
+	tmpDir := t.TempDir()
+
+	listener := &mockListener{}
+	mgr.AddListener(listener)
+
+	ctx := context.Background()
+	const expectedPageURL = "https://example.com/source-page.html"
+	const expectedCatID = "builtin-archive"
+
+	created, err := mgr.AddTaskWithMetadata(ctx, ts.URL+"/test.zip", tmpDir, "test.zip", 2, nil, expectedPageURL, expectedCatID)
+	if err != nil {
+		t.Fatalf("failed to add task: %v", err)
+	}
+	if created.PageURL != expectedPageURL {
+		t.Fatalf("created.PageURL = %q, want %q", created.PageURL, expectedPageURL)
+	}
+	if created.CategoryID != expectedCatID {
+		t.Fatalf("created.CategoryID = %q, want %q", created.CategoryID, expectedCatID)
+	}
+
+	// Wait for completion
+	waitForStatus(t, store, created.ID, 5*time.Second, task.StatusCompleted)
+
+	finalTask, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("failed to get task from store: %v", err)
+	}
+	if finalTask.PageURL != expectedPageURL {
+		t.Errorf("finalTask.PageURL = %q, want %q", finalTask.PageURL, expectedPageURL)
+	}
+	if finalTask.CategoryID != expectedCatID {
+		t.Errorf("finalTask.CategoryID = %q, want %q", finalTask.CategoryID, expectedCatID)
+	}
+
+	// Verify all listener notifications retained the metadata
+	listener.mu.Lock()
+	updates := append([]*task.Task{}, listener.updates...)
+	listener.mu.Unlock()
+	for _, n := range updates {
+		if n.PageURL != expectedPageURL {
+			t.Errorf("listener notification PageURL = %q, want %q", n.PageURL, expectedPageURL)
+		}
+		if n.CategoryID != expectedCatID {
+			t.Errorf("listener notification CategoryID = %q, want %q", n.CategoryID, expectedCatID)
+		}
+	}
+}

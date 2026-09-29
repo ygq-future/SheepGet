@@ -153,6 +153,10 @@ func (e *blockingEngine) AddTaskWithHeaders(context.Context, string, string, str
 	e.enter("AddTaskWithHeaders")
 	return &task.Task{ID: "task_manual"}, nil
 }
+func (e *blockingEngine) AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
+	e.enter("AddTaskWithHeaders")
+	return &task.Task{ID: "task_manual", PageURL: pageURL, CategoryID: categoryID}, nil
+}
 
 func (e *blockingEngine) AddTaskFromProbe(_ context.Context, _, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, probeErr error) (*task.Task, error) {
 	e.enter("AddTaskFromProbe")
@@ -162,6 +166,14 @@ func (e *blockingEngine) AddTaskFromProbe(_ context.Context, _, _, _ string, _ i
 	e.mu.Unlock()
 	return &task.Task{ID: "task_manual"}, nil
 }
+func (e *blockingEngine) AddTaskFromProbeWithMetadata(_ context.Context, _, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
+	e.enter("AddTaskFromProbe")
+	e.mu.Lock()
+	e.createdProbe = probe
+	e.createdErr = probeErr
+	e.mu.Unlock()
+	return &task.Task{ID: "task_manual", PageURL: pageURL, CategoryID: categoryID}, nil
+}
 
 func (e *blockingEngine) StartPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
 	e.enter("StartPreDownload")
@@ -169,6 +181,10 @@ func (e *blockingEngine) StartPreDownload(context.Context, string, string, strin
 }
 
 func (e *blockingEngine) StartPreDownloadWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
+	e.enter("StartPreDownloadWithHeaders")
+	return &task.Task{ID: "task_pre"}, nil
+}
+func (e *blockingEngine) StartPreDownloadWithMetadata(context.Context, string, string, string, int, map[string]string, string, string) (*task.Task, error) {
 	e.enter("StartPreDownloadWithHeaders")
 	return &task.Task{ID: "task_pre"}, nil
 }

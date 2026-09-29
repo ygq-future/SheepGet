@@ -269,10 +269,11 @@ export default defineBackground(() => {
       sendResponse(undefined);
     } else if (msg?.type === 'HANDOVER_MEDIA') {
       void (async () => {
+        const preferredTabId = (msg as { tabId?: number }).tabId ?? sender.tab?.id;
         const result = await handleMediaHandover(
           msg.resource as MediaResource,
           msg.resource.variantUri,
-          sender.tab?.id,
+          preferredTabId,
         );
         sendResponse(result);
       })();
@@ -531,8 +532,9 @@ async function resolvePageUrl(tabId?: number): Promise<string | undefined> {
   if (tabId !== undefined && tabId >= 0 && chrome?.tabs?.get) {
     try {
       const tab = await chrome.tabs.get(tabId);
-      if (isValidWebPageUrl(tab?.url)) {
-        return tab.url;
+      const url = tab?.url || (tab as { pendingUrl?: string })?.pendingUrl;
+      if (isValidWebPageUrl(url)) {
+        return url;
       }
     } catch {
       // 标签页可能已关闭或无权限读取
@@ -542,18 +544,22 @@ async function resolvePageUrl(tabId?: number): Promise<string | undefined> {
   if (chrome?.tabs?.query) {
     try {
       const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-      const activeUrl = tabs?.[0]?.url;
-      if (isValidWebPageUrl(activeUrl)) {
-        return activeUrl;
+      for (const tab of tabs || []) {
+        const url = tab?.url || (tab as { pendingUrl?: string })?.pendingUrl;
+        if (isValidWebPageUrl(url)) {
+          return url;
+        }
       }
     } catch {
       // query 失败
     }
     try {
       const tabs = await chrome.tabs.query({ active: true });
-      const activeUrl = tabs?.[0]?.url;
-      if (isValidWebPageUrl(activeUrl)) {
-        return activeUrl;
+      for (const tab of tabs || []) {
+        const url = tab?.url || (tab as { pendingUrl?: string })?.pendingUrl;
+        if (isValidWebPageUrl(url)) {
+          return url;
+        }
       }
     } catch {
       // query 失败
@@ -587,7 +593,8 @@ async function handleMediaHandover(
     totalBytes: resource.totalBytes,
     mimeType: resource.mimeType,
     pageContext: {
-      pageUrl: effectivePageUrl || resource.url,
+      pageUrl:
+        effectivePageUrl || (isValidWebPageUrl(resource.pageUrl) ? resource.pageUrl : '') || '',
       pageTitle: resource.pageTitle,
     },
     credentials: {
@@ -1095,7 +1102,7 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
       totalBytes: item.totalBytes && item.totalBytes > 0 ? item.totalBytes : undefined,
       mimeType: item.mime,
       pageContext: {
-        pageUrl: effectivePageUrl || item.referrer || url,
+        pageUrl: effectivePageUrl || (isValidWebPageUrl(item.referrer) ? item.referrer : '') || '',
         referrer: item.referrer,
       },
       credentials: {

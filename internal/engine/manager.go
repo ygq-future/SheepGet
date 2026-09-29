@@ -378,6 +378,8 @@ func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strateg
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
+			PageURL:        t.PageURL,
+			CategoryID:     t.CategoryID,
 			Filename:       filename,
 			Directory:      dir,
 			TempDir:        m.getTempDir(),
@@ -428,6 +430,8 @@ func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strateg
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
+			PageURL:        t.PageURL,
+			CategoryID:     t.CategoryID,
 			Filename:       filename,
 			Directory:      dir,
 			TempDir:        m.getTempDir(),
@@ -618,11 +622,13 @@ func (m *Manager) FindDuplicateTask(ctx context.Context, urlStr string) (*task.T
 
 // PreDownloadRequest 是启动一次提前下载的输入。
 type PreDownloadRequest struct {
-	URL       string
-	Directory string
-	Filename  string
-	MaxConn   int
-	Headers   map[string]string
+	URL        string
+	Directory  string
+	Filename   string
+	MaxConn    int
+	Headers    map[string]string
+	PageURL    string
+	CategoryID string
 	// Probe 是登记时已经完成的探测结果（HLS 链接还带着选定清晰度后的来源）。
 	// 为 nil 时自己探一次。
 	Probe *ProbeResult
@@ -640,7 +646,7 @@ func (m *Manager) StartPreDownloadFromProbe(ctx context.Context, req PreDownload
 	if probe == nil {
 		probe, probeErr = m.probeResource(ctx, req.URL, creds)
 	}
-	return m.createTask(ctx, req.URL, req.Directory, req.Filename, req.MaxConn, creds, probe, probeErr)
+	return m.createTask(ctx, req.URL, req.Directory, req.Filename, req.MaxConn, creds, probe, probeErr, req.PageURL, req.CategoryID)
 }
 
 // StartPreDownload creates a pre-download task without request context.
@@ -652,8 +658,13 @@ func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename st
 
 // StartPreDownloadWithHeaders creates a pre-download task with optional request headers.
 func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
+	return m.StartPreDownloadWithMetadata(ctx, urlStr, dir, filename, maxConn, headers, "", "")
+}
+
+// StartPreDownloadWithMetadata creates a pre-download task with optional request headers and task metadata.
+func (m *Manager) StartPreDownloadWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
 	return m.StartPreDownloadFromProbe(ctx, PreDownloadRequest{
-		URL: urlStr, Directory: dir, Filename: filename, MaxConn: maxConn, Headers: headers,
+		URL: urlStr, Directory: dir, Filename: filename, MaxConn: maxConn, Headers: headers, PageURL: pageURL, CategoryID: categoryID,
 	})
 }
 
@@ -965,9 +976,14 @@ func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, max
 
 // AddTaskWithHeaders creates a task carrying optional request headers context.
 func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
+	return m.AddTaskWithMetadata(ctx, urlStr, dir, filename, maxConn, headers, "", "")
+}
+
+// AddTaskWithMetadata creates a task carrying optional request headers and metadata.
+func (m *Manager) AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
 	creds := credentials.New(headers)
 	probe, probeErr := m.probeResource(ctx, urlStr, creds)
-	return m.createTask(ctx, urlStr, dir, filename, maxConn, creds, probe, probeErr)
+	return m.createTask(ctx, urlStr, dir, filename, maxConn, creds, probe, probeErr, pageURL, categoryID)
 }
 
 // AddTaskFromProbe 用一次已经完成的探测结果建任务，自己不再联网。
@@ -976,12 +992,17 @@ func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename 
 // 足够它跑完），提交只是把手上已有的事实落成任务，不必为同一份元数据再付一次请求往返
 // （真实探测会重试三次，还带一次 HEAD 兜底）。
 func (m *Manager) AddTaskFromProbe(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *ProbeResult, probeErr error) (*task.Task, error) {
-	return m.createTask(ctx, urlStr, dir, filename, maxConn, credentials.New(headers), probe, probeErr)
+	return m.AddTaskFromProbeWithMetadata(ctx, urlStr, dir, filename, maxConn, headers, probe, probeErr, "", "")
+}
+
+// AddTaskFromProbeWithMetadata 用已完成的探测结果和元数据直接建任务。
+func (m *Manager) AddTaskFromProbeWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
+	return m.createTask(ctx, urlStr, dir, filename, maxConn, credentials.New(headers), probe, probeErr, pageURL, categoryID)
 }
 
 // createTask 是两条建任务路径的共同实现：先挡住重复链接，再按探测结果落成一条任务。
 // 探测失败时仍然建一条可见的失败任务（A03），而不是什么都不留下。
-func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, maxConn int, creds credentials.RequestCredentials, probe *ProbeResult, probeErr error) (*task.Task, error) {
+func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, maxConn int, creds credentials.RequestCredentials, probe *ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
 	// Check duplicate URL in existing tasks
 	existingList, _ := m.store.List(ctx)
 	for _, ext := range existingList {
@@ -996,6 +1017,8 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 		t := &task.Task{
 			ID:             fmt.Sprintf("task_%d", now.UnixNano()),
 			URL:            urlStr,
+			PageURL:        pageURL,
+			CategoryID:     categoryID,
 			Filename:       filename,
 			Directory:      dir,
 			TempDir:        m.getTempDir(),
@@ -1043,6 +1066,8 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 	t := &task.Task{
 		ID:             fmt.Sprintf("task_%d", now.UnixNano()),
 		URL:            urlStr,
+		PageURL:        pageURL,
+		CategoryID:     categoryID,
 		Filename:       filename,
 		Directory:      dir,
 		TempDir:        m.getTempDir(),
@@ -1314,7 +1339,19 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 		// 断点续传不受影响。
 		work := t.Clone()
 		transferErr = m.runTransfer(ctx, work, sink)
-		*t = *work
+		if latest, getErr := m.store.Get(bgCtx, taskID); getErr == nil {
+			latestPageURL := latest.PageURL
+			latestCategoryID := latest.CategoryID
+			*t = *work
+			if latestPageURL != "" {
+				t.PageURL = latestPageURL
+			}
+			if latestCategoryID != "" {
+				t.CategoryID = latestCategoryID
+			}
+		} else {
+			*t = *work
+		}
 		if transferErr == nil {
 			t.TransferDone = true
 			_ = m.store.Save(bgCtx, t)
@@ -1473,7 +1510,11 @@ func (m *Manager) SetTaskPageURL(ctx context.Context, taskID, pageURL string) er
 		return err
 	}
 	t.PageURL = pageURL
-	return m.store.Save(ctx, t)
+	if err := m.store.Save(ctx, t); err != nil {
+		return err
+	}
+	m.notify(t)
+	return nil
 }
 
 // SetTaskCategoryID updates and persists the CategoryID for the specified task.
@@ -1483,5 +1524,9 @@ func (m *Manager) SetTaskCategoryID(ctx context.Context, taskID, categoryID stri
 		return err
 	}
 	t.CategoryID = categoryID
-	return m.store.Save(ctx, t)
+	if err := m.store.Save(ctx, t); err != nil {
+		return err
+	}
+	m.notify(t)
+	return nil
 }

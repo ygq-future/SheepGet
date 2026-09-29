@@ -57,10 +57,13 @@ type DownloadEngine interface {
 	FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error)
 	AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
+	AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error)
 	// AddTaskFromProbe 用登记时那次探测的结果建任务，不再联网。
 	AddTaskFromProbe(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *engine.ProbeResult, probeErr error) (*task.Task, error)
+	AddTaskFromProbeWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error)
 	StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
+	StartPreDownloadWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error)
 	ConfirmPreDownload(ctx context.Context, taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error)
 	CancelPreDownload(ctx context.Context, taskID string) error
 	ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error)
@@ -533,15 +536,15 @@ func (qc *QueueController) startPreDownload(start *preDownloadStart) {
 	}
 	// 启动预下载同样会联网（StartPreDownloadWithHeaders 内部要探测 URL），因此和上面的探测
 	// 一样必须在锁外：锁被它握住的这段时间，队列的每个操作都要排队。
-	preTask, preErr := qc.engine.StartPreDownloadWithHeaders(context.Background(), start.url, start.dir, start.filename, start.maxConn, start.headers)
+	preTask, preErr := qc.engine.StartPreDownloadWithMetadata(context.Background(), start.url, start.dir, start.filename, start.maxConn, start.headers, start.item.PageURL, start.item.CategoryID)
 	if preErr != nil {
 		preTask = nil
 	} else if preTask != nil {
-		if start.item.CategoryID != "" {
+		if start.item.CategoryID != "" && preTask.CategoryID == "" {
 			preTask.CategoryID = start.item.CategoryID
 			_ = qc.engine.SetTaskCategoryID(context.Background(), preTask.ID, start.item.CategoryID)
 		}
-		if start.item.PageURL != "" {
+		if start.item.PageURL != "" && preTask.PageURL == "" {
 			preTask.PageURL = start.item.PageURL
 			_ = qc.engine.SetTaskPageURL(context.Background(), preTask.ID, start.item.PageURL)
 		}
@@ -876,11 +879,11 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 		return nil, err
 	}
 	if resTask != nil {
-		if plan.categoryID != "" {
+		if plan.categoryID != "" && resTask.CategoryID == "" {
 			resTask.CategoryID = plan.categoryID
 			_ = qc.engine.SetTaskCategoryID(ctx, resTask.ID, plan.categoryID)
 		}
-		if plan.item.PageURL != "" {
+		if plan.item.PageURL != "" && resTask.PageURL == "" {
 			resTask.PageURL = plan.item.PageURL
 			_ = qc.engine.SetTaskPageURL(ctx, resTask.ID, plan.item.PageURL)
 		}
@@ -1035,9 +1038,9 @@ func (qc *QueueController) runSubmit(ctx context.Context, plan *submitPlan) (*ta
 		return qc.engine.ConfirmPreDownload(ctx, plan.preTaskID, plan.directory, plan.filename, plan.maxConn)
 	case plan.probe != nil:
 		// 登记时那次探测已经给出结论：直接拿它建任务，提交因此不联网、瞬时返回。
-		return qc.engine.AddTaskFromProbe(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers, plan.probe, plan.probeErr)
+		return qc.engine.AddTaskFromProbeWithMetadata(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers, plan.probe, plan.probeErr, plan.item.PageURL, plan.categoryID)
 	default:
-		return qc.engine.AddTaskWithHeaders(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers)
+		return qc.engine.AddTaskWithMetadata(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers, plan.item.PageURL, plan.categoryID)
 	}
 }
 

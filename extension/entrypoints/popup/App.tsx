@@ -48,6 +48,7 @@ export default function App() {
   const [customPortInput, setCustomPortInput] = useState('');
   const [savingPort, setSavingPort] = useState(false);
 
+  const [activeTabId, setActiveTabId] = useState<number | undefined>();
   const online = status?.online === true;
 
   const handleSavePort = async () => {
@@ -162,6 +163,7 @@ export default function App() {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       const currentTab = tabs[0];
       if (currentTab?.id !== undefined) {
+        setActiveTabId(currentTab.id);
         chrome.runtime.sendMessage(
           { type: 'GET_TAB_MEDIA', tabId: currentTab.id },
           (response: MediaResource[] | undefined) => {
@@ -185,7 +187,11 @@ export default function App() {
     setErrorMessage(null);
 
     chrome.runtime.sendMessage(
-      { type: 'HANDOVER_MEDIA', resource: { ...res, variantUri: chosenVariant } },
+      {
+        type: 'HANDOVER_MEDIA',
+        resource: { ...res, variantUri: chosenVariant },
+        tabId: activeTabId ?? res.tabId,
+      },
       (response: HandoverResponse | undefined) => {
         const runtimeError = chrome.runtime.lastError?.message;
         if (response?.accepted) {

@@ -49,10 +49,17 @@ func (e *hlsProbeEngine) AddTask(context.Context, string, string, string, int) (
 func (e *hlsProbeEngine) AddTaskWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
 	return nil, errors.New("AddTaskWithHeaders should not be called in HLS selection tests")
 }
+func (e *hlsProbeEngine) AddTaskWithMetadata(context.Context, string, string, string, int, map[string]string, string, string) (*task.Task, error) {
+	return nil, errors.New("AddTaskWithMetadata should not be called in HLS selection tests")
+}
 
 func (e *hlsProbeEngine) AddTaskFromProbe(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, _ error) (*task.Task, error) {
 	e.createdProbe = probe
 	return &task.Task{ID: "task_created", URL: urlStr}, nil
+}
+func (e *hlsProbeEngine) AddTaskFromProbeWithMetadata(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, _ error, pageURL, categoryID string) (*task.Task, error) {
+	e.createdProbe = probe
+	return &task.Task{ID: "task_created", URL: urlStr, PageURL: pageURL, CategoryID: categoryID}, nil
 }
 
 func (e *hlsProbeEngine) StartPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
@@ -60,6 +67,10 @@ func (e *hlsProbeEngine) StartPreDownload(context.Context, string, string, strin
 }
 
 func (e *hlsProbeEngine) StartPreDownloadWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
+	e.preDownloadStarted = true
+	return &task.Task{ID: "task_pre"}, nil
+}
+func (e *hlsProbeEngine) StartPreDownloadWithMetadata(context.Context, string, string, string, int, map[string]string, string, string) (*task.Task, error) {
 	e.preDownloadStarted = true
 	return &task.Task{ID: "task_pre"}, nil
 }
