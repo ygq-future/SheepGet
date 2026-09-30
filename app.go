@@ -24,6 +24,7 @@ import (
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -60,6 +61,8 @@ type App struct {
 	logger              atomic.Pointer[logging.Logger]
 	logError            error
 	updater             *update.Service
+	completedNotified   sync.Map
+	onShowProgress      func(taskID string)
 }
 
 // log 返回日志出口；尚未接上日志（测试直接构造 App）时丢弃日志。
@@ -176,6 +179,7 @@ func NewApp() *App {
 		name: winNameFileInfo,
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
+	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
 	adapter := &loopbackServerAdapter{app: app}
 	loopbackSrv := server.NewServer(storeDir.SessionFile(), adapter, adapter)
 	st := settingsSvc.Get()
@@ -249,6 +253,15 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 	a.migrateHistoricalTasksCategory(ctx)
+	if a.store != nil {
+		if tasks, err := a.store.List(ctx); err == nil {
+			for _, t := range tasks {
+				if t != nil && t.Status == task.StatusCompleted {
+					a.completedNotified.Store(t.ID, struct{}{})
+				}
+			}
+		}
+	}
 }
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
@@ -274,13 +287,31 @@ func (a *App) Shutdown() {
 
 // OnTaskUpdated emits wails event to the frontend whenever a task changes
 func (a *App) OnTaskUpdated(t *task.Task) {
+	if t == nil {
+		return
+	}
 	if app := a.getApp(); app != nil {
 		app.Event.Emit(protocol.EventTaskUpdated, t)
+	}
+
+	switch t.Status {
+	case task.StatusCompleted:
+		if _, loaded := a.completedNotified.LoadOrStore(t.ID, struct{}{}); !loaded {
+			if a.settings != nil {
+				st := a.settings.Get()
+				if st.Download.ShowProgressWindow && st.Download.KeepCompletedInfo {
+					a.ShowProgressWindow(t.ID)
+				}
+			}
+		}
+	case task.StatusDownloading, task.StatusQueued:
+		a.completedNotified.Delete(t.ID)
 	}
 }
 
 // OnTaskDeleted emits wails event to the frontend whenever a task is deleted
 func (a *App) OnTaskDeleted(taskID string) {
+	a.completedNotified.Delete(taskID)
 	if app := a.getApp(); app != nil {
 		app.Event.Emit(protocol.EventTaskDeleted, taskID)
 	}

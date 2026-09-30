@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1599,5 +1600,126 @@ func TestApp_GetAppVersion(t *testing.T) {
 	app, _, _ := newTestApp(t)
 	if ver := app.GetAppVersion(); ver != version.Version {
 		t.Errorf("expected GetAppVersion to return %q, got %q", version.Version, ver)
+	}
+}
+
+func TestApp_TaskCompleted_FocusProgressWindow(t *testing.T) {
+	app, store, _ := newTestApp(t)
+
+	var progressShown []string
+	var mu sync.Mutex
+	app.onShowProgress = func(taskID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		progressShown = append(progressShown, taskID)
+	}
+
+	// Case 1: Active download completes -> triggers ShowProgressWindow
+	task1 := &task.Task{
+		ID:       "task_1",
+		Filename: "file1.zip",
+		Status:   task.StatusDownloading,
+	}
+	app.OnTaskUpdated(task1)
+
+	mu.Lock()
+	if len(progressShown) != 0 {
+		t.Fatalf("expected no progress window shown while downloading, got %d", len(progressShown))
+	}
+	mu.Unlock()
+
+	task1.Status = task.StatusCompleted
+	app.OnTaskUpdated(task1)
+
+	mu.Lock()
+	if len(progressShown) != 1 || progressShown[0] != "task_1" {
+		t.Fatalf("expected progress window shown once for task_1, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 2: Duplicate update for the same completed task does not trigger again
+	app.OnTaskUpdated(task1)
+	mu.Lock()
+	if len(progressShown) != 1 {
+		t.Fatalf("expected progress window not re-triggered for already completed task, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 3: Re-downloading / re-queuing resets the notification state
+	task1.Status = task.StatusDownloading
+	app.OnTaskUpdated(task1)
+	task1.Status = task.StatusCompleted
+	app.OnTaskUpdated(task1)
+	mu.Lock()
+	if len(progressShown) != 2 || progressShown[1] != "task_1" {
+		t.Fatalf("expected progress window re-triggered after task was re-downloaded, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 4: showProgressWindow = false -> does not trigger
+	st := app.settings.Get()
+	st.Download.ShowProgressWindow = false
+	_, _ = app.settings.Update(st)
+
+	task2 := &task.Task{
+		ID:       "task_2",
+		Filename: "file2.zip",
+		Status:   task.StatusCompleted,
+	}
+	app.OnTaskUpdated(task2)
+	mu.Lock()
+	if len(progressShown) != 2 {
+		t.Fatalf("expected no trigger when showProgressWindow is false, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 5: keepCompletedInfo = false -> does not trigger
+	st = app.settings.Get()
+	st.Download.ShowProgressWindow = true
+	st.Download.KeepCompletedInfo = false
+	_, _ = app.settings.Update(st)
+
+	task3 := &task.Task{
+		ID:       "task_3",
+		Filename: "file3.zip",
+		Status:   task.StatusCompleted,
+	}
+	app.OnTaskUpdated(task3)
+	mu.Lock()
+	if len(progressShown) != 2 {
+		t.Fatalf("expected no trigger when keepCompletedInfo is false, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 6: Historical tasks present on startup are marked and never triggered
+	_ = store.Save(context.Background(), &task.Task{
+		ID:       "hist_task",
+		Filename: "hist.zip",
+		Status:   task.StatusCompleted,
+	})
+	appRestart := &App{
+		manager:  app.manager,
+		store:    store,
+		settings: app.settings,
+		windows:  app.windows,
+	}
+	var histProgress []string
+	appRestart.onShowProgress = func(taskID string) {
+		histProgress = append(histProgress, taskID)
+	}
+	st = appRestart.settings.Get()
+	st.Download.ShowProgressWindow = true
+	st.Download.KeepCompletedInfo = true
+	_, _ = appRestart.settings.Update(st)
+	appRestart.startup(context.Background())
+
+	// Emitting OnTaskUpdated for the historical task does not trigger popup
+	appRestart.OnTaskUpdated(&task.Task{
+		ID:       "hist_task",
+		Filename: "hist.zip",
+		Status:   task.StatusCompleted,
+	})
+	if len(histProgress) != 0 {
+		t.Fatalf("expected historical task not to trigger popup on startup, got %v", histProgress)
 	}
 }

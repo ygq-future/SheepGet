@@ -266,6 +266,9 @@ func (a *App) OpenSettingsWindow() {
 
 // ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.
 func (a *App) ShowProgressWindow(taskID string) {
+	if a.onShowProgress != nil {
+		a.onShowProgress(taskID)
+	}
 	openURL := "/?window=progress"
 	if taskID != "" {
 		openURL += "&focus=" + url.QueryEscape(taskID)
@@ -280,6 +283,7 @@ func (a *App) ShowProgressWindow(taskID string) {
 		a.emit(protocol.EventProgressFocusCompleted, taskID)
 		a.emit(protocol.EventProgressFocusTask, taskID)
 	}
+	win.Raise()
 }
 
 // MinimiseFileInfoWindow minimises the file info window.
