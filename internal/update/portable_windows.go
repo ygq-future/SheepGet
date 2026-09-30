@@ -56,7 +56,7 @@ start "" "%%DEST%%\%%EXE%%"
 
 :: 4. Clean up temporary extracted folder and this updater script
 rd /s /q "%%SRC%%" 2>NUL
-(goto) 2>nul & del "%%~f0"
+(goto) 2>nul & del "%%~f0" & exit
 `, pid, extractedDir, appDir, exeName)
 
 	return os.WriteFile(scriptPath, []byte(batContent), 0755)
@@ -71,7 +71,7 @@ func LaunchPortableUpdater(extractedDir, appDir, exeName string) error {
 		return fmt.Errorf("failed to generate portable update script: %w", err)
 	}
 
-	cmd := exec.Command("cmd.exe", "/c", "start", "/min", scriptPath)
+	cmd := exec.Command("cmd.exe", "/c", "start", "", "/min", "cmd.exe", "/c", scriptPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 		HideWindow:    true,

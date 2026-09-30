@@ -3,6 +3,7 @@ package update
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -33,5 +34,9 @@ func TestGeneratePortableUpdateScript(t *testing.T) {
 	// Must verify executable name is present
 	if !strings.Contains(str, "SheepGet.exe") {
 		t.Errorf("expected script to contain SheepGet.exe")
+	}
+	// On Windows, script must explicitly exit to avoid leaving orphan cmd prompt
+	if runtime.GOOS == "windows" && !strings.Contains(str, "exit") {
+		t.Errorf("expected Windows update script to contain explicit exit")
 	}
 }
