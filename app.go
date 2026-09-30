@@ -517,7 +517,7 @@ func (a *App) ListTasks() ([]*task.Task, error) {
 	return a.manager.List(a.ctx)
 }
 
-// migrateHistoricalTasksCategory 检查历史任务并补齐分类（仅在启动时进行一次性迁移固化）。
+// migrateHistoricalTasksCategory 检查历史任务并补齐或纠偏分类（仅在启动时进行一次性迁移固化）。
 func (a *App) migrateHistoricalTasksCategory(ctx context.Context) {
 	if a.store == nil || a.settings == nil {
 		return
@@ -528,10 +528,21 @@ func (a *App) migrateHistoricalTasksCategory(ctx context.Context) {
 	}
 	downloadCfg := a.settings.Get().Download
 	for _, t := range tasks {
-		if t.CategoryID == "" && t.Filename != "" {
+		if t.Filename == "" {
+			continue
+		}
+		switch t.CategoryID {
+		case "":
 			cat, _ := downloadCfg.ResolveDestination(t.Filename)
 			t.CategoryID = cat.ID
 			_ = a.store.Save(ctx, t)
+		case "builtin-file":
+			// 若历史任务被误赋予兜底的 builtin-file，但其实际文件名能明确命中具体业务分类，进行自动纠偏固化
+			cat, matched := downloadCfg.ResolveCategory(t.Filename)
+			if matched && cat.ID != "builtin-file" {
+				t.CategoryID = cat.ID
+				_ = a.store.Save(ctx, t)
+			}
 		}
 	}
 }

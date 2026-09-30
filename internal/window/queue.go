@@ -68,6 +68,7 @@ type DownloadEngine interface {
 	CancelPreDownload(ctx context.Context, taskID string) error
 	ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error)
 	ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult) (*task.Task, error)
+	ResolveDuplicateFromProbeWithMetadata(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult, categoryID string) (*task.Task, error)
 	// Occupancy 给出目标落点的占用判定（任务库快照由引擎提供）；排队项来源由队列自己补上，
 	// 因为「已经发给排队项的名字」只有队列知道。
 	Occupancy(ctx context.Context, reserved engine.Reserved) engine.Occupancy
@@ -879,7 +880,7 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 		return nil, err
 	}
 	if resTask != nil {
-		if plan.categoryID != "" && resTask.CategoryID == "" {
+		if plan.categoryID != "" && resTask.CategoryID != plan.categoryID {
 			resTask.CategoryID = plan.categoryID
 			_ = qc.engine.SetTaskCategoryID(ctx, resTask.ID, plan.categoryID)
 		}
@@ -1033,7 +1034,7 @@ func (qc *QueueController) runSubmit(ctx context.Context, plan *submitPlan) (*ta
 			// 局面需要用户先决定怎么处理，界面不能在没有选择的情况下提交。
 			return nil, ErrDuplicateChoiceRequired
 		}
-		return qc.engine.ResolveDuplicateFromProbe(ctx, plan.duplicateTask.ID, string(action), plan.directory, plan.filename, plan.maxConn, plan.probe)
+		return qc.engine.ResolveDuplicateFromProbeWithMetadata(ctx, plan.duplicateTask.ID, string(action), plan.directory, plan.filename, plan.maxConn, plan.probe, plan.categoryID)
 	case plan.preTaskID != "":
 		return qc.engine.ConfirmPreDownload(ctx, plan.preTaskID, plan.directory, plan.filename, plan.maxConn)
 	case plan.probe != nil:

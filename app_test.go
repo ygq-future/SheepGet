@@ -1003,6 +1003,68 @@ func TestApp_Startup_MigratesEmptyCategoryID(t *testing.T) {
 	}
 }
 
+func TestApp_Startup_CorrectsMismatchedBuiltinFileCategory(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to init store: %v", err)
+	}
+	ctx := context.Background()
+
+	// 1. 被误标为 builtin-file 的视频任务（如 index.mp4）
+	wrongTask := &task.Task{
+		ID:         "task_wrong_file_cat",
+		URL:        "https://example.com/video.m3u8",
+		Filename:   "index.mp4",
+		CategoryID: "builtin-file",
+		Status:     task.StatusCompleted,
+	}
+	if err := store.Save(ctx, wrongTask); err != nil {
+		t.Fatalf("failed to seed wrong task: %v", err)
+	}
+
+	// 2. 真正是文件的任务（如 doc.pdf），保持 builtin-file
+	realFileTask := &task.Task{
+		ID:         "task_real_file",
+		URL:        "https://example.com/manual.pdf",
+		Filename:   "manual.pdf",
+		CategoryID: "builtin-file",
+		Status:     task.StatusCompleted,
+	}
+	if err := store.Save(ctx, realFileTask); err != nil {
+		t.Fatalf("failed to seed real file task: %v", err)
+	}
+
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 2})
+	t.Cleanup(mgr.Close)
+	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir, nil)
+
+	app := &App{
+		manager:  mgr,
+		store:    store,
+		settings: settingsSvc,
+	}
+
+	// 启动并执行迁移纠偏
+	app.startup(ctx)
+
+	savedWrong, err := store.Get(ctx, "task_wrong_file_cat")
+	if err != nil {
+		t.Fatalf("failed to get savedWrong: %v", err)
+	}
+	if savedWrong.CategoryID != "builtin-video" {
+		t.Errorf("savedWrong.CategoryID = %q, want %q", savedWrong.CategoryID, "builtin-video")
+	}
+
+	savedReal, err := store.Get(ctx, "task_real_file")
+	if err != nil {
+		t.Fatalf("failed to get savedReal: %v", err)
+	}
+	if savedReal.CategoryID != "builtin-file" {
+		t.Errorf("savedReal.CategoryID = %q, want %q", savedReal.CategoryID, "builtin-file")
+	}
+}
+
 // seedHistoryElsewhere 在另一个目录放一条已完成的历史记录，模拟「手动选过目录、默认目录
 // 后来改过、或文件被搬走过」之后，历史记录所在目录与这次解析出的保存目录不一致的情形。
 // writeFile 为真时同时落下成品文件，用于验证不该被误删的情况。

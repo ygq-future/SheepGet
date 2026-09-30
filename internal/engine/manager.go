@@ -321,11 +321,16 @@ func (m *Manager) ProbeMediaDuration(ctx context.Context, urlStr, filename strin
 
 // ResolveDuplicate resolves a duplicate task with strategy "continue", "redownload", "copy", or "show_completed".
 func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error) {
-	return m.ResolveDuplicateFromProbe(ctx, taskID, strategy, dir, filename, maxConn, nil)
+	return m.ResolveDuplicateFromProbeWithMetadata(ctx, taskID, strategy, dir, filename, maxConn, nil, "")
 }
 
 // ResolveDuplicateFromProbe 支持在重新下载或副本保存时应用当次选定的探测事实（如 HLS 清晰度与大小）。
 func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *ProbeResult) (*task.Task, error) {
+	return m.ResolveDuplicateFromProbeWithMetadata(ctx, taskID, strategy, dir, filename, maxConn, probe, "")
+}
+
+// ResolveDuplicateFromProbeWithMetadata 支持在重新下载或副本保存时应用当次选定的探测事实（如 HLS 清晰度与大小）及目标分类。
+func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *ProbeResult, categoryID string) (*task.Task, error) {
 	t, err := m.store.Get(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("task not found: %w", err)
@@ -374,12 +379,16 @@ func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strateg
 				filename = HLSOutputName(t.URL, filename)
 			}
 		}
+		targetCatID := categoryID
+		if targetCatID == "" {
+			targetCatID = t.CategoryID
+		}
 
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
 			PageURL:        t.PageURL,
-			CategoryID:     t.CategoryID,
+			CategoryID:     targetCatID,
 			Filename:       filename,
 			Directory:      dir,
 			TempDir:        m.getTempDir(),
@@ -426,12 +435,16 @@ func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strateg
 				filename = HLSOutputName(t.URL, filename)
 			}
 		}
+		targetCatID := categoryID
+		if targetCatID == "" {
+			targetCatID = t.CategoryID
+		}
 
 		newTask := &task.Task{
 			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
 			URL:            t.URL,
 			PageURL:        t.PageURL,
-			CategoryID:     t.CategoryID,
+			CategoryID:     targetCatID,
 			Filename:       filename,
 			Directory:      dir,
 			TempDir:        m.getTempDir(),

@@ -92,6 +92,11 @@ func (e *hlsProbeEngine) ResolveDuplicateFromProbe(_ context.Context, _ string, 
 	return &task.Task{ID: "task_duplicate_resolved"}, nil
 }
 
+func (e *hlsProbeEngine) ResolveDuplicateFromProbeWithMetadata(_ context.Context, _ string, _ string, _ string, _ string, _ int, probe *engine.ProbeResult, categoryID string) (*task.Task, error) {
+	e.createdProbe = probe
+	return &task.Task{ID: "task_duplicate_resolved", CategoryID: categoryID}, nil
+}
+
 func (e *hlsProbeEngine) Occupancy(_ context.Context, reserved engine.Reserved) engine.Occupancy {
 	return engine.Occupancy{Reserved: reserved}
 }

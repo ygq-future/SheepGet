@@ -1174,6 +1174,50 @@ func TestQueueController_CategoryID_PreservedOnSubmit(t *testing.T) {
 	if savedTask2.CategoryID != "builtin-audio" {
 		t.Errorf("savedTask2.CategoryID = %q, want %q", savedTask2.CategoryID, "builtin-audio")
 	}
+
+	// 3. Duplicate resolution (redownload): old task had builtin-file, new submission specifies builtin-video
+	dupOldTask := &task.Task{
+		ID:         "task_dup_old_file",
+		URL:        "https://example.com/video.m3u8",
+		Filename:   "video.m3u8",
+		Directory:  tmpDir,
+		CategoryID: "builtin-file",
+		Status:     task.StatusCompleted,
+	}
+	if err := store.Save(ctx, dupOldTask); err != nil {
+		t.Fatalf("failed to seed dup old task: %v", err)
+	}
+
+	resp3, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/video.m3u8",
+		Filename:  "video.mp4",
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue 3 failed: %v", err)
+	}
+	resolvedDupTask, err := qc.Submit(ctx, FileInfoSubmission{
+		RequestID:  resp3.RequestID,
+		URL:        "https://example.com/video.m3u8",
+		Filename:   "video.mp4",
+		Directory:  tmpDir,
+		CategoryID: "builtin-video",
+		Action:     "redownload",
+		MaxConn:    4,
+	})
+	if err != nil {
+		t.Fatalf("submit duplicate redownload failed: %v", err)
+	}
+	if resolvedDupTask.CategoryID != "builtin-video" {
+		t.Errorf("resolvedDupTask.CategoryID = %q, want %q", resolvedDupTask.CategoryID, "builtin-video")
+	}
+	savedDupTask, err := store.Get(ctx, resolvedDupTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get saved dup task: %v", err)
+	}
+	if savedDupTask.CategoryID != "builtin-video" {
+		t.Errorf("savedDupTask.CategoryID = %q, want %q", savedDupTask.CategoryID, "builtin-video")
+	}
 }
 
 func TestQueueController_Probing_StateTransition(t *testing.T) {

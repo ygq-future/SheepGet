@@ -564,6 +564,45 @@ func TestManager_ResolveDuplicate_PreservesHLSMedia(t *testing.T) {
 		t.Fatalf("expected 100MB TotalBytes, got %d", newTask.TotalBytes)
 	}
 }
+func TestManager_ResolveDuplicate_UpdatesCategoryID(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	targetURL := "https://example.com/stream.m3u8"
+	oldTask := &task.Task{
+		ID:         "old_stream",
+		URL:        targetURL,
+		Filename:   "stream.m3u8",
+		Directory:  tmpDir,
+		CategoryID: "builtin-file",
+		Status:     task.StatusCompleted,
+	}
+	_ = store.Save(ctx, oldTask)
+	// 1. Copy with explicit CategoryID "custom-video" (old task remains)
+	copyTask, err := mgr.ResolveDuplicateFromProbeWithMetadata(ctx, oldTask.ID, "copy", tmpDir, "stream.mp4", 2, nil, "custom-video")
+	if err != nil {
+		t.Fatalf("ResolveDuplicateFromProbeWithMetadata copy failed: %v", err)
+	}
+	if copyTask.CategoryID != "custom-video" {
+		t.Errorf("copyTask.CategoryID = %q, want %q", copyTask.CategoryID, "custom-video")
+	}
+
+	// 2. Redownload with explicit CategoryID "builtin-video" (replaces old task)
+	newTask, err := mgr.ResolveDuplicateFromProbeWithMetadata(ctx, oldTask.ID, "redownload", tmpDir, "stream.mp4", 2, nil, "builtin-video")
+	if err != nil {
+		t.Fatalf("ResolveDuplicateFromProbeWithMetadata redownload failed: %v", err)
+	}
+	if newTask.CategoryID != "builtin-video" {
+		t.Errorf("newTask.CategoryID = %q, want %q", newTask.CategoryID, "builtin-video")
+	}
+}
+
 func writeFile(t *testing.T, path string) {
 	t.Helper()
 	file, err := os.Create(path)
