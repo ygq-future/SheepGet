@@ -454,18 +454,14 @@ export function App() {
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
       {/* Left Full-Height Aside (Unified vertical border-r, Linear-inspired) */}
       <aside
-        className={`flex h-screen shrink-0 flex-col justify-between border-r border-[var(--border-subtle)] bg-[var(--bg-app)]/80 backdrop-blur-xl transition-all duration-200 ${
-          sidebarCollapsed ? 'w-14 items-center px-2 py-3' : 'w-44 p-3'
+        className={`flex h-screen shrink-0 flex-col justify-between overflow-hidden border-r border-[var(--border-subtle)] bg-[var(--bg-app)]/80 px-2.5 py-3 backdrop-blur-xl transition-[width] duration-200 ease-out ${
+          sidebarCollapsed ? 'w-14' : 'w-44'
         }`}
       >
         {/* Aside Top: Brand Header & Categorized Navigation */}
         <div className="w-full space-y-4">
           {/* Brand Header */}
-          <div
-            className={`flex h-10 items-center ${
-              sidebarCollapsed ? 'justify-center' : 'gap-2.5 px-1'
-            }`}
-          >
+          <div className="flex h-10 items-center gap-2.5 overflow-hidden px-0.5">
             <button
               type="button"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -479,20 +475,36 @@ export function App() {
               />
             </button>
 
-            {!sidebarCollapsed && (
-              <span className="text-base font-semibold tracking-tight text-[var(--text-primary)]">
-                SheepGet
-              </span>
-            )}
+            <AnimatePresence initial={false}>
+              {!sidebarCollapsed && (
+                <motion.span
+                  initial={{ opacity: 0, x: -6, width: 0 }}
+                  animate={{ opacity: 1, x: 0, width: 'auto' }}
+                  exit={{ opacity: 0, x: -6, width: 0 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  className="overflow-hidden text-base font-semibold tracking-tight whitespace-nowrap text-[var(--text-primary)]"
+                >
+                  SheepGet
+                </motion.span>
+              )}
+            </AnimatePresence>
           </div>
 
           {/* Navigation Section */}
           <div className="space-y-1">
-            {!sidebarCollapsed && (
-              <div className="px-2 pb-1 text-[10px] font-semibold tracking-wider text-[var(--text-dim)] uppercase">
-                任务列表
-              </div>
-            )}
+            <AnimatePresence initial={false}>
+              {!sidebarCollapsed && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-dim)] uppercase"
+                >
+                  任务列表
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -503,16 +515,14 @@ export function App() {
                   key={item.id}
                   onClick={() => handleSelectFilter(item.id)}
                   title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
-                  className={`group relative flex w-full cursor-pointer items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
-                    sidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-2.5 py-2'
-                  } ${
+                  className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
                     isActive
                       ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
                       : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
                   }`}
                 >
                   {/* Active Indicator Bar */}
-                  {isActive && !sidebarCollapsed && (
+                  {isActive && (
                     <span
                       className={`absolute top-2 bottom-2 left-1 w-0.5 rounded-full shadow-xs ${
                         item.id === 'error' ? 'bg-rose-500' : 'bg-[var(--accent)]'
@@ -520,34 +530,52 @@ export function App() {
                     />
                   )}
                   {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
-                    <span className="absolute top-2 right-2 h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
                   )}
-                  <span
-                    className={`flex items-center gap-2.5 transition-colors ${
+                  <div
+                    className={`flex min-w-0 items-center gap-2.5 transition-colors ${
                       isActive
                         ? item.color
                         : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
                     }`}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
-                    {!sidebarCollapsed && <span>{item.label}</span>}
-                  </span>
+                    <AnimatePresence initial={false}>
+                      {!sidebarCollapsed && (
+                        <motion.span
+                          initial={{ opacity: 0, x: -6, width: 0 }}
+                          animate={{ opacity: 1, x: 0, width: 'auto' }}
+                          exit={{ opacity: 0, x: -6, width: 0 }}
+                          transition={{ duration: 0.18, ease: 'easeOut' }}
+                          className="overflow-hidden whitespace-nowrap"
+                        >
+                          {item.label}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
+                  </div>
 
-                  {!sidebarCollapsed && (
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
-                        isActive
-                          ? item.id === 'error'
-                            ? 'bg-rose-500/15 font-semibold text-rose-500'
-                            : 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
-                          : item.id === 'error' && item.count > 0
-                            ? 'bg-rose-500/10 font-medium text-rose-500'
-                            : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      {item.count}
-                    </span>
-                  )}
+                  <AnimatePresence initial={false}>
+                    {!sidebarCollapsed && (
+                      <motion.span
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        transition={{ duration: 0.18, ease: 'easeOut' }}
+                        className={`shrink-0 overflow-hidden rounded-full px-1.5 py-0.5 font-mono text-[10px] whitespace-nowrap transition-colors ${
+                          isActive
+                            ? item.id === 'error'
+                              ? 'bg-rose-500/15 font-semibold text-rose-500'
+                              : 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
+                            : item.id === 'error' && item.count > 0
+                              ? 'bg-rose-500/10 font-medium text-rose-500'
+                              : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
+                        }`}
+                      >
+                        {item.count}
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
                 </button>
               );
             })}
@@ -558,45 +586,61 @@ export function App() {
         <div className="w-full space-y-2 border-t border-[var(--border-subtle)] pt-2.5">
           <button
             onClick={() => handleSelectFilter('settings')}
-            title="偏好设置"
-            className={`group relative flex w-full cursor-pointer items-center rounded-lg text-xs font-medium outline-hidden transition-all duration-150 select-none ${
-              sidebarCollapsed ? 'justify-center px-0 py-2.5' : 'justify-between px-2.5 py-2'
-            } ${
+            title={sidebarCollapsed ? '偏好设置' : undefined}
+            className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
               filter === 'settings'
                 ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
             }`}
           >
-            {filter === 'settings' && !sidebarCollapsed && (
+            {filter === 'settings' && (
               <span className="absolute top-2 bottom-2 left-1 w-0.5 rounded-full bg-[var(--accent)] shadow-xs" />
             )}
 
-            <span
-              className={`flex items-center gap-2.5 transition-colors ${
+            <div
+              className={`flex min-w-0 items-center gap-2.5 transition-colors ${
                 filter === 'settings'
                   ? 'text-[var(--text-primary)]'
                   : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
               }`}
             >
               <SettingsIcon className="h-4 w-4 shrink-0" />
-              {!sidebarCollapsed && <span>偏好设置</span>}
-            </span>
+              <AnimatePresence initial={false}>
+                {!sidebarCollapsed && (
+                  <motion.span
+                    initial={{ opacity: 0, x: -6, width: 0 }}
+                    animate={{ opacity: 1, x: 0, width: 'auto' }}
+                    exit={{ opacity: 0, x: -6, width: 0 }}
+                    transition={{ duration: 0.18, ease: 'easeOut' }}
+                    className="overflow-hidden whitespace-nowrap"
+                  >
+                    偏好设置
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </div>
 
             {sidebarCollapsed ? (
               <span
-                className={`absolute top-2 right-2 h-2 w-2 rounded-full ${serverStatusColor}`}
+                className={`absolute top-1.5 right-1.5 h-2 w-2 rounded-full ${serverStatusColor}`}
                 title={serverStatusTitle}
               />
             ) : (
-              <div
-                className="flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors group-hover:bg-white/5"
-                title={serverStatusTitle}
-              >
-                <span className={`h-2 w-2 shrink-0 rounded-full ${serverStatusColor}`} />
-                <span className="font-mono text-[10px] text-[var(--text-muted)]">
-                  {serverStatus.port}
-                </span>
-              </div>
+              <AnimatePresence initial={false}>
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  className="flex shrink-0 items-center gap-1.5 overflow-hidden rounded-md px-1.5 py-0.5 whitespace-nowrap transition-colors group-hover:bg-white/5"
+                  title={serverStatusTitle}
+                >
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${serverStatusColor}`} />
+                  <span className="font-mono text-[10px] text-[var(--text-muted)]">
+                    {serverStatus.port}
+                  </span>
+                </motion.div>
+              </AnimatePresence>
             )}
           </button>
         </div>
