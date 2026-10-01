@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ResponseFilenameCache } from './filenames';
+import { ResponseFilenameCache, cleanFilename } from './filenames';
 
 describe('ResponseFilenameCache', () => {
   it('按 URL 记住响应头里的真实文件名', () => {
@@ -51,5 +51,31 @@ describe('ResponseFilenameCache', () => {
     assert.equal(cache.lookup('https://example.com/2'), undefined);
     assert.equal(cache.lookup('https://example.com/1'), 'a2.msi');
     assert.equal(cache.lookup('https://example.com/3'), 'c.msi');
+  });
+});
+
+describe('cleanFilename', () => {
+  it('剥离 Windows 反斜杠绝对路径与目录前缀', () => {
+    assert.equal(
+      cleanFilename('E:\\library\\downloads\\google\\document_123.mp4'),
+      'document_123.mp4',
+    );
+    assert.equal(cleanFilename('C:\\Downloads\\file.zip'), 'file.zip');
+  });
+
+  it('剥离 POSIX 正斜杠绝对路径与目录前缀', () => {
+    assert.equal(cleanFilename('/home/user/downloads/archive.tar.gz'), 'archive.tar.gz');
+    assert.equal(cleanFilename('folder/sub/media.mp4'), 'media.mp4');
+  });
+
+  it('去除包裹引号与首尾空白', () => {
+    assert.equal(cleanFilename('  "video.mp4"  '), 'video.mp4');
+    assert.equal(cleanFilename(" 'D:\\data\\music.flac' "), 'music.flac');
+  });
+
+  it('处理空串与异常输入', () => {
+    assert.equal(cleanFilename(''), '');
+    assert.equal(cleanFilename(undefined), '');
+    assert.equal(cleanFilename('   '), '');
   });
 });

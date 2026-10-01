@@ -71,6 +71,34 @@ func TestURLFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanFilename(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"windows absolute path with backslashes", `E:\library\downloads\google\document_60868733847029752.mp4`, "document_60868733847029752.mp4"},
+		{"posix absolute path", `/var/downloads/video.mp4`, "video.mp4"},
+		{"nested relative path with mixed slashes", `folder\sub/file.zip`, "file.zip"},
+		{"quoted filename with whitespace", `  "document.pdf"  `, "document.pdf"},
+		{"single quotes with path", `'C:\temp\image.png'`, "image.png"},
+		{"directory traversal", `../../etc/passwd`, "passwd"},
+		{"empty or pure slashes", "", ""},
+		{"root slash only", "/", ""},
+		{"backslash only", `\`, ""},
+		{"dots only", "..", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := engine.CleanFilename(tc.input)
+			if got != tc.want {
+				t.Errorf("CleanFilename(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
 func TestParseContentDispositionFilename(t *testing.T) {
 	cases := []struct {
 		name string

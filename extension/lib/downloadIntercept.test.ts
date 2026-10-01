@@ -467,4 +467,57 @@ describe('冷启动的下载事件', () => {
       log.restore();
     }
   });
+
+  it('当下载项为非 in_progress 状态（如 complete 或 interrupted 历史重放）时，绝不拦截', async () => {
+    await applyConfig(rules(12, ['zip']));
+    const browser = createHarness({
+      stored: {},
+    });
+    const log = captureDecisionLog();
+    const restore = await startServiceWorker(browser.chrome);
+    try {
+      const intercept = await browser.created;
+      // 模拟已完成的历史下载项
+      intercept({
+        ...downloadItem,
+        state: 'complete' as unknown as chrome.downloads.DownloadItem['state'],
+      });
+      // 模拟中断的历史下载项
+      intercept({
+        ...downloadItem,
+        id: 43,
+        state: 'interrupted' as unknown as chrome.downloads.DownloadItem['state'],
+      });
+      // 等待宏任务刷新以确保没有产生决策日志和挂起行为
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(log.count(), 0, '非 in_progress 状态下载项绝不能产生接管判定');
+      assert.deepEqual(browser.paused, [], '历史项绝不可挂起');
+    } finally {
+      restore();
+      log.restore();
+    }
+  });
+
+  it('当下载项 startTime 远早于当前时间（历史记录重放）时，绝不拦截', async () => {
+    await applyConfig(rules(13, ['zip']));
+    const browser = createHarness({
+      stored: {},
+    });
+    const log = captureDecisionLog();
+    const restore = await startServiceWorker(browser.chrome);
+    try {
+      const intercept = await browser.created;
+      // 模拟 1 小时前创建的历史下载项
+      intercept({
+        ...downloadItem,
+        startTime: new Date(Date.now() - 3600_000).toISOString(),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(log.count(), 0, '历史旧时间戳下载项绝不能产生接管判定');
+      assert.deepEqual(browser.paused, [], '历史项绝不可挂起');
+    } finally {
+      restore();
+      log.restore();
+    }
+  });
 });

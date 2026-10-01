@@ -366,7 +366,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		dupTask, _ = qc.engine.FindDuplicateTask(ctx, req.URL)
 	}
 
-	filename := req.Filename
+	filename := engine.CleanFilename(req.Filename)
 	if filename == "" && req.URL != "" {
 		filename = engine.URLFilename(req.URL)
 	}

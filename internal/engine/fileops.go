@@ -15,9 +15,9 @@ import (
 // DefaultFilename 是 URL 与服务器都没有给出文件名时使用的兜底名称。
 const DefaultFilename = "download.bin"
 
-// sanitizeDispositionFilename 清理 Content-Disposition 或 Query 提取的文件名，
-// 剥离路径分隔符防止路径穿越，去除首尾空白与包裹引号。
-func sanitizeDispositionFilename(name string) string {
+// CleanFilename 清理任意外部传入的文件名，剥离 Windows (\) 与 POSIX (/) 路径分隔符，
+// 去除首尾空白与包裹引号，防范绝对路径与目录穿越，仅保留纯文件名。
+func CleanFilename(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.Trim(name, `"'`)
 	name = strings.TrimSpace(name)
@@ -31,6 +31,10 @@ func sanitizeDispositionFilename(name string) string {
 		return ""
 	}
 	return name
+}
+
+func sanitizeDispositionFilename(name string) string {
+	return CleanFilename(name)
 }
 
 // ParseContentDispositionFilename 从 Content-Disposition 标头或参数值中提取文件名。

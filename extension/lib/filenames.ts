@@ -36,3 +36,16 @@ export class ResponseFilenameCache {
     return undefined;
   }
 }
+
+/**
+ * 剥离任何 Windows (\) 或 POSIX (/) 路径前缀，去除包裹引号与首尾空白，
+ * 仅保留纯文件名，防止 Chromium 历史恢复或已落盘项带有的完整本地路径被误当作建议文件名。
+ */
+export function cleanFilename(raw: string | undefined): string {
+  if (!raw) return '';
+  const trimmed = raw.trim().replace(/^["']|["']$/g, '');
+  if (!trimmed) return '';
+  const parts = trimmed.split(/[/\\]/);
+  const base = parts.pop() || '';
+  return base.trim();
+}

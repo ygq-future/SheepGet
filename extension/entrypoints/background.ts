@@ -1,5 +1,5 @@
 import { DesktopClient, type DesktopEventLink, discoverSessionViaHttp } from '../lib/client';
-import { ResponseFilenameCache } from '../lib/filenames';
+import { ResponseFilenameCache, cleanFilename } from '../lib/filenames';
 import { LINK_VERIFY_TTL_MS, planHandoverFailure, shouldReverifyLink } from '../lib/handover';
 import {
   isMediaResponse,
@@ -1019,6 +1019,19 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   if (!item || !item.id || inFlightDownloads.has(item.id)) {
     return;
   }
+  // 仅接管正在进行中的新下载；浏览器启动或恢复会话时，DownloadManager 会从本地历史中
+  // 恢复 complete 或 interrupted 的记录并抛出 onCreated 事件，绝不能将历史项误作新下载接管。
+  if (item.state && item.state !== 'in_progress') {
+    return;
+  }
+
+  // 校验任务启动时间戳：若任务建立时间早于当前 15 秒以上，说明是历史记录重放，直接忽略。
+  if (item.startTime) {
+    const startMs = new Date(item.startTime).getTime();
+    if (!Number.isNaN(startMs) && Date.now() - startMs > 15_000) {
+      return;
+    }
+  }
 
   // Only intercept HTTP/HTTPS downloads
   const url = item.finalUrl || item.url;
@@ -1047,7 +1060,8 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   // 判定用的文件名优先取响应头里的真名：Chrome 在 onCreated 给出的名字是从 URL 推出来的，
   // 路径里没有后缀时（GitHub 资产链接的末段是 GUID）按它判定必然漏接。
   const responseFilename = responseFilenames.lookup(item.finalUrl, item.url);
-  const filename = responseFilename || item.filename;
+  const rawFilename = responseFilename || item.filename;
+  const filename = cleanFilename(rawFilename);
 
   // 3. 异步权威判定：确保规则就绪、读取标签页真实地址栏与页面实时按键状态
   const config = await readyConfig();

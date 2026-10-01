@@ -1303,3 +1303,32 @@ func TestQueueController_QueuedItemsReserveTheirNames(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueController_Enqueue_SanitizesFilenamePath(t *testing.T) {
+	ctx := context.Background()
+	qc, _, _, _, tmpDir := setupTestQueue(t, config.DuplicatePolicyPrompt)
+
+	// 模拟外部或扩展传入包含 Windows 绝对路径的污损建议文件名
+	req := DownloadRequest{
+		URL:       "http://127.0.0.1:1/video.mp4",
+		Filename:  `E:\library\downloads\google\document_60868733847029752.mp4`,
+		Directory: tmpDir,
+	}
+
+	if _, err := qc.Enqueue(ctx, req); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	item, err := qc.GetActive()
+	if err != nil || item == nil {
+		t.Fatalf("failed to get active item: %v", err)
+	}
+
+	wantFilename := "document_60868733847029752.mp4"
+	if item.Filename != wantFilename {
+		t.Errorf("expected sanitized filename %q, got %q", wantFilename, item.Filename)
+	}
+	if item.SuggestedFilename != wantFilename {
+		t.Errorf("expected suggested filename %q, got %q", wantFilename, item.SuggestedFilename)
+	}
+}
