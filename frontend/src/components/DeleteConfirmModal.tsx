@@ -8,6 +8,7 @@ interface DeleteConfirmModalProps {
   onOpenChange: (open: boolean) => void;
   filename?: string;
   count?: number;
+  defaultDeleteDiskFile?: boolean;
   onConfirm: (deleteDiskFile: boolean) => void;
 }
 
@@ -16,21 +17,30 @@ export function DeleteConfirmModal({
   onOpenChange,
   filename = '',
   count = 1,
+  defaultDeleteDiskFile = false,
   onConfirm,
 }: DeleteConfirmModalProps) {
-  const [deleteDiskFile, setDeleteDiskFile] = useState(false);
+  const [deleteDiskFile, setDeleteDiskFile] = useState(defaultDeleteDiskFile);
+  const [prevOpen, setPrevOpen] = useState(open);
+
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setDeleteDiskFile(defaultDeleteDiskFile);
+    }
+  }
 
   const isBatch = count > 1;
 
   const handleConfirm = () => {
     onConfirm(deleteDiskFile);
-    setDeleteDiskFile(false);
+    setDeleteDiskFile(defaultDeleteDiskFile);
     onOpenChange(false);
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
-      setDeleteDiskFile(false);
+      setDeleteDiskFile(defaultDeleteDiskFile);
     }
     onOpenChange(nextOpen);
   };

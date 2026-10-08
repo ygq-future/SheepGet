@@ -36,6 +36,10 @@ import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
 import { filterTasks, type TaskFilterType } from './lib/taskFilter';
 import { Button } from './components/ui/Button';
+import {
+  shouldDefaultDeleteDiskFileForTask,
+  shouldDefaultDeleteDiskFileForBatch,
+} from './lib/taskDelete';
 const SettingsPanel = lazy(() =>
   import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })),
 );
@@ -77,6 +81,12 @@ export function App() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [baseSelectedIds, setBaseSelectedIds] = useState<Set<string>>(new Set());
+
+  const batchDefaultDeleteDiskFile = useMemo(() => {
+    if (!isBatchDeleting || selectedTaskIds.size === 0) return false;
+    const selected = tasks.filter((t) => selectedTaskIds.has(t.id));
+    return shouldDefaultDeleteDiskFileForBatch(selected);
+  }, [isBatchDeleting, selectedTaskIds, tasks]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('sheep_sidebar_collapsed') === 'true';
@@ -820,6 +830,7 @@ export function App() {
         }}
         filename={deletingTask?.filename || ''}
         count={1}
+        defaultDeleteDiskFile={shouldDefaultDeleteDiskFileForTask(deletingTask)}
         onConfirm={(deleteDiskFile) => {
           void handleConfirmSingleDelete(deleteDiskFile);
         }}
@@ -832,6 +843,7 @@ export function App() {
           if (!open) setIsBatchDeleting(false);
         }}
         count={selectedTaskIds.size}
+        defaultDeleteDiskFile={batchDefaultDeleteDiskFile}
         onConfirm={(deleteDiskFile) => {
           void handleConfirmBatchDelete(deleteDiskFile);
         }}
