@@ -46,6 +46,10 @@ type Chunk struct {
 type Task struct {
 	ID  string `json:"id"`
 	URL string `json:"url"`
+	// FinalURL 是重定向收敛后的最终下载直链。
+	// 当 URL 指向镜像分发网关或多级 302 重定向时，分块下载与续传请求直接连接 FinalURL，
+	// 避免并发分块被轮询到不同镜像节点导致 ETag 变动或 412 错误；同时保留原始 URL 供界面展示与追溯。
+	FinalURL string `json:"finalUrl,omitempty"`
 	// PageURL 是该下载任务的来源网页地址（如浏览器扩展捕获时所在的源页面）。
 	// 当下载链接失效或用户需要时，可直接在浏览器中重新打开该源网页。
 	PageURL   string `json:"pageUrl,omitempty"`
@@ -105,6 +109,17 @@ type Task struct {
 // IsHLS reports whether this task downloads an HLS playlist and therefore has a processing stage.
 func (t *Task) IsHLS() bool {
 	return t != nil && t.Media != nil
+}
+
+// EffectiveURL 返回本次下载实际应当连接的目标地址：若解析出了 FinalURL 则优先使用，否则使用原始 URL。
+func (t *Task) EffectiveURL() string {
+	if t != nil && t.FinalURL != "" {
+		return t.FinalURL
+	}
+	if t != nil {
+		return t.URL
+	}
+	return ""
 }
 
 // Clone returns a copy that shares nothing mutable with the original: the slices written during

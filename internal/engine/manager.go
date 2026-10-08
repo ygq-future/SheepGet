@@ -53,6 +53,7 @@ type Config struct {
 // ProbeResult holds the probed metadata and duplicate-task state for a URL.
 type ProbeResult struct {
 	URL           string     `json:"url"`
+	FinalURL      string     `json:"finalUrl,omitempty"`
 	Filename      string     `json:"filename"`
 	TotalBytes    int64      `json:"totalBytes"`
 	Resumable     bool       `json:"resumable"`
@@ -82,6 +83,13 @@ func cloneProbeResult(p *ProbeResult) *ProbeResult {
 	cp := *p
 	cp.DuplicateTask = nil
 	return &cp
+}
+
+func finalURLFrom(existing string, probe *ProbeResult) string {
+	if probe != nil && probe.FinalURL != "" {
+		return probe.FinalURL
+	}
+	return existing
 }
 
 // ConsistencyResult reports whether an updated URL is consistent with original task file.
@@ -335,6 +343,7 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 
 	probe := &ProbeResult{URL: urlStr, TotalBytes: -1}
 	if info != nil {
+		probe.FinalURL = info.FinalURL
 		probe.Filename = info.Filename
 		probe.TotalBytes = info.TotalBytes
 		probe.Resumable = info.Resumable
@@ -474,6 +483,7 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		newTask := &task.Task{
 			ID:             nextTaskID(),
 			URL:            t.URL,
+			FinalURL:       finalURLFrom(t.FinalURL, probe),
 			PageURL:        t.PageURL,
 			CategoryID:     targetCatID,
 			Filename:       filename,
@@ -530,6 +540,7 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		newTask := &task.Task{
 			ID:             nextTaskID(),
 			URL:            t.URL,
+			FinalURL:       finalURLFrom(t.FinalURL, probe),
 			PageURL:        t.PageURL,
 			CategoryID:     targetCatID,
 			Filename:       filename,
@@ -1166,6 +1177,7 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 	t := &task.Task{
 		ID:             nextTaskID(),
 		URL:            urlStr,
+		FinalURL:       finalURLFrom("", probe),
 		PageURL:        pageURL,
 		CategoryID:     categoryID,
 		Filename:       filename,

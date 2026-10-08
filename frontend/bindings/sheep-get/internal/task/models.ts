@@ -97,6 +97,13 @@ export class Task {
     "url": string;
 
     /**
+     * FinalURL 是重定向收敛后的最终下载直链。
+     * 当 URL 指向镜像分发网关或多级 302 重定向时，分块下载与续传请求直接连接 FinalURL，
+     * 避免并发分块被轮询到不同镜像节点导致 ETag 变动或 412 错误；同时保留原始 URL 供界面展示与追溯。
+     */
+    "finalUrl"?: string;
+
+    /**
      * PageURL 是该下载任务的来源网页地址（如浏览器扩展捕获时所在的源页面）。
      * 当下载链接失效或用户需要时，可直接在浏览器中重新打开该源网页。
      */
@@ -227,22 +234,22 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField20_0 = $$createType1;
-        const $$createField21_0 = $$createType3;
-        const $$createField24_0 = $$createType4;
-        const $$createField25_0 = $$createType6;
+        const $$createField21_0 = $$createType1;
+        const $$createField22_0 = $$createType3;
+        const $$createField25_0 = $$createType4;
+        const $$createField26_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField20_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField21_0($$parsedSource["chunks"]);
         }
         if ("media" in $$parsedSource) {
-            $$parsedSource["media"] = $$createField21_0($$parsedSource["media"]);
+            $$parsedSource["media"] = $$createField22_0($$parsedSource["media"]);
         }
         if ("segmentDone" in $$parsedSource) {
-            $$parsedSource["segmentDone"] = $$createField24_0($$parsedSource["segmentDone"]);
+            $$parsedSource["segmentDone"] = $$createField25_0($$parsedSource["segmentDone"]);
         }
         if ("mediaInputs" in $$parsedSource) {
-            $$parsedSource["mediaInputs"] = $$createField25_0($$parsedSource["mediaInputs"]);
+            $$parsedSource["mediaInputs"] = $$createField26_0($$parsedSource["mediaInputs"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

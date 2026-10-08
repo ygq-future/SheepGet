@@ -119,6 +119,7 @@ type HTTPProbeInfo struct {
 	LastModified string `json:"lastModified"`
 	Filename     string `json:"filename"`
 	ContentType  string `json:"contentType"`
+	FinalURL     string `json:"finalUrl,omitempty"`
 }
 
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
@@ -422,11 +423,19 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 		return nil, fmt.Errorf("probe failed: server returned %s", resp.Status)
 	}
 
+	finalURL := urlStr
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+		if u := resp.Request.URL.String(); u != "" {
+			finalURL = u
+		}
+	}
+
 	info := &HTTPProbeInfo{
 		TotalBytes:   -1,
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
 		ContentType:  resp.Header.Get("Content-Type"),
+		FinalURL:     finalURL,
 	}
 
 	// Determine resumability and total size
@@ -459,7 +468,12 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 		}
 	}
 	if info.Filename == "" {
-		info.Filename = extractFilenameFromURL(urlStr)
+		if finalURL != "" {
+			info.Filename = extractFilenameFromURL(finalURL)
+		}
+		if info.Filename == "" {
+			info.Filename = extractFilenameFromURL(urlStr)
+		}
 	}
 
 	return info, nil
@@ -531,7 +545,7 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	reqCtx, watch := stallwatch.New(ctx, d.stallTimeoutOrDefault())
 	defer watch.Stop()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.URL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.EffectiveURL(), nil)
 	if err != nil {
 		return err
 	}
@@ -556,6 +570,11 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	defer func() { _ = resp.Body.Close() }()
 	watch.Touch()
 
+	if resp.Request != nil && resp.Request.URL != nil {
+		if final := resp.Request.URL.String(); final != "" && t.FinalURL == "" {
+			t.FinalURL = final
+		}
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned error status: %s", resp.Status)
 	}
@@ -978,7 +997,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	reqCtx, watch := stallwatch.New(ctx, coord.downloader.stallTimeoutOrDefault())
 	defer watch.Stop()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, coord.t.URL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, coord.t.EffectiveURL(), nil)
 	if err != nil {
 		return err
 	}
@@ -1002,6 +1021,15 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	defer func() { _ = resp.Body.Close() }()
 	watch.Touch()
 
+	if resp.Request != nil && resp.Request.URL != nil {
+		if final := resp.Request.URL.String(); final != "" && coord.t.FinalURL == "" {
+			coord.mu.Lock()
+			if coord.t.FinalURL == "" {
+				coord.t.FinalURL = final
+			}
+			coord.mu.Unlock()
+		}
+	}
 	if resp.StatusCode == http.StatusPreconditionFailed {
 		return ErrVersionMismatch
 	}

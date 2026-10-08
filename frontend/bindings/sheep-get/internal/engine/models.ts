@@ -377,6 +377,7 @@ export class HLSProbe {
  */
 export class ProbeResult {
     "url": string;
+    "finalUrl"?: string;
     "filename": string;
     "totalBytes": number;
     "resumable": boolean;
@@ -421,14 +422,14 @@ export class ProbeResult {
      * Creates a new ProbeResult instance from a string or object.
      */
     static createFrom($$source: any = {}): ProbeResult {
-        const $$createField7_0 = $$createType1;
-        const $$createField8_0 = $$createType15;
+        const $$createField8_0 = $$createType1;
+        const $$createField9_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
-            $$parsedSource["duplicateTask"] = $$createField7_0($$parsedSource["duplicateTask"]);
+            $$parsedSource["duplicateTask"] = $$createField8_0($$parsedSource["duplicateTask"]);
         }
         if ("hls" in $$parsedSource) {
-            $$parsedSource["hls"] = $$createField8_0($$parsedSource["hls"]);
+            $$parsedSource["hls"] = $$createField9_0($$parsedSource["hls"]);
         }
         return new ProbeResult($$parsedSource as Partial<ProbeResult>);
     }

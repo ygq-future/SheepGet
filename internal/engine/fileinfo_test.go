@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -1049,5 +1050,56 @@ func TestManager_ProbeURLCacheAndFlight(t *testing.T) {
 	}
 	if p2.TotalBytes != int64(len(payload)) {
 		t.Fatalf("expected cached %d bytes, got %d", len(payload), p2.TotalBytes)
+	}
+}
+
+func TestManager_ProbeAndCreateTaskWithFinalURL(t *testing.T) {
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "512")
+		w.Header().Set("ETag", "\"final-etag\"")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), 512))
+	}))
+	defer targetServer.Close()
+
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetServer.URL+"/final-file.zip", http.StatusFound)
+	}))
+	defer redirectServer.Close()
+
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to init store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(redirectServer.Client()), engine.Config{})
+	defer mgr.Close()
+	ctx := context.Background()
+
+	probe, err := mgr.ProbeURL(ctx, redirectServer.URL+"/entry", nil)
+	if err != nil {
+		t.Fatalf("ProbeURL failed: %v", err)
+	}
+	expectedFinalURL := targetServer.URL + "/final-file.zip"
+	if probe.FinalURL != expectedFinalURL {
+		t.Fatalf("expected probe.FinalURL %s, got %s", expectedFinalURL, probe.FinalURL)
+	}
+
+	created, err := mgr.AddTaskFromProbeWithMetadata(ctx, redirectServer.URL+"/entry", tmpDir, "final-file.zip", 4, nil, probe, nil, "", "")
+	if err != nil {
+		t.Fatalf("AddTaskFromProbe failed: %v", err)
+	}
+	if created.FinalURL != expectedFinalURL {
+		t.Fatalf("expected created task FinalURL %s, got %s", expectedFinalURL, created.FinalURL)
+	}
+
+	// Verify reloaded from store
+	loaded, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("store.Get failed: %v", err)
+	}
+	if loaded.FinalURL != expectedFinalURL {
+		t.Fatalf("expected loaded task FinalURL %s, got %s", expectedFinalURL, loaded.FinalURL)
 	}
 }

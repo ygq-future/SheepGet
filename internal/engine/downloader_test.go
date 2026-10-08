@@ -485,3 +485,92 @@ func TestHTTPDownloader_ProbeTimeoutAndFastFail(t *testing.T) {
 		t.Errorf("expected fast-fail on 404 with <= 2 requests, got %d", count)
 	}
 }
+
+func TestHTTPDownloader_RedirectFinalURLAndVersionConsistency(t *testing.T) {
+	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 8192) // 256KB
+	etag := "\"mirror-node-1-etag\""
+
+	var mirrorReqs atomic.Int32
+	mirrorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mirrorReqs.Add(1)
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Content-Type", "application/octet-stream")
+
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+			return
+		}
+
+		// Verify If-Match
+		if ifMatch := r.Header.Get("If-Match"); ifMatch != "" && ifMatch != etag {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+
+		var start, end int64
+		_, _ = fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+		if end >= int64(len(payload)) {
+			end = int64(len(payload)) - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[start : end+1])
+	}))
+	defer mirrorServer.Close()
+
+	// Dispatcher server: redirects to mirrorServer
+	dispatcherServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, mirrorServer.URL+"/kdenlive.exe", http.StatusFound)
+	}))
+	defer dispatcherServer.Close()
+
+	downloader := engine.NewHTTPDownloader(dispatcherServer.Client())
+	ctx := context.Background()
+
+	// 1. Probe through dispatcher: verify FinalURL captured
+	info, err := downloader.Probe(ctx, dispatcherServer.URL+"/dispatcher-entry", nil)
+	if err != nil {
+		t.Fatalf("probe failed: %v", err)
+	}
+	if info.FinalURL != mirrorServer.URL+"/kdenlive.exe" {
+		t.Fatalf("expected FinalURL to be %s, got %s", mirrorServer.URL+"/kdenlive.exe", info.FinalURL)
+	}
+	if info.ETag != etag {
+		t.Fatalf("expected ETag %s, got %s", etag, info.ETag)
+	}
+	if info.Filename != "kdenlive.exe" {
+		t.Fatalf("expected Filename kdenlive.exe, got %s", info.Filename)
+	}
+
+	// 2. Download task initialized with FinalURL: verify smooth completion without version mismatch
+	tmpDir := t.TempDir()
+	dlTask := &task.Task{
+		ID:             "task-redirect-finalurl",
+		URL:            dispatcherServer.URL + "/dispatcher-entry",
+		FinalURL:       info.FinalURL,
+		Filename:       info.Filename,
+		Directory:      tmpDir,
+		TotalBytes:     int64(len(payload)),
+		MaxConcurrency: 4,
+		Resumable:      true,
+		ETag:           info.ETag,
+	}
+
+	err = downloader.Download(ctx, dlTask, nil)
+	if err != nil {
+		t.Fatalf("download with FinalURL failed: %v", err)
+	}
+
+	downloadedData, err := os.ReadFile(filepath.Join(tmpDir, "kdenlive.exe"))
+	if err != nil {
+		t.Fatalf("failed to read downloaded file: %v", err)
+	}
+	if !bytes.Equal(downloadedData, payload) {
+		t.Fatal("downloaded content does not match expected payload")
+	}
+}
