@@ -9,6 +9,10 @@ import {
   OpenNewDownload,
   TriggerDownload,
   ShowProgressWindow,
+  PauseTask,
+  ResumeTask,
+  RetryTask,
+  RetryProcessingTask,
   GetServerStatus,
 } from '../bindings/sheep-get/app';
 import { Clipboard, Events } from '@wailsio/runtime';
@@ -40,6 +44,7 @@ import {
   shouldDefaultDeleteDiskFileForTask,
   shouldDefaultDeleteDiskFileForBatch,
 } from './lib/taskDelete';
+import { executeTaskControlAction } from './lib/taskControl';
 const SettingsPanel = lazy(() =>
   import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })),
 );
@@ -234,6 +239,50 @@ export function App() {
     } catch (err) {
       console.error('Failed to delete task:', err);
       showToast('删除任务失败', 'error');
+    }
+  };
+  const handleResumeTask = async (t: task.Task) => {
+    try {
+      await executeTaskControlAction(t, 'resume', {
+        resumeTask: ResumeTask,
+        pauseTask: PauseTask,
+        retryTask: RetryTask,
+        retryProcessingTask: RetryProcessingTask,
+        showProgressWindow: ShowProgressWindow,
+      });
+    } catch (err) {
+      console.error('Failed to resume task:', err);
+      showToast('继续下载失败', 'error');
+    }
+  };
+
+  const handlePauseTask = async (t: task.Task) => {
+    try {
+      await executeTaskControlAction(t, 'pause', {
+        resumeTask: ResumeTask,
+        pauseTask: PauseTask,
+        retryTask: RetryTask,
+        retryProcessingTask: RetryProcessingTask,
+        showProgressWindow: ShowProgressWindow,
+      });
+    } catch (err) {
+      console.error('Failed to pause task:', err);
+      showToast('暂停任务失败', 'error');
+    }
+  };
+
+  const handleRetryTask = async (t: task.Task) => {
+    try {
+      await executeTaskControlAction(t, 'retry', {
+        resumeTask: ResumeTask,
+        pauseTask: PauseTask,
+        retryTask: RetryTask,
+        retryProcessingTask: RetryProcessingTask,
+        showProgressWindow: ShowProgressWindow,
+      });
+    } catch (err) {
+      console.error('Failed to retry task:', err);
+      showToast('重试任务失败', 'error');
     }
   };
 
@@ -812,6 +861,9 @@ export function App() {
                     onOpenFile={handleOpenFile}
                     onOpenFolder={handleOpenFolder}
                     onShowProgress={(id) => void ShowProgressWindow(id)}
+                    onResume={(task) => void handleResumeTask(task)}
+                    onPause={(task) => void handlePauseTask(task)}
+                    onRetry={(task) => void handleRetryTask(task)}
                   />
                 ))}
               </AnimatePresence>

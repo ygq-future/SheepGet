@@ -1,5 +1,15 @@
 import { type MouseEvent } from 'react';
-import { Copy, Activity, ExternalLink, FolderOpen, Trash2, Globe } from 'lucide-react';
+import {
+  Copy,
+  Activity,
+  ExternalLink,
+  FolderOpen,
+  Trash2,
+  Globe,
+  Play,
+  Pause,
+  RotateCcw,
+} from 'lucide-react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
 import { Browser, Clipboard } from '@wailsio/runtime';
 import { showToast } from './ui/Toast';
@@ -10,6 +20,9 @@ export interface TaskActionsProps {
   onOpenFile?: (filePath: string) => void;
   onOpenFolder?: (folderPath: string) => void;
   onDelete: (task: task.Task) => void;
+  onResume?: (task: task.Task) => void;
+  onPause?: (task: task.Task) => void;
+  onRetry?: (task: task.Task) => void;
   className?: string;
 }
 
@@ -19,6 +32,9 @@ export function TaskActions({
   onOpenFile,
   onOpenFolder,
   onDelete,
+  onResume,
+  onPause,
+  onRetry,
   className = '',
 }: TaskActionsProps) {
   const fullPath = t.directory ? `${t.directory}/${t.filename}` : t.filename;
@@ -78,6 +94,27 @@ export function TaskActions({
     onDelete(t);
   };
 
+  const handleResume = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (onResume) {
+      onResume(t);
+    }
+  };
+
+  const handlePause = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (onPause) {
+      onPause(t);
+    }
+  };
+
+  const handleRetry = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (onRetry) {
+      onRetry(t);
+    }
+  };
+
   const isCompleted = t.status === task.Status.StatusCompleted;
 
   // 双击卡片本身会打开进度窗口（TaskItem 的 onDoubleClick），动作条浮在卡片上方，
@@ -88,6 +125,43 @@ export function TaskActions({
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
     >
+      {/* Resume button for paused task */}
+      {t.status === task.Status.StatusPaused && onResume && (
+        <button
+          type="button"
+          onClick={handleResume}
+          className="rounded-md p-1 text-emerald-500 transition-colors hover:bg-emerald-500/15 hover:text-emerald-400"
+          title="继续下载并打开进度窗口"
+        >
+          <Play className="h-3.5 w-3.5 fill-current" />
+        </button>
+      )}
+
+      {/* Pause button for downloading / queued task */}
+      {(t.status === task.Status.StatusDownloading || t.status === task.Status.StatusQueued) &&
+        onPause && (
+          <button
+            type="button"
+            onClick={handlePause}
+            className="rounded-md p-1 text-amber-500 transition-colors hover:bg-amber-500/15 hover:text-amber-400"
+            title="暂停下载"
+          >
+            <Pause className="h-3.5 w-3.5" />
+          </button>
+        )}
+
+      {/* Retry button for error task */}
+      {t.status === task.Status.StatusError && onRetry && (
+        <button
+          type="button"
+          onClick={handleRetry}
+          className="rounded-md p-1 text-rose-500 transition-colors hover:bg-rose-500/15 hover:text-rose-400"
+          title="重试下载并打开进度窗口"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </button>
+      )}
+
       {/* Copy link button */}
       <button
         type="button"

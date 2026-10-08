@@ -20,6 +20,9 @@ interface TaskItemProps {
   onOpenFile: (filePath: string) => void;
   onOpenFolder: (folderPath: string) => void;
   onShowProgress?: (id: string) => void;
+  onResume?: (task: task.Task) => void;
+  onPause?: (task: task.Task) => void;
+  onRetry?: (task: task.Task) => void;
 }
 
 export function TaskItem({
@@ -30,6 +33,9 @@ export function TaskItem({
   onOpenFile,
   onOpenFolder,
   onShowProgress,
+  onResume,
+  onPause,
+  onRetry,
 }: TaskItemProps) {
   const percent =
     t.totalBytes > 0 ? Math.min(100, Math.round((t.downloaded / t.totalBytes) * 100)) : 0;
@@ -177,6 +183,9 @@ export function TaskItem({
           onOpenFile={onOpenFile}
           onOpenFolder={onOpenFolder}
           onDelete={onDelete}
+          onResume={onResume}
+          onPause={onPause}
+          onRetry={onRetry}
         />
       </div>
     </motion.div>
