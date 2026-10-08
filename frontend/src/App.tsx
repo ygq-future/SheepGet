@@ -7,7 +7,6 @@ import {
   OpenFile,
   OpenFolder,
   OpenNewDownload,
-  TriggerDownload,
   ShowProgressWindow,
   PauseTask,
   ResumeTask,
@@ -15,10 +14,9 @@ import {
   RetryProcessingTask,
   GetServerStatus,
 } from '../bindings/sheep-get/app';
-import { Clipboard, Events } from '@wailsio/runtime';
+import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from './lib/utils';
 import { Event, Ports } from './lib/protocol.generated';
-import { DownloadRequest } from '../bindings/sheep-get/internal/window/models';
 import { TaskItem } from './components/TaskItem';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import {
@@ -433,27 +431,10 @@ export function App() {
 
   const handleNewDownload = async () => {
     try {
-      let clipText = '';
-      try {
-        clipText = await Clipboard.Text();
-      } catch {
-        clipText = await navigator.clipboard.readText().catch(() => '');
-      }
-
-      const trimmed = (clipText || '').trim();
-      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-        try {
-          new URL(trimmed);
-          await TriggerDownload(new DownloadRequest({ url: trimmed }));
-          return;
-        } catch {
-          // Not a valid URL, fall through
-        }
-      }
+      await OpenNewDownload();
     } catch (err) {
-      console.error('Failed to read clipboard for new download:', err);
+      console.error('Failed to open new download window:', err);
     }
-    await OpenNewDownload();
   };
 
   const counts = {

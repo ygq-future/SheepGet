@@ -1723,3 +1723,77 @@ func TestApp_TaskCompleted_FocusProgressWindow(t *testing.T) {
 		t.Fatalf("expected historical task not to trigger popup on startup, got %v", histProgress)
 	}
 }
+
+type testMockClipboard struct {
+	text string
+	ok   bool
+}
+
+func (m *testMockClipboard) Text() (string, bool) {
+	return m.text, m.ok
+}
+
+func TestApp_OpenNewDownload_ExtractsClipboardURL(t *testing.T) {
+	t.Run("valid http and https URLs", func(t *testing.T) {
+		for _, raw := range []string{
+			"https://example.com/file.zip",
+			"  http://sub.domain.org/path/resource?foo=bar#hash  ",
+		} {
+			app, _, _ := newTestApp(t)
+			app.clipboardReader = &testMockClipboard{text: raw, ok: true}
+
+			resp, err := app.OpenNewDownload()
+			if err != nil {
+				t.Fatalf("OpenNewDownload failed: %v", err)
+			}
+			if resp == nil {
+				t.Fatalf("expected non-nil response")
+			}
+
+			item, err := app.GetActiveFileInfo()
+			if err != nil {
+				t.Fatalf("GetActiveFileInfo failed: %v", err)
+			}
+			trimmed := strings.TrimSpace(raw)
+			if item.URL != trimmed {
+				t.Fatalf("expected item.URL %q, got %q", trimmed, item.URL)
+			}
+		}
+	})
+
+	t.Run("fallback to empty when clipboard invalid or empty", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			text string
+			ok   bool
+		}{
+			{"clipboard read error", "https://example.com/file.zip", false},
+			{"empty clipboard", "", true},
+			{"whitespace only", "   \t\n  ", true},
+			{"plain text not url", "hello world", true},
+			{"ftp scheme", "ftp://ftp.example.com/file.zip", true},
+			{"no host", "http://", true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				app, _, _ := newTestApp(t)
+				app.clipboardReader = &testMockClipboard{text: tc.text, ok: tc.ok}
+
+				resp, err := app.OpenNewDownload()
+				if err != nil {
+					t.Fatalf("OpenNewDownload failed: %v", err)
+				}
+				if resp == nil {
+					t.Fatalf("expected non-nil response")
+				}
+
+				item, err := app.GetActiveFileInfo()
+				if err != nil {
+					t.Fatalf("GetActiveFileInfo failed: %v", err)
+				}
+				if item.URL != "" {
+					t.Fatalf("expected empty item.URL, got %q", item.URL)
+				}
+			})
+		}
+	})
+}

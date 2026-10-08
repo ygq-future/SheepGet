@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,7 @@ type App struct {
 	windows             *windowing.Registry
 	progressAlwaysOnTop bool
 	clipboardWatcher    *clipboard.Watcher
+	clipboardReader     clipboard.Reader
 	loopbackServer      *server.Server
 	logger              atomic.Pointer[logging.Logger]
 	logError            error
@@ -859,9 +861,41 @@ func (a *App) TriggerDownload(req window.DownloadRequest) (*window.DownloadRespo
 	return a.windowQueue.Enqueue(a.ctx, req)
 }
 
-// OpenNewDownload opens the FileInfo window with an empty/manual request.
+// extractClipboardURL validates whether the given text is a valid HTTP/HTTPS download link.
+// It trims whitespace, ensures http:// or https:// prefix and valid host, returning the cleaned URL.
+func extractClipboardURL(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+		return "", false
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	return trimmed, true
+}
+
+func (a *App) getClipboardText() (string, bool) {
+	if a.clipboardReader != nil {
+		return a.clipboardReader.Text()
+	}
+	app := a.getApp()
+	if app != nil && app.Clipboard != nil {
+		return app.Clipboard.Text()
+	}
+	return "", false
+}
+
+// OpenNewDownload opens the FileInfo window, automatically populating the URL
+// if the system clipboard contains a valid HTTP/HTTPS link.
 func (a *App) OpenNewDownload() (*window.DownloadResponse, error) {
-	return a.TriggerDownload(window.DownloadRequest{})
+	req := window.DownloadRequest{}
+	if text, ok := a.getClipboardText(); ok {
+		if u, valid := extractClipboardURL(text); valid {
+			req.URL = u
+		}
+	}
+	return a.TriggerDownload(req)
 }
 
 // GetActiveFileInfo returns the active item currently shown in the FileInfo window.
