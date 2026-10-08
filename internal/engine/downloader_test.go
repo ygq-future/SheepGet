@@ -451,3 +451,37 @@ func TestHTTPDownloader_RetryLimitExceeded(t *testing.T) {
 		t.Errorf("expected exactly 7 requests (1 initial + 6 retries), got %d", count)
 	}
 }
+
+func TestHTTPDownloader_ProbeTimeoutAndFastFail(t *testing.T) {
+	// 1. 已取消/超时 Context 应立即返回错误，不发起无谓请求
+	downloader := engine.NewHTTPDownloader(http.DefaultClient)
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := downloader.Probe(canceledCtx, "http://127.0.0.1:65432/test", nil)
+	if err == nil {
+		t.Fatal("expected canceled context to return error")
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Errorf("expected immediate return on canceled context, took %v", time.Since(start))
+	}
+
+	// 2. 遇到明确的 404 状态码时快速失败，不盲目消耗多次重试
+	var reqCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	serverDownloader := engine.NewHTTPDownloader(ts.Client())
+	_, err = serverDownloader.Probe(context.Background(), ts.URL, nil)
+	if err == nil {
+		t.Fatal("expected 404 probe to fail")
+	}
+	// 404 不需要反复重试 3 次 GET，仅允许首次尝试（若为 405 则可试 HEAD，404 不重试 GET）
+	if count := reqCount.Load(); count > 2 {
+		t.Errorf("expected fast-fail on 404 with <= 2 requests, got %d", count)
+	}
+}

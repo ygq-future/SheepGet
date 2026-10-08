@@ -52,6 +52,7 @@ import { extractExtension } from '../lib/category';
 import {
   canKeepCategoryPathOf,
   effectiveCategoryIdOf,
+  isHLSResource,
   overwriteOptionOf,
   resolveAction,
   reuseFields,
@@ -424,8 +425,14 @@ export function FileInfoView() {
   const isOverwriteSelected = overwriteOption !== undefined && selectedAction === overwriteOption;
   const destinationOccupied =
     duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied;
+  const isManualProbing = probing;
+  const hasUnselectedVariants = Boolean(
+    activeItem?.variants && activeItem.variants.length > 1 && !activeItem?.qualityLabel,
+  );
+  const cannotSubmit = loading || isManualProbing || hasUnselectedVariants;
 
   const hlsDuration = activeItem?.mediaDuration ?? 0;
+  const showQuality = isHLSResource(activeItem, draft.url);
   const categoryOptions = useMemo(() => {
     const opts: { value: string; label: string }[] = [];
     for (const c of currentSettings?.download?.customCategories || []) {
@@ -487,7 +494,7 @@ export function FileInfoView() {
   const handleConfirm = useCallback(
     async (actionOverride?: duplicateModels.Action, e?: SyntheticEvent) => {
       if (e) e.preventDefault();
-      if (isProbing || loading) return;
+      if (cannotSubmit) return;
       // 提交以草稿的最新值为准，不依赖渲染时捕获的那一份。
       const current = useFileInfoDraftStore.getState().draft;
       const {
@@ -587,7 +594,7 @@ export function FileInfoView() {
         setLoading(false);
       }
     },
-    [activeItem, discardDraft, loadSettings, patch, setLoading, resetDuration, isProbing, loading],
+    [activeItem, discardDraft, loadSettings, patch, setLoading, resetDuration, cannotSubmit],
   );
   const handleCancel = useCallback(async () => {
     // 先记下这一项的 ID：取消成功后队列会推进到下一项，那时再读就取到别人了。
@@ -615,14 +622,14 @@ export function FileInfoView() {
         void handleCancel();
       } else if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
         if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
-        if (isProbing || loading) return;
+        if (cannotSubmit) return;
         e.preventDefault();
         void handleConfirm();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleConfirm, handleCancel, isProbing, loading]);
+  }, [handleConfirm, handleCancel, cannotSubmit]);
 
   // Resize window dynamically to wrap content perfectly
   useEffect(() => {
@@ -764,20 +771,21 @@ export function FileInfoView() {
             {/* Compact Resource Meta Line */}
             <div className="flex items-center justify-between px-0.5 text-[11px] text-[var(--text-muted)]">
               <span className="flex items-center gap-1.5">
-                {/* 已选清晰度：选定后固定显示，不随其他元信息变化。 */}
-                {activeItem?.qualityLabel ? (
-                  <span>
-                    清晰度:{' '}
-                    <span className="font-medium text-[var(--text-secondary)]">
-                      {activeItem.qualityLabel}
+                {/* 已选清晰度：选定后固定显示，不随其他元信息变化；仅在明确属于 HLS/流媒体候选时在探测中展示加载态。 */}
+                {showQuality &&
+                  (activeItem?.qualityLabel ? (
+                    <span>
+                      清晰度:{' '}
+                      <span className="font-medium text-[var(--text-secondary)]">
+                        {activeItem.qualityLabel}
+                      </span>
                     </span>
-                  </span>
-                ) : isProbing ? (
-                  <span className="inline-flex items-center gap-1">
-                    <span>清晰度:</span>
-                    <Loader2 className="h-3 w-3 animate-spin text-[var(--accent)]" />
-                  </span>
-                ) : null}
+                  ) : isProbing ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span>清晰度:</span>
+                      <Loader2 className="h-3 w-3 animate-spin text-[var(--accent)]" />
+                    </span>
+                  ) : null)}
                 <span>
                   预估大小:{' '}
                   {isProbing ? (
@@ -1224,7 +1232,7 @@ export function FileInfoView() {
         <Button
           size="sm"
           variant="primary"
-          disabled={loading || isProbing}
+          disabled={cannotSubmit}
           onClick={() => void handleConfirm()}
         >
           {loading ? (
@@ -1232,7 +1240,7 @@ export function FileInfoView() {
               <Loader2 className="h-3 w-3 animate-spin" />
               <span>提交中...</span>
             </>
-          ) : isProbing ? (
+          ) : isManualProbing ? (
             <>
               <Loader2 className="h-3 w-3 animate-spin" />
               <span>正在探测...</span>

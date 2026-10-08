@@ -507,7 +507,7 @@ type probeJob struct {
 }
 
 func (qc *QueueController) asyncProbeItem(job probeJob) {
-	probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// 带上这一项的请求上下文：防盗链或需要登录的链接，没有 Referer/Cookie 只会探出 403，
@@ -983,8 +983,12 @@ func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmissi
 		if catID == "" {
 			catID = active.CategoryID
 		}
+		finalFilename := sub.Filename
+		if (finalFilename == "" || finalFilename == engine.DefaultFilename || finalFilename == engine.URLFilename(sub.URL)) && active.Filename != "" {
+			finalFilename = active.Filename
+		}
 		if catID == "" && qc.settings != nil {
-			cat, _ := qc.settings.Get().Download.ResolveDestination(sub.Filename)
+			cat, _ := qc.settings.Get().Download.ResolveDestination(finalFilename)
 			catID = cat.ID
 		}
 
@@ -992,7 +996,7 @@ func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmissi
 			item:          active,
 			url:           sub.URL,
 			directory:     sub.Directory,
-			filename:      sub.Filename,
+			filename:      finalFilename,
 			categoryID:    catID,
 			maxConn:       sub.MaxConn,
 			headers:       active.Headers,

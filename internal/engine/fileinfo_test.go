@@ -1025,3 +1025,29 @@ func TestManager_ResetAndDownloadWithNewURL(t *testing.T) {
 		t.Fatalf("expected the new resource content, got %q", string(content))
 	}
 }
+
+func TestManager_ProbeURLCacheAndFlight(t *testing.T) {
+	payload := []byte("cache test payload 1024 bytes")
+	_, mgr, ts := newTestManager(t, payload, 0, "")
+	ctx := context.Background()
+
+	testURL := ts.URL + "/test.zip"
+
+	// 首次探测
+	p1, err := mgr.ProbeURL(ctx, testURL, nil)
+	if err != nil {
+		t.Fatalf("ProbeURL 1 failed: %v", err)
+	}
+	if p1.TotalBytes != int64(len(payload)) {
+		t.Fatalf("expected %d bytes, got %d", len(payload), p1.TotalBytes)
+	}
+
+	// 再次探测相同 URL：应命中内存缓存，且结果一致
+	p2, err := mgr.ProbeURL(ctx, testURL, nil)
+	if err != nil {
+		t.Fatalf("ProbeURL 2 failed: %v", err)
+	}
+	if p2.TotalBytes != int64(len(payload)) {
+		t.Fatalf("expected cached %d bytes, got %d", len(payload), p2.TotalBytes)
+	}
+}

@@ -352,7 +352,11 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credentials.RequestCredentials) (*HTTPProbeInfo, error) {
 	var resp *http.Response
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 2 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		req, rErr := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 		if rErr != nil {
 			return nil, rErr
@@ -367,15 +371,34 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
 			break
 		}
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
+
+		statusCode := 0
+		if resp != nil {
+			statusCode = resp.StatusCode
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 		}
 		// Discard the unusable response so an error status is never mistaken for a successful probe.
 		resp = nil
-		time.Sleep(200 * time.Millisecond)
+
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		// 明确的客户端错误（404/403/401 等，除 405 Method Not Allowed 外）重试无意义，直接跳出尝试 HEAD 或返回
+		if statusCode >= 400 && statusCode < 500 && statusCode != http.StatusMethodNotAllowed {
+			break
+		}
+
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
-	if err != nil || resp == nil {
+	if (err != nil || resp == nil) && ctx.Err() == nil {
 		headReq, hErr := http.NewRequestWithContext(ctx, http.MethodHead, urlStr, nil)
 		if hErr == nil {
 			headReq.Header.Set("User-Agent", UserAgentChrome)

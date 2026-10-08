@@ -7,6 +7,7 @@ import {
   draftFromItem,
   effectiveCategoryIdOf,
   emptyFileInfoDraft,
+  isHLSResource,
   overwriteOptionOf,
   resolveAction,
   reuseFields,
@@ -361,5 +362,39 @@ describe('shouldBlockForDiskConflict', () => {
     expect(
       shouldBlockForDiskConflict(true, false, duplicateModels.Action.ActionShowCompleted),
     ).toBe(true);
+  });
+});
+
+describe('isHLSResource', () => {
+  it('常规文件（.7z, .zip, .exe 等）不作为 HLS 资源，不展示清晰度', () => {
+    const item = makeItem({
+      url: 'https://github.com/mifi/lossless-cut/releases/download/v3.69.0/LosslessCut-win-x64.7z',
+      filename: 'LosslessCut-win-x64.7z',
+    });
+    expect(isHLSResource(item)).toBe(false);
+    expect(isHLSResource(null, item.url)).toBe(false);
+  });
+
+  it('具有已选清晰度标签的项识别为 HLS 资源', () => {
+    const item = makeItem({
+      url: 'https://example.com/video',
+      qualityLabel: '1080p',
+    });
+    expect(isHLSResource(item)).toBe(true);
+  });
+
+  it('具有清晰度变体选项的项识别为 HLS 资源', () => {
+    const item = makeItem({
+      url: 'https://example.com/video',
+      variants: [{ uri: 'https://example.com/1080p.m3u8', label: '1080p' }],
+    });
+    expect(isHLSResource(item)).toBe(true);
+  });
+
+  it('以 .m3u8 或 .m3u 结尾的链接（含参数/哈希）识别为 HLS 候选', () => {
+    expect(isHLSResource(null, 'https://example.com/live/index.m3u8')).toBe(true);
+    expect(isHLSResource(null, 'https://example.com/live/index.m3u8?token=abc#section')).toBe(true);
+    expect(isHLSResource(null, 'https://example.com/playlist.m3u')).toBe(true);
+    expect(isHLSResource(null, 'https://example.com/file.m3u80')).toBe(false);
   });
 });

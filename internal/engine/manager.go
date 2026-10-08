@@ -64,6 +64,26 @@ type ProbeResult struct {
 	HLS *HLSProbe `json:"hls,omitempty"`
 }
 
+type probeCacheEntry struct {
+	result    *ProbeResult
+	expiresAt time.Time
+}
+
+type probeFlightCall struct {
+	wg     sync.WaitGroup
+	result *ProbeResult
+	err    error
+}
+
+func cloneProbeResult(p *ProbeResult) *ProbeResult {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.DuplicateTask = nil
+	return &cp
+}
+
 // ConsistencyResult reports whether an updated URL is consistent with original task file.
 type ConsistencyResult struct {
 	Consistent bool   `json:"consistent"`
@@ -129,6 +149,12 @@ func IsNumberedCopyOf(candidate, baseStem, ext string) (int, bool) {
 	return num, true
 }
 
+var taskIDSeq atomic.Int64
+
+func nextTaskID() string {
+	return fmt.Sprintf("task_%d_%d", time.Now().UnixNano(), taskIDSeq.Add(1))
+}
+
 // Manager orchestrates task queues, concurrency, lifecycle, and progress reporting.
 type Manager struct {
 	mu           sync.Mutex
@@ -143,6 +169,9 @@ type Manager struct {
 	wg           sync.WaitGroup
 	closed       bool
 	logger       atomic.Pointer[slog.Logger]
+	probeCacheMu sync.Mutex
+	probeCache   map[string]probeCacheEntry
+	probeFlight  map[string]*probeFlightCall
 }
 
 // SetLogger 设定任务日志出口，并同步给底层的传输器——两者的日志出口永远是同一个。
@@ -183,6 +212,8 @@ func NewManager(store task.TaskStore, downloader *HTTPDownloader, cfg Config) *M
 		taskDone:     make(map[string]chan struct{}),
 		taskSpeed:    make(map[string]int64),
 		speedSamples: make(map[string]int64),
+		probeCache:   make(map[string]probeCacheEntry),
+		probeFlight:  make(map[string]*probeFlightCall),
 	}
 
 	if cfg.TempDirectory != "" {
@@ -267,7 +298,39 @@ func (m *Manager) ProbeURL(ctx context.Context, urlStr string, headers map[strin
 
 // probeResource 把下载器的探测结果整理成建任务与界面共用的那份事实。探测失败时它仍然返回一个
 // 带兜底文件名的结果：界面据此显示「未知大小」，而失败的下载也还要留下一条看得见的任务记录。
+// 同时在内存中提供 2 分钟短期缓存与在途请求合并（Singleflight），避免同一链接重复耗时建连。
 func (m *Manager) probeResource(ctx context.Context, urlStr string, creds credentials.RequestCredentials) (*ProbeResult, error) {
+	m.probeCacheMu.Lock()
+	if entry, ok := m.probeCache[urlStr]; ok && time.Now().Before(entry.expiresAt) {
+		m.probeCacheMu.Unlock()
+		return cloneProbeResult(entry.result), nil
+	}
+	if call, ok := m.probeFlight[urlStr]; ok {
+		m.probeCacheMu.Unlock()
+		done := make(chan struct{})
+		go func() {
+			call.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return cloneProbeResult(call.result), call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	call := &probeFlightCall{}
+	call.wg.Add(1)
+	m.probeFlight[urlStr] = call
+	m.probeCacheMu.Unlock()
+
+	defer func() {
+		m.probeCacheMu.Lock()
+		delete(m.probeFlight, urlStr)
+		call.wg.Done()
+		m.probeCacheMu.Unlock()
+	}()
+
 	info, err := m.downloader.Probe(ctx, urlStr, creds)
 
 	probe := &ProbeResult{URL: urlStr, TotalBytes: -1}
@@ -289,6 +352,8 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 				probe.Filename = extractFilenameFromURL(urlStr)
 			}
 			probe.Filename = HLSOutputName(urlStr, probe.Filename)
+			call.result = probe
+			call.err = hlsErr
 			return probe, hlsErr
 		}
 		probe.HLS = hlsProbe
@@ -301,6 +366,8 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		if len(hlsProbe.Variants) == 1 {
 			src, resolveErr := m.resolveHLS(ctx, urlStr, hlsProbe.Variants[0].URI, creds)
 			if resolveErr != nil {
+				call.result = probe
+				call.err = resolveErr
 				return probe, resolveErr
 			}
 			ApplyHLSSelection(probe, src)
@@ -310,6 +377,26 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 	if probe.Filename == "" {
 		probe.Filename = extractFilenameFromURL(urlStr)
 	}
+
+	if err == nil && (probe.TotalBytes >= 0 || probe.Filename != "") {
+		m.probeCacheMu.Lock()
+		now := time.Now()
+		if len(m.probeCache) > 100 {
+			for k, v := range m.probeCache {
+				if now.After(v.expiresAt) {
+					delete(m.probeCache, k)
+				}
+			}
+		}
+		m.probeCache[urlStr] = probeCacheEntry{
+			result:    cloneProbeResult(probe),
+			expiresAt: now.Add(2 * time.Minute),
+		}
+		m.probeCacheMu.Unlock()
+	}
+
+	call.result = probe
+	call.err = err
 	return probe, err
 }
 
@@ -385,7 +472,7 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		}
 
 		newTask := &task.Task{
-			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
+			ID:             nextTaskID(),
 			URL:            t.URL,
 			PageURL:        t.PageURL,
 			CategoryID:     targetCatID,
@@ -441,7 +528,7 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		}
 
 		newTask := &task.Task{
-			ID:             fmt.Sprintf("task_%d", time.Now().UnixNano()),
+			ID:             nextTaskID(),
 			URL:            t.URL,
 			PageURL:        t.PageURL,
 			CategoryID:     targetCatID,
@@ -1028,7 +1115,7 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 	if probeErr != nil {
 		// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
 		t := &task.Task{
-			ID:             fmt.Sprintf("task_%d", now.UnixNano()),
+			ID:             nextTaskID(),
 			URL:            urlStr,
 			PageURL:        pageURL,
 			CategoryID:     categoryID,
@@ -1077,7 +1164,7 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 	}
 
 	t := &task.Task{
-		ID:             fmt.Sprintf("task_%d", now.UnixNano()),
+		ID:             nextTaskID(),
 		URL:            urlStr,
 		PageURL:        pageURL,
 		CategoryID:     categoryID,

@@ -640,10 +640,16 @@ func (a *App) OpenFolder(folderPath string) error {
 	return cmd.Start()
 }
 
+// manualURLProbeTimeout 是界面等一次手动改链接探测的上限。它在等的时候转的是加载动画，
+// 不能因为一个不响应的服务器一直转下去——超时就按探测失败回退，显示未知大小。
+const manualURLProbeTimeout = 10 * time.Second
+
 // ProbeURL inspects the URL metadata and reports whether an existing task already uses the URL.
 // 手动改链接时由文件信息窗口调用，因此带上这一项的请求上下文，与登记时的探测口径一致。
 func (a *App) ProbeURL(urlStr string) (*engine.ProbeResult, error) {
-	return a.manager.ProbeURL(a.ctx, urlStr, a.activeItemHeaders(urlStr))
+	ctx, cancel := context.WithTimeout(a.ctx, manualURLProbeTimeout)
+	defer cancel()
+	return a.manager.ProbeURL(ctx, urlStr, a.activeItemHeaders(urlStr))
 }
 
 // activeItemHeaders 返回与这个链接对应的请求上下文（Referer/Cookie 等）。

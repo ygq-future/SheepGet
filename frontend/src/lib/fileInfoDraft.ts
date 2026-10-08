@@ -189,3 +189,15 @@ export function canKeepCategoryPathOf(
   const directory = draft.directory.trim();
   return directory.length > 0 && directory !== categoryDir.trim();
 }
+
+/**
+ * 判断当前项是否属于 HLS 流媒体资源（或待选清晰度候选）。
+ * 只有具备已选清晰度、可选变体或明确为播放列表链接时，界面才展示清晰度相关信息及加载态。
+ */
+export function isHLSResource(item: windowModels.FileInfoItem | null, draftUrl?: string): boolean {
+  if (!item && !draftUrl) return false;
+  if (item?.qualityLabel) return true;
+  if (item?.variants && item.variants.length > 0) return true;
+  const targetUrl = (draftUrl || item?.url || '').split('?')[0].split('#')[0].toLowerCase();
+  return targetUrl.endsWith('.m3u8') || targetUrl.endsWith('.m3u');
+}
