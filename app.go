@@ -391,6 +391,8 @@ func (a *App) syncLaunchAtStartup(enabled bool) {
 			_ = wailsApp.Autostart.Disable()
 		}
 	}
+	// 清理 Windows 系统的 StartupApproved\Run 残留记录，确保系统设置与软件状态重新对齐
+	_ = sys.CleanStartupApproved("sheepget", "SheepGet")
 }
 
 // RestartServer restarts the local HTTP loopback server on the specified port.
