@@ -809,7 +809,9 @@ export function App() {
               handleCancelSelection();
             }
           }}
-          className="flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-[var(--bg-base)] p-3"
+          className={`flex min-w-0 flex-1 flex-col bg-[var(--bg-base)] ${
+            filter === 'settings' ? 'overflow-hidden p-0' : 'overflow-x-hidden overflow-y-auto p-3'
+          }`}
         >
           {filter === 'settings' ? (
             <Suspense fallback={null}>

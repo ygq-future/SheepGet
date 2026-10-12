@@ -1240,7 +1240,7 @@ export function SettingsPanel() {
   return (
     <div className="flex h-full w-full min-w-0 flex-col font-sans">
       {/* Dynamic Header & Tab Navigation */}
-      <div className="mb-4 flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-3 py-2.5">
         <div className="min-w-0 flex-1">
           <h2 className="text-base font-semibold text-[var(--text-primary)]">
             {currentTabMeta.title}
@@ -1280,815 +1280,816 @@ export function SettingsPanel() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto pr-1">
-        {/* Tab 1: General (常规与系统) */}
-        {activeTab === 'general' && (
-          <div className="space-y-5">
-            <SettingSection title="系统行为" description="桌面启动常驻与系统剪贴板监听">
-              <SettingRow label="开机自动启动" description="开机登录时自动启动并在后台托盘就绪">
-                <Switch
-                  checked={general.launchAtStartup}
-                  onCheckedChange={(checked) => {
-                    void handleLaunchAtStartupChange(checked);
-                  }}
-                />
-              </SettingRow>
-              <SettingRow label="静默启动" description="启动时不显示主窗口，仅托盘就绪">
-                <Switch
-                  checked={general.silentStartup}
-                  onCheckedChange={(checked) => {
-                    void handleSilentStartupChange(checked);
-                  }}
-                />
-              </SettingRow>
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-3 pt-2.5 pb-3">
+          {/* Tab 1: General (常规与系统) */}
+          {activeTab === 'general' && (
+            <div className="space-y-5">
+              <SettingSection title="系统行为" description="桌面启动常驻与系统剪贴板监听">
+                <SettingRow label="开机自动启动" description="开机登录时自动启动并在后台托盘就绪">
+                  <Switch
+                    checked={general.launchAtStartup}
+                    onCheckedChange={(checked) => {
+                      void handleLaunchAtStartupChange(checked);
+                    }}
+                  />
+                </SettingRow>
+                <SettingRow label="静默启动" description="启动时不显示主窗口，仅托盘就绪">
+                  <Switch
+                    checked={general.silentStartup}
+                    onCheckedChange={(checked) => {
+                      void handleSilentStartupChange(checked);
+                    }}
+                  />
+                </SettingRow>
 
-              <SettingRow label="轻量模式" description="主窗口关闭时释放渲染进程内存">
-                <Switch
-                  checked={general.lightweightMode}
-                  onCheckedChange={(checked) => {
-                    void handleLightweightModeChange(checked);
-                  }}
-                />
-              </SettingRow>
+                <SettingRow label="轻量模式" description="主窗口关闭时释放渲染进程内存">
+                  <Switch
+                    checked={general.lightweightMode}
+                    onCheckedChange={(checked) => {
+                      void handleLightweightModeChange(checked);
+                    }}
+                  />
+                </SettingRow>
 
-              <SettingRow label="监视剪贴板链接" description="复制支持的文件链接时自动弹出新建任务">
-                <Switch
-                  checked={clipboardConfig.enabled}
-                  onCheckedChange={(checked) => {
-                    void handleClipboardChange(checked);
-                  }}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label="记录运行日志"
-                description="默认关闭；开启后在数据目录 logs/ 下按大小滚动记录传输与任务日志"
-              >
-                <Switch
-                  checked={general.enableLogging}
-                  onCheckedChange={(checked) => {
-                    void handleEnableLoggingChange(checked);
-                  }}
-                />
-              </SettingRow>
-            </SettingSection>
-
-            <SettingSection title="数据存储" description="应用运行数据与持久化配置">
-              <SettingRow
-                label={
-                  <div className="flex items-center gap-2">
-                    <span>存储与便携模式</span>
-                    <Badge variant={storageInfo?.mode === 'portable' ? 'accent' : 'default'}>
-                      {storageInfo?.mode === 'portable'
-                        ? '便携模式 (Portable)'
-                        : '安装模式 (Standard)'}
-                    </Badge>
-                  </div>
-                }
-                description={storageInfo?.dataDir || '默认应用数据存储目录'}
-              >
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!storageInfo?.dataDir}
-                  onClick={() => {
-                    if (storageInfo?.dataDir) {
-                      void OpenFolder(storageInfo.dataDir);
-                    }
-                  }}
-                  className="h-8 gap-1.5 px-3 text-xs"
+                <SettingRow
+                  label="监视剪贴板链接"
+                  description="复制支持的文件链接时自动弹出新建任务"
                 >
-                  <Folder className="h-3.5 w-3.5" />
-                  <span>打开目录</span>
-                </Button>
-              </SettingRow>
-            </SettingSection>
+                  <Switch
+                    checked={clipboardConfig.enabled}
+                    onCheckedChange={(checked) => {
+                      void handleClipboardChange(checked);
+                    }}
+                  />
+                </SettingRow>
 
-            <SettingSection
-              title="版本与更新"
-              description="主程序与配套浏览器扩展的版本检查、差异更新与便携升级"
-            >
-              <div className="p-3">
-                <AboutUpdatesView />
-              </div>
-            </SettingSection>
-          </div>
-        )}
+                <SettingRow
+                  label="记录运行日志"
+                  description="默认关闭；开启后在数据目录 logs/ 下按大小滚动记录传输与任务日志"
+                >
+                  <Switch
+                    checked={general.enableLogging}
+                    onCheckedChange={(checked) => {
+                      void handleEnableLoggingChange(checked);
+                    }}
+                  />
+                </SettingRow>
+              </SettingSection>
 
-        {/* Tab 2: Appearance (外观与个性化) */}
-        {activeTab === 'appearance' && (
-          <div className="space-y-5">
-            <SettingSection title="界面主题" description="应用界面的色彩明暗风格模式">
-              <div className="p-3">
-                <div className="grid grid-cols-3 gap-2.5">
-                  {[
-                    {
-                      id: configModels.ThemeMode.ThemeSystem,
-                      label: '跟随系统',
-                      icon: Laptop,
-                    },
-                    {
-                      id: configModels.ThemeMode.ThemeLight,
-                      label: '浅色模式',
-                      icon: Sun,
-                    },
-                    {
-                      id: configModels.ThemeMode.ThemeDark,
-                      label: '深色模式',
-                      icon: Moon,
-                    },
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    const isSelected = appearance.theme === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => {
-                          void handleThemeChange(item.id);
-                        }}
-                        className={`flex items-center justify-center gap-2 rounded-lg border py-2.5 text-xs font-medium transition-all ${
-                          isSelected
-                            ? 'border-[var(--accent)] bg-[var(--accent-muted)]/30 text-[var(--text-primary)] shadow-xs ring-1 ring-[var(--accent)]'
-                            : 'border-[var(--border-subtle)] bg-[var(--bg-subtle)]/30 text-[var(--text-secondary)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
-                        }`}
-                      >
-                        <Icon className="h-4 w-4" />
-                        <span>{item.label}</span>
-                      </button>
-                    );
-                  })}
+              <SettingSection title="数据存储" description="应用运行数据与持久化配置">
+                <SettingRow
+                  label={
+                    <div className="flex items-center gap-2">
+                      <span>存储与便携模式</span>
+                      <Badge variant={storageInfo?.mode === 'portable' ? 'accent' : 'default'}>
+                        {storageInfo?.mode === 'portable'
+                          ? '便携模式 (Portable)'
+                          : '安装模式 (Standard)'}
+                      </Badge>
+                    </div>
+                  }
+                  description={storageInfo?.dataDir || '默认应用数据存储目录'}
+                >
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!storageInfo?.dataDir}
+                    onClick={() => {
+                      if (storageInfo?.dataDir) {
+                        void OpenFolder(storageInfo.dataDir);
+                      }
+                    }}
+                    className="h-8 gap-1.5 px-3 text-xs"
+                  >
+                    <Folder className="h-3.5 w-3.5" />
+                    <span>打开目录</span>
+                  </Button>
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection
+                title="版本与更新"
+                description="主程序与配套浏览器扩展的版本检查、差异更新与便携升级"
+              >
+                <div className="p-3">
+                  <AboutUpdatesView />
                 </div>
-              </div>
-            </SettingSection>
+              </SettingSection>
+            </div>
+          )}
 
-            <SettingSection title="强调色" description="按钮、进度条指示与焦点的品牌强调颜色">
-              <div className="space-y-3 p-4 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40">
-                <div>
-                  <div className="font-medium text-[var(--text-primary)]">主题强调色</div>
-                  <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
-                    精选预设色彩或输入自定义 Hex 颜色
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
-                  {/* Preset Swatches */}
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {PRESET_ACCENTS.map((preset) => {
-                      const isSelected =
-                        appearance.accentColor?.toLowerCase() === preset.hex.toLowerCase();
+          {/* Tab 2: Appearance (外观与个性化) */}
+          {activeTab === 'appearance' && (
+            <div className="space-y-5">
+              <SettingSection title="界面主题" description="应用界面的色彩明暗风格模式">
+                <div className="p-3">
+                  <div className="grid grid-cols-3 gap-2.5">
+                    {[
+                      {
+                        id: configModels.ThemeMode.ThemeSystem,
+                        label: '跟随系统',
+                        icon: Laptop,
+                      },
+                      {
+                        id: configModels.ThemeMode.ThemeLight,
+                        label: '浅色模式',
+                        icon: Sun,
+                      },
+                      {
+                        id: configModels.ThemeMode.ThemeDark,
+                        label: '深色模式',
+                        icon: Moon,
+                      },
+                    ].map((item) => {
+                      const Icon = item.icon;
+                      const isSelected = appearance.theme === item.id;
                       return (
                         <button
-                          key={preset.hex}
+                          key={item.id}
                           type="button"
                           onClick={() => {
-                            void handleAccentChange(preset.hex);
+                            void handleThemeChange(item.id);
                           }}
-                          className={`group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/10 transition-transform hover:scale-110 active:scale-95 dark:border-white/20 ${
+                          className={`flex items-center justify-center gap-2 rounded-lg border py-2.5 text-xs font-medium transition-all ${
                             isSelected
-                              ? 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]'
-                              : ''
+                              ? 'border-[var(--accent)] bg-[var(--accent-muted)]/30 text-[var(--text-primary)] shadow-xs ring-1 ring-[var(--accent)]'
+                              : 'border-[var(--border-subtle)] bg-[var(--bg-subtle)]/30 text-[var(--text-secondary)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
                           }`}
-                          style={{ backgroundColor: preset.hex }}
-                          title={preset.name}
                         >
-                          {isSelected && (
-                            <Check className="h-3.5 w-3.5 stroke-[3] text-white drop-shadow-sm" />
-                          )}
+                          <Icon className="h-4 w-4" />
+                          <span>{item.label}</span>
                         </button>
                       );
                     })}
                   </div>
+                </div>
+              </SettingSection>
 
-                  {/* Refined Custom Color Picker & Hex Input */}
-                  <div className="flex items-center gap-2 border-l border-[var(--border-subtle)] pl-2.5">
-                    <button
-                      type="button"
-                      onClick={() => colorInputRef.current?.click()}
-                      className="group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/15 shadow-xs transition-transform hover:scale-105 active:scale-95 dark:border-white/20"
-                      style={{
-                        backgroundColor: appearance.accentColor || DEFAULT_ACCENT_COLOR,
-                      }}
-                      title="点击取色板选择自定义颜色"
-                    >
-                      <Pipette className="h-3.5 w-3.5 stroke-[2.5] text-white drop-shadow-xs" />
-                    </button>
-                    <input
-                      ref={colorInputRef}
-                      type="color"
-                      value={appearance.accentColor || DEFAULT_ACCENT_COLOR}
-                      onChange={(e) => {
-                        void handleAccentChange(e.target.value);
-                        setCustomColor(e.target.value);
-                      }}
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                    />
-
-                    <div className="relative flex items-center">
-                      <span
-                        className="absolute left-2.5 h-2.5 w-2.5 rounded-full border border-black/10 dark:border-white/20"
-                        style={{ backgroundColor: appearance.accentColor || DEFAULT_ACCENT_COLOR }}
-                      />
-                      <Input
-                        type="text"
-                        value={customColor || appearance.accentColor || ''}
-                        placeholder={DEFAULT_ACCENT_COLOR}
-                        onChange={(e) => setCustomColor(e.target.value)}
-                        onBlur={() => {
-                          if (
-                            customColor &&
-                            /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)
-                          ) {
-                            void handleAccentChange(customColor);
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if (
-                            e.key === 'Enter' &&
-                            customColor &&
-                            /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)
-                          ) {
-                            void handleAccentChange(customColor);
-                          }
-                        }}
-                        className="h-7 w-24 pl-7 font-mono text-xs"
-                      />
+              <SettingSection title="强调色" description="按钮、进度条指示与焦点的品牌强调颜色">
+                <div className="space-y-3 p-4 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40">
+                  <div>
+                    <div className="font-medium text-[var(--text-primary)]">主题强调色</div>
+                    <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                      精选预设色彩或输入自定义 Hex 颜色
                     </div>
                   </div>
-                </div>
-              </div>
-            </SettingSection>
-          </div>
-        )}
 
-        {/* Tab 3: Download & Network (下载与网络) */}
-        {activeTab === 'download' && (
-          <div className="space-y-5">
-            <SettingSection
-              title="存储路径"
-              description="下载保存位置与分块缓存目录"
-              action={
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setCleanupOpen(true)}
-                  className="h-7 gap-1 px-2.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                >
-                  <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-                  <span>清理历史与文件</span>
-                </Button>
-              }
-            >
-              <SettingRow label="默认保存位置" description="新建任务时的默认本地存储路径">
-                <div className="flex w-80 max-w-lg flex-1 items-center gap-1.5 sm:w-[380px]">
-                  <Input
-                    type="text"
-                    value={dirInput}
-                    onChange={(e) => setDirInput(e.target.value)}
-                    onBlur={() => void handleCommitDirectory(dirInput)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleCommitDirectory(dirInput);
-                      }
-                    }}
-                    placeholder="请输入有效目录路径"
-                    className="h-8 flex-1 font-mono text-xs"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void handleSelectDefaultDir()}
-                    className="h-8 shrink-0 gap-1 px-2.5 text-xs"
-                  >
-                    <Folder className="h-3.5 w-3.5" />
-                    <span>浏览</span>
-                  </Button>
-                </div>
-              </SettingRow>
-
-              <SettingRow label="临时缓存目录" description="分块下载临时暂存路径，完成后自动转存">
-                <div className="flex w-80 max-w-lg flex-1 items-center gap-1.5 sm:w-[380px]">
-                  <Input
-                    type="text"
-                    value={tempDirInput}
-                    onChange={(e) => setTempDirInput(e.target.value)}
-                    onBlur={() => void handleCommitTempDirectory(tempDirInput)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleCommitTempDirectory(tempDirInput);
-                      }
-                    }}
-                    placeholder="请输入临时缓存目录路径"
-                    className="h-8 flex-1 font-mono text-xs"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void handleSelectTempDir()}
-                    className="h-8 shrink-0 gap-1 px-2.5 text-xs"
-                  >
-                    <Folder className="h-3.5 w-3.5" />
-                    <span>浏览</span>
-                  </Button>
-                </div>
-              </SettingRow>
-            </SettingSection>
-
-            <SettingSection title="传输并发性能" description="并发调度上限与多连接分块参数">
-              <SettingRow
-                label="全局并发任务上限"
-                description="同时处于传输状态的最大任务数 (1 ~ 32)"
-              >
-                <div className="flex w-52 items-center gap-3">
-                  <div className="flex-1">
-                    <Slider
-                      min={1}
-                      max={32}
-                      value={download.maxConcurrentDownloads || 3}
-                      onChange={(val) => void handleMaxConcurrentChange(val)}
-                    />
-                  </div>
-                  <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
-                    {download.maxConcurrentDownloads}
-                  </span>
-                </div>
-              </SettingRow>
-
-              <SettingRow
-                label="单任务分块连接数"
-                description="多连接分块下载的默认线程数 (1 ~ 32)"
-              >
-                <div className="flex w-52 items-center gap-3">
-                  <div className="flex-1">
-                    <Slider
-                      min={1}
-                      max={32}
-                      value={download.defaultConnectionsPerTask || 8}
-                      onChange={(val) => void handleDefaultConnChange(val)}
-                    />
-                  </div>
-                  <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
-                    {download.defaultConnectionsPerTask}
-                  </span>
-                </div>
-              </SettingRow>
-            </SettingSection>
-
-            <SettingSection title="下载策略与反馈" description="重复任务、提前下载与进度窗口行为">
-              <SettingRow label="重复链接处理策略" description="已存在相同链接任务时的默认处理方式">
-                <div className="w-48">
-                  <Select
-                    value={
-                      download.duplicateUrlPolicy ||
-                      configModels.DuplicateURLPolicy.DuplicatePolicyAsk
-                    }
-                    onChange={(val) => void handleDuplicatePolicyChange(val)}
-                    options={[
-                      {
-                        value: configModels.DuplicateURLPolicy.DuplicatePolicyAsk,
-                        label: '每次询问',
-                      },
-                      {
-                        value: configModels.DuplicateURLPolicy.DuplicatePolicySkipShowDone,
-                        label: '跳过并显示已完成',
-                      },
-                      {
-                        value: configModels.DuplicateURLPolicy.DuplicatePolicyOverwrite,
-                        label: '继续下载并覆盖',
-                      },
-                      {
-                        value: configModels.DuplicateURLPolicy.DuplicatePolicyNumberedCopy,
-                        label: '自动创建序号副本',
-                      },
-                    ]}
-                  />
-                </div>
-              </SettingRow>
-
-              <SettingRow label="提前下载" description="新建任务确认时立即在后台发起连接下载">
-                <Switch
-                  checked={!!download.preDownload}
-                  onCheckedChange={(checked) => void handlePreDownloadChange(checked)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label="使用服务器修改时间"
-                description="下载完成后同步服务器的文件修改时间"
-              >
-                <Switch
-                  checked={!!download.useServerFileTime}
-                  onCheckedChange={(checked) => void handleUseServerFileTimeChange(checked)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label="自动显示下载进度窗口"
-                description="开始下载任务时自动弹出进度悬浮窗口"
-              >
-                <Switch
-                  checked={download.showProgressWindow ?? true}
-                  onCheckedChange={(checked) => void handleShowProgressWindowChange(checked)}
-                />
-              </SettingRow>
-
-              <SettingRow label="保留完成信息" description="下载完成后在进度窗口保留完成记录">
-                <Switch
-                  checked={download.keepCompletedInfo ?? true}
-                  onCheckedChange={(checked) => void handleKeepCompletedInfoChange(checked)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label="打开后自动移除完成信息"
-                description="打开文件或文件夹后自动移除该完成记录"
-              >
-                <Switch
-                  checked={!!download.autoRemoveCompletedOnOpen}
-                  onCheckedChange={(checked) => void handleAutoRemoveCompletedChange(checked)}
-                />
-              </SettingRow>
-            </SettingSection>
-
-            {/* Network Proxy Integrated Section */}
-            <SettingSection title="网络代理" description="配置客户端下载与元数据探测的网络代理">
-              <SettingRow label="代理模式" description="选择直连、遵循系统代理或手动指定代理">
-                <div className="w-52">
-                  <Select
-                    value={selectedProxyMode}
-                    onChange={(val) => void handleProxyModeChange(val)}
-                    options={[
-                      {
-                        value: configModels.ProxyMode.ProxyModeDirect,
-                        label: '直连 (不使用代理)',
-                        description: '所有网络请求直接连接目标服务器',
-                      },
-                      {
-                        value: configModels.ProxyMode.ProxyModeSystem,
-                        label: '系统代理 (默认)',
-                        description: '读取并遵循操作系统的网络代理设置',
-                      },
-                      {
-                        value: configModels.ProxyMode.ProxyModeCustom,
-                        label: '自定义代理',
-                        description: '手动指定代理服务器地址与端口',
-                      },
-                    ]}
-                  />
-                </div>
-              </SettingRow>
-
-              {selectedProxyMode === configModels.ProxyMode.ProxyModeCustom && (
-                <SettingRow
-                  label="自定义代理地址"
-                  description="支持 HTTP/HTTPS 与 SOCKS5 代理协议"
-                  align="top"
-                >
-                  <div className="flex flex-col items-end gap-1.5">
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={customProxyDraft}
-                        onChange={(e) => {
-                          setCustomProxyDraft(e.target.value);
-                          setProxyError('');
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            void handleCustomProxyCommit();
-                          }
-                        }}
-                        placeholder="http://127.0.0.1:7890"
-                        className="h-8 w-64 font-mono text-xs"
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => void handleCustomProxyCommit()}
-                        className="h-8 shrink-0 text-xs"
-                      >
-                        {proxy.mode === configModels.ProxyMode.ProxyModeCustom
-                          ? '保存'
-                          : '保存并启用'}
-                      </Button>
+                  <div className="flex flex-wrap items-center gap-2.5 pt-0.5">
+                    {/* Preset Swatches */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {PRESET_ACCENTS.map((preset) => {
+                        const isSelected =
+                          appearance.accentColor?.toLowerCase() === preset.hex.toLowerCase();
+                        return (
+                          <button
+                            key={preset.hex}
+                            type="button"
+                            onClick={() => {
+                              void handleAccentChange(preset.hex);
+                            }}
+                            className={`group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/10 transition-transform hover:scale-110 active:scale-95 dark:border-white/20 ${
+                              isSelected
+                                ? 'ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-surface)]'
+                                : ''
+                            }`}
+                            style={{ backgroundColor: preset.hex }}
+                            title={preset.name}
+                          >
+                            {isSelected && (
+                              <Check className="h-3.5 w-3.5 stroke-[3] text-white drop-shadow-sm" />
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
-                    {proxyError && (
-                      <p className="text-[11px] font-medium text-rose-500">{proxyError}</p>
-                    )}
-                  </div>
-                </SettingRow>
-              )}
-            </SettingSection>
-          </div>
-        )}
 
-        {/* Tab 4: Rules & Interception (接管与规则) */}
-        {activeTab === 'rules' && (
-          <div className="space-y-5">
-            <SettingSection
-              title="浏览器扩展与接管"
-              description="配置本地通信端口、排除站点与临时快捷键"
-            >
-              <div className="space-y-3 p-4">
-                <div className="flex items-center justify-between gap-2.5">
-                  <div className="shrink-0 text-xs font-semibold text-[var(--text-primary)]">
-                    配套扩展快速安装
-                  </div>
-                  <div className="flex flex-wrap items-center justify-end gap-1.5">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void handleOpenExtensionFolder()}
-                      className="h-7 gap-1 px-2 text-xs font-medium"
-                      title="在系统文件管理器中打开并高亮扩展文件夹"
-                    >
-                      <FolderOpen className="h-3.5 w-3.5" />
-                      <span>定位扩展目录</span>
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void handlePrepareExtensionPage('chrome')}
-                      className="h-7 gap-1 px-2 text-xs"
-                      title="唤起 Chrome，并把扩展管理页地址写入剪贴板"
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      <span>Chrome 扩展</span>
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void handlePrepareExtensionPage('edge')}
-                      className="h-7 gap-1 px-2 text-xs"
-                      title="唤起 Edge，并把扩展管理页地址写入剪贴板"
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      <span>Edge 扩展</span>
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/50 p-3 text-[11px]">
-                  <div className="flex items-center gap-1.5 font-medium text-[var(--text-primary)]">
-                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 font-mono text-[10px] text-[var(--accent)]">
-                      i
-                    </span>
-                    <span>快速加载指引（三键一拖）</span>
-                  </div>
-                  <ol className="list-inside list-decimal space-y-1 pl-0.5 leading-relaxed text-[var(--text-secondary)]">
-                    <li>
-                      点击「<strong>Chrome / Edge 扩展</strong>」，到地址栏按{' '}
-                      <strong>Ctrl+V</strong>、<strong>回车</strong>并在扩展页开启「
-                      <strong>开发者模式</strong>」。
-                    </li>
-                    <li>
-                      点击「<strong>定位扩展目录</strong>」，系统将自动打开并高亮配套扩展文件夹。
-                    </li>
-                    <li>
-                      将高亮的扩展文件夹直接<strong>拖入浏览器扩展页面</strong>完成加载。
-                    </li>
-                  </ol>
-                  <p className="pl-0.5 leading-relaxed text-[var(--text-muted)]">
-                    扩展管理页属于浏览器特权页面，需在地址栏粘贴进入，程序无法直接打开。
-                  </p>
-                </div>
-              </div>
-
-              <SettingRow
-                label="本地 HTTP 服务端口"
-                description={`扩展通信监听端口，默认 ${Ports.DefaultServer}，修改后需重启`}
-              >
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={5}
-                    value={serverPort}
-                    onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
-                    className="w-20 text-center font-mono text-xs"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={restartingServer}
-                    onClick={() => void handleRestartServer()}
-                    className="h-8 text-xs"
-                  >
-                    {restartingServer ? '重启中…' : '重启服务'}
-                  </Button>
-                </div>
-              </SettingRow>
-
-              <div className="space-y-2.5 p-4 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40">
-                <div>
-                  <div className="font-medium text-[var(--text-primary)]">排除页面站点</div>
-                  <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
-                    指定站点及其子域名不触发自动接管，保留浏览器下载
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  {(takeover.excludedSites || []).map((site) => (
-                    <span
-                      key={site}
-                      className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
-                    >
-                      <span>{site}</span>
+                    {/* Refined Custom Color Picker & Hex Input */}
+                    <div className="flex items-center gap-2 border-l border-[var(--border-subtle)] pl-2.5">
                       <button
                         type="button"
-                        onClick={() => void handleRemoveExcludedSite(site)}
-                        className="opacity-50 hover:text-red-500 hover:opacity-100"
-                        title={`移除 ${site}`}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-
-                  {isAddingExcludedSite ? (
-                    <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-2 py-0.5">
-                      <input
-                        autoFocus
-                        type="text"
-                        value={newExcludedSiteVal}
-                        onChange={(e) => setNewExcludedSiteVal(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            void handleCommitNewExcludedSite();
-                          } else if (e.key === 'Escape') {
-                            setIsAddingExcludedSite(false);
-                          }
+                        onClick={() => colorInputRef.current?.click()}
+                        className="group relative flex h-7 w-7 items-center justify-center rounded-full border border-black/15 shadow-xs transition-transform hover:scale-105 active:scale-95 dark:border-white/20"
+                        style={{
+                          backgroundColor: appearance.accentColor || DEFAULT_ACCENT_COLOR,
                         }}
-                        onBlur={() => void handleCommitNewExcludedSite()}
-                        placeholder="如 *.github.com"
-                        className="w-32 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                        title="点击取色板选择自定义颜色"
+                      >
+                        <Pipette className="h-3.5 w-3.5 stroke-[2.5] text-white drop-shadow-xs" />
+                      </button>
+                      <input
+                        ref={colorInputRef}
+                        type="color"
+                        value={appearance.accentColor || DEFAULT_ACCENT_COLOR}
+                        onChange={(e) => {
+                          void handleAccentChange(e.target.value);
+                          setCustomColor(e.target.value);
+                        }}
+                        className="sr-only"
+                        tabIndex={-1}
+                        aria-hidden="true"
                       />
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddingExcludedSite(true);
-                        setNewExcludedSiteVal('');
-                      }}
-                      className="inline-flex items-center gap-1 rounded-md border border-dashed border-[var(--border-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                    >
-                      <Plus className="h-3 w-3" />
-                      <span>添加站点</span>
-                    </button>
-                  )}
-                </div>
-              </div>
 
-              <SettingRow label="临时接管快捷键" description="按住按键临时反转接管策略，松开恢复">
-                <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-1">
-                    <span className="text-[11px] text-[var(--text-muted)]">暂停:</span>
-                    <div className="w-28">
-                      <Select
-                        value={takeover.pauseShortcut || 'Delete'}
-                        onChange={(val) => void handlePauseShortcutChange(val)}
-                        options={SHORTCUT_KEY_OPTIONS}
-                      />
+                      <div className="relative flex items-center">
+                        <span
+                          className="absolute left-2.5 h-2.5 w-2.5 rounded-full border border-black/10 dark:border-white/20"
+                          style={{
+                            backgroundColor: appearance.accentColor || DEFAULT_ACCENT_COLOR,
+                          }}
+                        />
+                        <Input
+                          type="text"
+                          value={customColor || appearance.accentColor || ''}
+                          placeholder={DEFAULT_ACCENT_COLOR}
+                          onChange={(e) => setCustomColor(e.target.value)}
+                          onBlur={() => {
+                            if (
+                              customColor &&
+                              /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)
+                            ) {
+                              void handleAccentChange(customColor);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (
+                              e.key === 'Enter' &&
+                              customColor &&
+                              /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(customColor)
+                            ) {
+                              void handleAccentChange(customColor);
+                            }
+                          }}
+                          className="h-7 w-24 pl-7 font-mono text-xs"
+                        />
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <span className="text-[11px] text-[var(--text-muted)]">强制:</span>
-                    <div className="w-28">
-                      <Select
-                        value={takeover.forceShortcut || 'Insert'}
-                        onChange={(val) => void handleForceShortcutChange(val)}
-                        options={SHORTCUT_KEY_OPTIONS}
-                      />
-                    </div>
-                  </div>
                 </div>
-              </SettingRow>
-            </SettingSection>
-
-            {/* Custom Categories Section */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between px-1">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-xs font-semibold text-[var(--text-primary)]">自定义分类</h3>
-                    <Badge variant="accent">{download.customCategories?.length || 0}</Badge>
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    优先按用户排序匹配；可拖动左侧滑块调整优先级
-                  </p>
-                </div>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => void handleAddCustomCategory()}
-                  className="h-7 gap-1 px-2.5 text-xs"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>新建分类</span>
-                </Button>
-              </div>
-
-              {(!download.customCategories || download.customCategories.length === 0) && (
-                <div className="rounded-xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)] py-6 text-center text-xs text-[var(--text-muted)]">
-                  暂无自定义分类。点击右上角“新建分类”添加规则。
-                </div>
-              )}
-
-              <Reorder.Group
-                as="div"
-                axis="y"
-                values={reorderedCategories ?? download.customCategories ?? []}
-                onReorder={(newOrder) => handleReorderCustomCategories(newOrder)}
-                className="space-y-2"
-              >
-                {(reorderedCategories ?? download.customCategories ?? []).map((cat, idx) => (
-                  <CustomCategoryItem
-                    key={cat.id || idx}
-                    cat={cat}
-                    idx={idx}
-                    total={download.customCategories?.length || 0}
-                    catNameDrafts={catNameDrafts}
-                    setCatNameDrafts={setCatNameDrafts}
-                    catDirDrafts={catDirDrafts}
-                    setCatDirDrafts={setCatDirDrafts}
-                    addingExtCatId={addingExtCatId}
-                    setAddingExtCatId={setAddingExtCatId}
-                    newExtVal={newExtVal}
-                    setNewExtVal={setNewExtVal}
-                    handleMoveCustomCategory={handleMoveCustomCategory}
-                    handleCommitCategoryName={handleCommitCategoryName}
-                    handleCommitCategoryDirectory={handleCommitCategoryDirectory}
-                    handleSelectCategoryDirectory={handleSelectCategoryDirectory}
-                    handleDeleteCustomCategory={handleDeleteCustomCategory}
-                    handleRemoveExtension={handleRemoveExtension}
-                    handleCommitNewExtension={handleCommitNewExtension}
-                  />
-                ))}
-              </Reorder.Group>
+              </SettingSection>
             </div>
+          )}
 
-            {/* Builtin Categories Section */}
-            <div className="space-y-2 pt-1">
-              <div className="flex items-center justify-between px-1">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-xs font-semibold text-[var(--text-primary)]">内置分类</h3>
-                    <Badge variant="outline">{download.builtinCategories?.length || 6}</Badge>
+          {/* Tab 3: Download & Network (下载与网络) */}
+          {activeTab === 'download' && (
+            <div className="space-y-5">
+              <SettingSection
+                title="存储路径"
+                description="下载保存位置与分块缓存目录"
+                action={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setCleanupOpen(true)}
+                    className="h-7 gap-1 px-2.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                    <span>清理历史与文件</span>
+                  </Button>
+                }
+              >
+                <SettingRow label="默认保存位置" description="新建任务时的默认本地存储路径">
+                  <div className="flex w-80 max-w-lg flex-1 items-center gap-1.5 sm:w-[380px]">
+                    <Input
+                      type="text"
+                      value={dirInput}
+                      onChange={(e) => setDirInput(e.target.value)}
+                      onBlur={() => void handleCommitDirectory(dirInput)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleCommitDirectory(dirInput);
+                        }
+                      }}
+                      placeholder="请输入有效目录路径"
+                      className="h-8 flex-1 font-mono text-xs"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleSelectDefaultDir()}
+                      className="h-8 shrink-0 gap-1 px-2.5 text-xs"
+                    >
+                      <Folder className="h-3.5 w-3.5" />
+                      <span>浏览</span>
+                    </Button>
                   </div>
-                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
-                    预置文件类型规则；自定义分类未命中时在此兜底匹配
-                  </p>
+                </SettingRow>
+
+                <SettingRow label="临时缓存目录" description="分块下载临时暂存路径，完成后自动转存">
+                  <div className="flex w-80 max-w-lg flex-1 items-center gap-1.5 sm:w-[380px]">
+                    <Input
+                      type="text"
+                      value={tempDirInput}
+                      onChange={(e) => setTempDirInput(e.target.value)}
+                      onBlur={() => void handleCommitTempDirectory(tempDirInput)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void handleCommitTempDirectory(tempDirInput);
+                        }
+                      }}
+                      placeholder="请输入临时缓存目录路径"
+                      className="h-8 flex-1 font-mono text-xs"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleSelectTempDir()}
+                      className="h-8 shrink-0 gap-1 px-2.5 text-xs"
+                    >
+                      <Folder className="h-3.5 w-3.5" />
+                      <span>浏览</span>
+                    </Button>
+                  </div>
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="传输并发性能" description="并发调度上限与多连接分块参数">
+                <SettingRow
+                  label="全局并发任务上限"
+                  description="同时处于传输状态的最大任务数 (1 ~ 32)"
+                >
+                  <div className="flex w-52 items-center gap-3">
+                    <div className="flex-1">
+                      <Slider
+                        min={1}
+                        max={32}
+                        value={download.maxConcurrentDownloads || 3}
+                        onChange={(val) => void handleMaxConcurrentChange(val)}
+                      />
+                    </div>
+                    <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
+                      {download.maxConcurrentDownloads}
+                    </span>
+                  </div>
+                </SettingRow>
+
+                <SettingRow
+                  label="单任务分块连接数"
+                  description="多连接分块下载的默认线程数 (1 ~ 32)"
+                >
+                  <div className="flex w-52 items-center gap-3">
+                    <div className="flex-1">
+                      <Slider
+                        min={1}
+                        max={32}
+                        value={download.defaultConnectionsPerTask || 8}
+                        onChange={(val) => void handleDefaultConnChange(val)}
+                      />
+                    </div>
+                    <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
+                      {download.defaultConnectionsPerTask}
+                    </span>
+                  </div>
+                </SettingRow>
+              </SettingSection>
+
+              <SettingSection title="下载策略与反馈" description="重复任务、提前下载与进度窗口行为">
+                <SettingRow
+                  label="重复链接处理策略"
+                  description="已存在相同链接任务时的默认处理方式"
+                >
+                  <div className="w-48">
+                    <Select
+                      value={
+                        download.duplicateUrlPolicy ||
+                        configModels.DuplicateURLPolicy.DuplicatePolicyAsk
+                      }
+                      onChange={(val) => void handleDuplicatePolicyChange(val)}
+                      options={[
+                        {
+                          value: configModels.DuplicateURLPolicy.DuplicatePolicyAsk,
+                          label: '每次询问',
+                        },
+                        {
+                          value: configModels.DuplicateURLPolicy.DuplicatePolicySkipShowDone,
+                          label: '跳过并显示已完成',
+                        },
+                        {
+                          value: configModels.DuplicateURLPolicy.DuplicatePolicyOverwrite,
+                          label: '继续下载并覆盖',
+                        },
+                        {
+                          value: configModels.DuplicateURLPolicy.DuplicatePolicyNumberedCopy,
+                          label: '自动创建序号副本',
+                        },
+                      ]}
+                    />
+                  </div>
+                </SettingRow>
+
+                <SettingRow label="提前下载" description="新建任务确认时立即在后台发起连接下载">
+                  <Switch
+                    checked={!!download.preDownload}
+                    onCheckedChange={(checked) => void handlePreDownloadChange(checked)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label="使用服务器修改时间"
+                  description="下载完成后同步服务器的文件修改时间"
+                >
+                  <Switch
+                    checked={!!download.useServerFileTime}
+                    onCheckedChange={(checked) => void handleUseServerFileTimeChange(checked)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label="自动显示下载进度窗口"
+                  description="开始下载任务时自动弹出进度悬浮窗口"
+                >
+                  <Switch
+                    checked={download.showProgressWindow ?? true}
+                    onCheckedChange={(checked) => void handleShowProgressWindowChange(checked)}
+                  />
+                </SettingRow>
+
+                <SettingRow label="保留完成信息" description="下载完成后在进度窗口保留完成记录">
+                  <Switch
+                    checked={download.keepCompletedInfo ?? true}
+                    onCheckedChange={(checked) => void handleKeepCompletedInfoChange(checked)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label="打开后自动移除完成信息"
+                  description="打开文件或文件夹后自动移除该完成记录"
+                >
+                  <Switch
+                    checked={!!download.autoRemoveCompletedOnOpen}
+                    onCheckedChange={(checked) => void handleAutoRemoveCompletedChange(checked)}
+                  />
+                </SettingRow>
+              </SettingSection>
+
+              {/* Network Proxy Integrated Section */}
+              <SettingSection title="网络代理" description="配置客户端下载与元数据探测的网络代理">
+                <SettingRow label="代理模式" description="选择直连、遵循系统代理或手动指定代理">
+                  <div className="w-52">
+                    <Select
+                      value={selectedProxyMode}
+                      onChange={(val) => void handleProxyModeChange(val)}
+                      options={[
+                        {
+                          value: configModels.ProxyMode.ProxyModeDirect,
+                          label: '直连 (不使用代理)',
+                          description: '所有网络请求直接连接目标服务器',
+                        },
+                        {
+                          value: configModels.ProxyMode.ProxyModeSystem,
+                          label: '系统代理 (默认)',
+                          description: '读取并遵循操作系统的网络代理设置',
+                        },
+                        {
+                          value: configModels.ProxyMode.ProxyModeCustom,
+                          label: '自定义代理',
+                          description: '手动指定代理服务器地址与端口',
+                        },
+                      ]}
+                    />
+                  </div>
+                </SettingRow>
+
+                {selectedProxyMode === configModels.ProxyMode.ProxyModeCustom && (
+                  <SettingRow
+                    label="自定义代理地址"
+                    description="支持 HTTP/HTTPS 与 SOCKS5 代理协议"
+                    align="top"
+                  >
+                    <div className="flex flex-col items-end gap-1.5">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={customProxyDraft}
+                          onChange={(e) => {
+                            setCustomProxyDraft(e.target.value);
+                            setProxyError('');
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void handleCustomProxyCommit();
+                            }
+                          }}
+                          placeholder="http://127.0.0.1:7890"
+                          className="h-8 w-64 font-mono text-xs"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => void handleCustomProxyCommit()}
+                          className="h-8 shrink-0 text-xs"
+                        >
+                          {proxy.mode === configModels.ProxyMode.ProxyModeCustom
+                            ? '保存'
+                            : '保存并启用'}
+                        </Button>
+                      </div>
+                      {proxyError && (
+                        <p className="text-[11px] font-medium text-rose-500">{proxyError}</p>
+                      )}
+                    </div>
+                  </SettingRow>
+                )}
+              </SettingSection>
+            </div>
+          )}
+
+          {/* Tab 4: Rules & Interception (接管与规则) */}
+          {activeTab === 'rules' && (
+            <div className="space-y-5">
+              <SettingSection
+                title="浏览器扩展与接管"
+                description="配置本地通信端口、排除站点与临时快捷键"
+              >
+                <div className="space-y-3 p-4">
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="shrink-0 text-xs font-semibold text-[var(--text-primary)]">
+                      配套扩展快速安装
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handleOpenExtensionFolder()}
+                        className="h-7 gap-1 px-2 text-xs font-medium"
+                        title="在系统文件管理器中打开并高亮扩展文件夹"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                        <span>定位扩展目录</span>
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handlePrepareExtensionPage('chrome')}
+                        className="h-7 gap-1 px-2 text-xs"
+                        title="唤起 Chrome，并把扩展管理页地址写入剪贴板"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>Chrome 扩展</span>
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handlePrepareExtensionPage('edge')}
+                        className="h-7 gap-1 px-2 text-xs"
+                        title="唤起 Edge，并把扩展管理页地址写入剪贴板"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>Edge 扩展</span>
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/50 p-3 text-[11px]">
+                    <div className="flex items-center gap-1.5 font-medium text-[var(--text-primary)]">
+                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 font-mono text-[10px] text-[var(--accent)]">
+                        i
+                      </span>
+                      <span>快速加载指引（三键一拖）</span>
+                    </div>
+                    <ol className="list-inside list-decimal space-y-1 pl-0.5 leading-relaxed text-[var(--text-secondary)]">
+                      <li>
+                        点击「<strong>Chrome / Edge 扩展</strong>」，到地址栏按{' '}
+                        <strong>Ctrl+V</strong>、<strong>回车</strong>并在扩展页开启「
+                        <strong>开发者模式</strong>」。
+                      </li>
+                      <li>
+                        点击「<strong>定位扩展目录</strong>」，系统将自动打开并高亮配套扩展文件夹。
+                      </li>
+                      <li>
+                        将高亮的扩展文件夹直接<strong>拖入浏览器扩展页面</strong>完成加载。
+                      </li>
+                    </ol>
+                    <p className="pl-0.5 leading-relaxed text-[var(--text-muted)]">
+                      扩展管理页属于浏览器特权页面，需在地址栏粘贴进入，程序无法直接打开。
+                    </p>
+                  </div>
                 </div>
+
+                <SettingRow
+                  label="本地 HTTP 服务端口"
+                  description={`扩展通信监听端口，默认 ${Ports.DefaultServer}，修改后需重启`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={5}
+                      value={serverPort}
+                      onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
+                      className="w-20 text-center font-mono text-xs"
+                    />
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={restartingServer}
+                      onClick={() => void handleRestartServer()}
+                      className="h-8 text-xs"
+                    >
+                      {restartingServer ? '重启中…' : '重启服务'}
+                    </Button>
+                  </div>
+                </SettingRow>
+
+                <div className="space-y-2.5 p-4 text-xs transition-colors hover:bg-[var(--bg-subtle)]/40">
+                  <div>
+                    <div className="font-medium text-[var(--text-primary)]">排除页面站点</div>
+                    <div className="mt-0.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                      指定站点及其子域名不触发自动接管，保留浏览器下载
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    {(takeover.excludedSites || []).map((site) => (
+                      <span
+                        key={site}
+                        className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-2 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors select-none hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                      >
+                        <span>{site}</span>
+                        <button
+                          type="button"
+                          onClick={() => void handleRemoveExcludedSite(site)}
+                          className="opacity-50 hover:text-red-500 hover:opacity-100"
+                          title={`移除 ${site}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+
+                    {isAddingExcludedSite ? (
+                      <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-2 py-0.5">
+                        <input
+                          autoFocus
+                          type="text"
+                          value={newExcludedSiteVal}
+                          onChange={(e) => setNewExcludedSiteVal(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void handleCommitNewExcludedSite();
+                            } else if (e.key === 'Escape') {
+                              setIsAddingExcludedSite(false);
+                            }
+                          }}
+                          onBlur={() => void handleCommitNewExcludedSite()}
+                          placeholder="如 *.github.com"
+                          className="w-32 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                        />
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddingExcludedSite(true);
+                          setNewExcludedSiteVal('');
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border border-dashed border-[var(--border-subtle)] px-2 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                      >
+                        <Plus className="h-3 w-3" />
+                        <span>添加站点</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <SettingRow label="临时接管快捷键" description="按住按键临时反转接管策略，松开恢复">
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-[var(--text-muted)]">暂停:</span>
+                      <div className="w-28">
+                        <Select
+                          value={takeover.pauseShortcut || 'Delete'}
+                          onChange={(val) => void handlePauseShortcutChange(val)}
+                          options={SHORTCUT_KEY_OPTIONS}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-[var(--text-muted)]">强制:</span>
+                      <div className="w-28">
+                        <Select
+                          value={takeover.forceShortcut || 'Insert'}
+                          onChange={(val) => void handleForceShortcutChange(val)}
+                          options={SHORTCUT_KEY_OPTIONS}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </SettingRow>
+              </SettingSection>
+
+              {/* Custom Categories Section */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xs font-semibold text-[var(--text-primary)]">
+                        自定义分类
+                      </h3>
+                      <Badge variant="accent">{download.customCategories?.length || 0}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      优先按用户排序匹配；可拖动左侧滑块调整优先级
+                    </p>
+                  </div>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void handleAddCustomCategory()}
+                    className="h-7 gap-1 px-2.5 text-xs"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>新建分类</span>
+                  </Button>
+                </div>
+
+                {(!download.customCategories || download.customCategories.length === 0) && (
+                  <div className="rounded-xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)] py-6 text-center text-xs text-[var(--text-muted)]">
+                    暂无自定义分类。点击右上角“新建分类”添加规则。
+                  </div>
+                )}
+
+                <Reorder.Group
+                  as="div"
+                  axis="y"
+                  values={reorderedCategories ?? download.customCategories ?? []}
+                  onReorder={(newOrder) => handleReorderCustomCategories(newOrder)}
+                  className="space-y-2"
+                >
+                  {(reorderedCategories ?? download.customCategories ?? []).map((cat, idx) => (
+                    <CustomCategoryItem
+                      key={cat.id || idx}
+                      cat={cat}
+                      idx={idx}
+                      total={download.customCategories?.length || 0}
+                      catNameDrafts={catNameDrafts}
+                      setCatNameDrafts={setCatNameDrafts}
+                      catDirDrafts={catDirDrafts}
+                      setCatDirDrafts={setCatDirDrafts}
+                      addingExtCatId={addingExtCatId}
+                      setAddingExtCatId={setAddingExtCatId}
+                      newExtVal={newExtVal}
+                      setNewExtVal={setNewExtVal}
+                      handleMoveCustomCategory={handleMoveCustomCategory}
+                      handleCommitCategoryName={handleCommitCategoryName}
+                      handleCommitCategoryDirectory={handleCommitCategoryDirectory}
+                      handleSelectCategoryDirectory={handleSelectCategoryDirectory}
+                      handleDeleteCustomCategory={handleDeleteCustomCategory}
+                      handleRemoveExtension={handleRemoveExtension}
+                      handleCommitNewExtension={handleCommitNewExtension}
+                    />
+                  ))}
+                </Reorder.Group>
               </div>
 
-              <div className="space-y-2">
-                {download.builtinCategories?.map((cat, idx) => {
-                  const isFallback = cat.id === 'builtin-file' || cat.name === '文件';
-                  return (
-                    <div
-                      key={cat.id || idx}
-                      className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-[var(--text-primary)]">
-                            {cat.name}
-                          </span>
-                          <Badge variant={isFallback ? 'warning' : 'outline'}>
-                            {isFallback ? '默认兜底' : '内置'}
-                          </Badge>
-                        </div>
+              {/* Builtin Categories Section */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between px-1">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-xs font-semibold text-[var(--text-primary)]">内置分类</h3>
+                      <Badge variant="outline">{download.builtinCategories?.length || 6}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      预置文件类型规则；自定义分类未命中时在此兜底匹配
+                    </p>
+                  </div>
+                </div>
 
-                        <div className="flex max-w-md min-w-0 flex-1 items-center justify-end gap-1.5">
-                          <div className="flex flex-1 items-center overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/40 focus-within:border-[var(--border-focus)]">
-                            <span className="shrink-0 px-2 font-mono text-[11px] text-[var(--text-muted)] select-none">
-                              默认路径 /
+                <div className="space-y-2">
+                  {download.builtinCategories?.map((cat, idx) => {
+                    const isFallback = cat.id === 'builtin-file' || cat.name === '文件';
+                    return (
+                      <div
+                        key={cat.id || idx}
+                        className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-[var(--text-primary)]">
+                              {cat.name}
                             </span>
-                            <Input
-                              value={
-                                cat.id in catDirDrafts ? catDirDrafts[cat.id] : cat.directory || ''
-                              }
-                              onChange={(e) => {
-                                setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
-                              }}
-                              onBlur={() => {
-                                const val =
+                            <Badge variant={isFallback ? 'warning' : 'outline'}>
+                              {isFallback ? '默认兜底' : '内置'}
+                            </Badge>
+                          </div>
+
+                          <div className="flex max-w-md min-w-0 flex-1 items-center justify-end gap-1.5">
+                            <div className="flex flex-1 items-center overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/40 focus-within:border-[var(--border-focus)]">
+                              <span className="shrink-0 px-2 font-mono text-[11px] text-[var(--text-muted)] select-none">
+                                默认路径 /
+                              </span>
+                              <Input
+                                value={
                                   cat.id in catDirDrafts
                                     ? catDirDrafts[cat.id]
-                                    : cat.directory || '';
-                                void handleCommitCategoryDirectory(false, idx, val);
-                                const next = { ...catDirDrafts };
-                                delete next[cat.id];
-                                setCatDirDrafts(next);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
+                                    : cat.directory || ''
+                                }
+                                onChange={(e) => {
+                                  setCatDirDrafts({ ...catDirDrafts, [cat.id]: e.target.value });
+                                }}
+                                onBlur={() => {
                                   const val =
                                     cat.id in catDirDrafts
                                       ? catDirDrafts[cat.id]
@@ -2097,90 +2098,103 @@ export function SettingsPanel() {
                                   const next = { ...catDirDrafts };
                                   delete next[cat.id];
                                   setCatDirDrafts(next);
-                                }
-                              }}
-                              placeholder="子目录 (留空存入根目录)"
-                              className="h-7 flex-1 border-0 bg-transparent px-1 font-mono text-xs shadow-none focus-visible:ring-0"
-                            />
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const val =
+                                      cat.id in catDirDrafts
+                                        ? catDirDrafts[cat.id]
+                                        : cat.directory || '';
+                                    void handleCommitCategoryDirectory(false, idx, val);
+                                    const next = { ...catDirDrafts };
+                                    delete next[cat.id];
+                                    setCatDirDrafts(next);
+                                  }
+                                }}
+                                placeholder="子目录 (留空存入根目录)"
+                                className="h-7 flex-1 border-0 bg-transparent px-1 font-mono text-xs shadow-none focus-visible:ring-0"
+                              />
+                            </div>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => void handleSelectCategoryDirectory(false, idx)}
+                              className="h-7 shrink-0 gap-1 px-2 text-xs"
+                            >
+                              <Folder className="h-3 w-3" />
+                              <span>浏览</span>
+                            </Button>
                           </div>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => void handleSelectCategoryDirectory(false, idx)}
-                            className="h-7 shrink-0 gap-1 px-2 text-xs"
-                          >
-                            <Folder className="h-3 w-3" />
-                            <span>浏览</span>
-                          </Button>
                         </div>
-                      </div>
 
-                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                        {(cat.extensions || []).map((ext) => (
-                          <span
-                            key={ext}
-                            className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
-                          >
-                            <span>.{ext}</span>
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          {(cat.extensions || []).map((ext) => (
+                            <span
+                              key={ext}
+                              className="group inline-flex items-center gap-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-secondary)] transition-colors hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]"
+                            >
+                              <span>.{ext}</span>
+                              <button
+                                type="button"
+                                onClick={() => void handleRemoveExtension(false, idx, ext)}
+                                className="opacity-50 hover:text-red-500 hover:opacity-100"
+                                title={`移除 .${ext}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          ))}
+
+                          {addingExtCatId === cat.id ? (
+                            <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
+                              <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
+                              <input
+                                autoFocus
+                                type="text"
+                                value={newExtVal}
+                                onChange={(e) => setNewExtVal(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void handleCommitNewExtension(false, idx);
+                                  } else if (e.key === 'Escape') {
+                                    setAddingExtCatId(null);
+                                  }
+                                }}
+                                onBlur={() => void handleCommitNewExtension(false, idx)}
+                                placeholder="后缀"
+                                className="w-14 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
+                              />
+                            </span>
+                          ) : (
                             <button
                               type="button"
-                              onClick={() => void handleRemoveExtension(false, idx, ext)}
-                              className="opacity-50 hover:text-red-500 hover:opacity-100"
-                              title={`移除 .${ext}`}
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          </span>
-                        ))}
-
-                        {addingExtCatId === cat.id ? (
-                          <span className="inline-flex items-center rounded-md border border-[var(--accent)] bg-[var(--accent-muted)]/20 px-1.5 py-0.5">
-                            <span className="font-mono text-[11px] text-[var(--accent)]">.</span>
-                            <input
-                              autoFocus
-                              type="text"
-                              value={newExtVal}
-                              onChange={(e) => setNewExtVal(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  void handleCommitNewExtension(false, idx);
-                                } else if (e.key === 'Escape') {
-                                  setAddingExtCatId(null);
-                                }
+                              onClick={() => {
+                                setAddingExtCatId(cat.id);
+                                setNewExtVal('');
                               }}
-                              onBlur={() => void handleCommitNewExtension(false, idx)}
-                              placeholder="后缀"
-                              className="w-14 bg-transparent font-mono text-[11px] text-[var(--text-primary)] outline-none"
-                            />
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAddingExtCatId(cat.id);
-                              setNewExtVal('');
-                            }}
-                            className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                          >
-                            <Plus className="h-3 w-3" />
-                            <span>添加</span>
-                          </button>
-                        )}
+                              className="inline-flex items-center gap-0.5 rounded-md border border-dashed border-[var(--border-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                            >
+                              <Plus className="h-3 w-3" />
+                              <span>添加</span>
+                            </button>
+                          )}
 
-                        {isFallback && (
-                          <span className="pl-1 text-[10px] text-[var(--text-muted)]">
-                            未匹配后缀的文件默认归入此目录
-                          </span>
-                        )}
+                          {isFallback && (
+                            <span className="pl-1 text-[10px] text-[var(--text-muted)]">
+                              未匹配后缀的文件默认归入此目录
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       <CleanupModal open={cleanupOpen} onOpenChange={setCleanupOpen} />
       <DirectoryMigrationModal

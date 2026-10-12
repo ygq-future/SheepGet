@@ -643,6 +643,7 @@ type chunkTracker struct {
 	speed      int64 // bytes/sec
 	lastBytes  int64
 	lastUpdate time.Time
+	retries    int
 }
 
 type chunkCoordinator struct {
@@ -655,6 +656,7 @@ type chunkCoordinator struct {
 	sink       TransferSink
 	downloader *HTTPDownloader
 	client     *http.Client
+	adaptive   *AdaptiveConcurrency
 	// requests 统计这次传输真正发出去的 HTTP 请求数（含重试与拆分出来的子块）。
 	// 它是「慢」与「碎」的度量：同样的字节数下请求数暴涨，说明是在跟一个不配合的服务器死磕。
 	requests atomic.Int64
@@ -674,6 +676,7 @@ func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader
 		sink:       sink,
 		downloader: downloader,
 		client:     client,
+		adaptive:   NewAdaptiveConcurrency(t.MaxConcurrency, min(t.MaxConcurrency, 2)),
 	}
 	now := time.Now()
 	for i := range t.Chunks {
@@ -689,6 +692,16 @@ func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader
 		}
 	}
 	return coord
+}
+
+func (coord *chunkCoordinator) countActiveWorkersLocked() int {
+	active := 0
+	for _, trk := range coord.trackers {
+		if trk.active {
+			active++
+		}
+	}
+	return active
 }
 
 func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
@@ -713,8 +726,20 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 			coord.mu.Unlock()
 			return -1
 		}
+		// 2. 检查当前活跃 worker 数量是否已达自适应并发窗口上限
+		activeWorkers := coord.countActiveWorkersLocked()
+		allowedLimit := coord.adaptive.CurrentLimit()
+		if activeWorkers >= allowedLimit {
+			coord.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return -1
+			case <-time.After(20 * time.Millisecond):
+			}
+			continue
+		}
 
-		// 2. Claim next available unclaimed chunk
+		// 3. Claim next available unclaimed chunk
 		for i := range coord.t.Chunks {
 			c := &coord.t.Chunks[i]
 			trk := coord.trackers[c.Index]
@@ -740,12 +765,7 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 		}
 
 		// 4. Check if any workers are still active
-		activeWorkers := 0
-		for _, trk := range coord.trackers {
-			if trk.active {
-				activeWorkers++
-			}
-		}
+		activeWorkers = coord.countActiveWorkersLocked()
 		if activeWorkers == 0 {
 			coord.mu.Unlock()
 			return -1
@@ -919,8 +939,6 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 	}()
 
 	logger := coord.downloader.log()
-	retries := 0
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -944,7 +962,11 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		requestStart := time.Now()
 		chunkErr := coord.downloadChunkStream(ctx, chunkIdx, chunkStart, chunkEnd)
 		if chunkErr == nil {
+			coord.adaptive.OnSuccess()
 			coord.mu.Lock()
+			if trk := coord.trackers[chunkIdx]; trk != nil {
+				trk.retries = 0
+			}
 			c := &coord.t.Chunks[chunkIdx]
 			if c.Downloaded >= (c.End - c.Start + 1) {
 				c.Completed = true
@@ -956,27 +978,73 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			return nil
 		}
 
+		// 服务端限流（503 或 429）：触发自适应并发收缩
+		if IsRateLimitError(chunkErr) {
+			newLimit := coord.adaptive.OnRateLimit()
+			logger.Warn("chunk rate limited, scaling down concurrency",
+				"chunk", chunkIdx, "newLimit", newLimit,
+				"error", chunkErr.Error())
+
+			coord.mu.Lock()
+			trk := coord.trackers[chunkIdx]
+			var currentRetries int
+			if trk != nil {
+				currentRetries = trk.retries
+				trk.retries++
+			}
+			coord.mu.Unlock()
+
+			if currentRetries >= maxChunkRetries {
+				return fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, currentRetries, chunkErr)
+			}
+
+			// 若当前并发允许数小于已激活 worker，且还有其他 worker 在运行，说明当前槽位已超标，主动释放分片让位退出
+			coord.mu.Lock()
+			activeWorkers := coord.countActiveWorkersLocked()
+			if activeWorkers > newLimit {
+				targetChunk := &coord.t.Chunks[chunkIdx]
+				if !targetChunk.Completed && trk != nil {
+					trk.claimed = false
+					trk.active = false
+				}
+				coord.mu.Unlock()
+				return nil
+			}
+			coord.mu.Unlock()
+
+			delay := retryBackoff(currentRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+			continue
+		}
+
 		// Fatal errors abort immediately
 		if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) || IsFatalError(chunkErr) {
 			return chunkErr
 		}
 
-		// 这次尝试有进展就把退避拉回起点：能读到字节说明连接是活的，不该越等越久。
 		coord.mu.Lock()
+		trk := coord.trackers[chunkIdx]
 		gained := coord.t.Chunks[chunkIdx].Downloaded - downloadedBefore
-		coord.mu.Unlock()
-		if gained > 0 {
-			retries = 0
+		if gained > 0 && trk != nil {
+			trk.retries = 0
 		}
+		var retries int
+		if trk != nil {
+			retries = trk.retries
+			trk.retries++
+		}
+		coord.mu.Unlock()
 
 		if retries >= maxChunkRetries {
 			return fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, retries, chunkErr)
 		}
 
 		delay := retryBackoff(retries)
-		retries++
 		logger.Warn("chunk request failed, retrying",
-			"chunk", chunkIdx, "retry", retries, "backoffMs", delay.Milliseconds(),
 			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
 			"ms", time.Since(requestStart).Milliseconds(), "error", logging.SafeError(chunkErr).Error())
 		// Transient network drop, stall or 429 rate limit: back off and retry.
@@ -1039,8 +1107,8 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 		}
 		return fmt.Errorf("range out of bounds: %d-%d", start, end)
 	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return fmt.Errorf("server rate limited (HTTP 429 Too Many Requests): retrying")
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+		return &RateLimitError{Status: resp.Status}
 	}
 	if resp.StatusCode != http.StatusPartialContent {
 		if resp.StatusCode == http.StatusOK {
