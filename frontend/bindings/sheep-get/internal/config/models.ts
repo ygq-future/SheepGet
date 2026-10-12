@@ -215,6 +215,7 @@ export class GeneralConfig {
      */
     "enableLogging": boolean;
     "serverPort": number;
+    "apiKey": string;
 
     /** Creates a new GeneralConfig instance. */
     constructor($$source: Partial<GeneralConfig> = {}) {
@@ -232,6 +233,9 @@ export class GeneralConfig {
         }
         if (!("serverPort" in $$source)) {
             this["serverPort"] = 0;
+        }
+        if (!("apiKey" in $$source)) {
+            this["apiKey"] = "";
         }
 
         Object.assign(this, $$source);

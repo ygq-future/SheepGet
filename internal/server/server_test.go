@@ -18,9 +18,11 @@ import (
 )
 
 type mockDownloadHandler struct {
-	handledReq *HandoverRequest
-	resp       *HandoverResponse
-	err        error
+	handledReq       *HandoverRequest
+	resp             *HandoverResponse
+	handledCreateReq *CreateTaskRequest
+	createResp       *CreateTaskResponse
+	err              error
 }
 
 func (m *mockDownloadHandler) HandleHandover(_ context.Context, req *HandoverRequest) (*HandoverResponse, error) {
@@ -37,6 +39,14 @@ func (m *mockDownloadHandler) HandleHLSVariants(_ context.Context, _ *HLSVariant
 
 func (m *mockDownloadHandler) HandleMediaProbe(_ context.Context, _ *MediaProbeRequest) (*MediaProbeResponse, error) {
 	return &MediaProbeResponse{}, nil
+}
+
+func (m *mockDownloadHandler) HandleCreateTask(_ context.Context, req *CreateTaskRequest) (*CreateTaskResponse, error) {
+	m.handledCreateReq = req
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.createResp, nil
 }
 
 type mockConfigProvider struct {
@@ -359,4 +369,159 @@ func TestServer_RestartOnPort(t *testing.T) {
 		t.Errorf("expected server to retain port %d after failed restart attempt, got %d", currentPort, srv.Port())
 	}
 	_ = initialPort
+}
+
+func TestServer_APIKeyAuthentication(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, "session.json")
+	srv := NewServer(sessionPath, &mockDownloadHandler{}, &mockConfigProvider{})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	staticKey := "test-agent-api-key-9988"
+	srv.SetAPIKey(staticKey)
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+
+	// 1. Static APIKey should pass authentication
+	req, _ := http.NewRequest("GET", baseURL+protocol.PathPing, nil)
+	req.Header.Set(protocol.HeaderToken, staticKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("ping request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK with static APIKey, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// 2. Dynamic sessionToken should also pass
+	req, _ = http.NewRequest("GET", baseURL+protocol.PathPing, nil)
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("ping request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK with dynamic sessionToken, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// 3. Invalid token should fail
+	req, _ = http.NewRequest("GET", baseURL+protocol.PathPing, nil)
+	req.Header.Set(protocol.HeaderToken, "invalid-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("ping request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized with invalid token, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestServer_OpenAPISpec(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, "session.json")
+	srv := NewServer(sessionPath, &mockDownloadHandler{}, &mockConfigProvider{})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+	req, _ := http.NewRequest("GET", baseURL+protocol.PathOpenAPISpec, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request openapi spec failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for openapi spec, got %d", resp.StatusCode)
+	}
+
+	var spec map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&spec); err != nil {
+		t.Fatalf("failed to parse openapi json: %v", err)
+	}
+
+	if spec["openapi"] != "3.1.0" {
+		t.Errorf("expected openapi 3.1.0, got %v", spec["openapi"])
+	}
+	paths, ok := spec["paths"].(map[string]any)
+	if !ok || paths[protocol.PathTasks] == nil {
+		t.Errorf("expected paths to contain %s, got %v", protocol.PathTasks, paths)
+	}
+}
+
+func TestServer_CreateTaskEndpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, "session.json")
+	mockH := &mockDownloadHandler{
+		createResp: &CreateTaskResponse{
+			TaskID:    "task_12345",
+			URL:       "https://example.com/test.zip",
+			Filename:  "test.zip",
+			Directory: tempDir,
+			Status:    "pending",
+		},
+	}
+	srv := NewServer(sessionPath, mockH, &mockConfigProvider{})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+
+	// 1. Without token: 401 Unauthorized
+	body := `{"url":"https://example.com/test.zip"}`
+	req, _ := http.NewRequest("POST", baseURL+protocol.PathTasks, bytes.NewBufferString(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// 2. Invalid URL: 400 Bad Request
+	invalidBody := `{"url":"ftp://example.com/test.zip"}`
+	req, _ = http.NewRequest("POST", baseURL+protocol.PathTasks, bytes.NewBufferString(invalidBody))
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for ftp scheme, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// 3. Valid URL with token: 201 Created
+	req, _ = http.NewRequest("POST", baseURL+protocol.PathTasks, bytes.NewBufferString(body))
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+	}
+	var createdResp CreateTaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&createdResp); err != nil {
+		t.Fatalf("failed to decode response json: %v", err)
+	}
+	if createdResp.TaskID != "task_12345" || createdResp.Filename != "test.zip" {
+		t.Errorf("unexpected task response: %+v", createdResp)
+	}
+	if mockH.handledCreateReq == nil || mockH.handledCreateReq.URL != "https://example.com/test.zip" {
+		t.Errorf("expected handledCreateReq to have URL, got %+v", mockH.handledCreateReq)
+	}
 }

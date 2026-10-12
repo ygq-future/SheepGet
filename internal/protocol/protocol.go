@@ -28,6 +28,8 @@ const (
 	PathHLSVariants    = BasePath + "/hls/variants"
 	PathMediaProbe     = BasePath + "/media/probe"
 	PathEvents         = BasePath + "/events"
+	PathTasks          = BasePath + "/tasks"
+	PathOpenAPISpec    = BasePath + "/openapi.json"
 )
 
 // 请求与响应头。

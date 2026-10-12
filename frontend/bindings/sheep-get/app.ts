@@ -260,7 +260,8 @@ export function OpenFolder(folderPath: string): $CancellablePromise<void> {
 }
 
 /**
- * OpenNewDownload opens the FileInfo window with an empty/manual request.
+ * OpenNewDownload opens the FileInfo window, automatically populating the URL
+ * if the system clipboard contains a valid HTTP/HTTPS link.
  */
 export function OpenNewDownload(): $CancellablePromise<window$0.DownloadResponse | null> {
     return $Call.ByID(3018225713).then(($result: any) => {

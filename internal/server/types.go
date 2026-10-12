@@ -44,6 +44,23 @@ type HandoverResponse struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
+// CreateTaskRequest is the payload sent to POST /api/v1/tasks.
+type CreateTaskRequest struct {
+	URL       string            `json:"url"`
+	Filename  string            `json:"filename,omitempty"`
+	Directory string            `json:"directory,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+// CreateTaskResponse is returned upon successful task creation.
+type CreateTaskResponse struct {
+	TaskID    string `json:"taskId"`
+	URL       string `json:"url"`
+	Filename  string `json:"filename"`
+	Directory string `json:"directory"`
+	Status    string `json:"status"`
+}
+
 // HLSVariantsRequest 是扩展悬浮条在交接前拉取清晰度列表的请求：清单地址加上取回清单
 // 所需的请求上下文（Referer/Cookie）。防盗链或需登录的清单不带上下文只会探出 403。
 type HLSVariantsRequest struct {

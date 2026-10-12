@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
+	"sheep-get/internal/protocol"
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
@@ -1796,4 +1798,94 @@ func TestApp_OpenNewDownload_ExtractsClipboardURL(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestApp_DirectDownloadViaHTTPAndAPIKey(t *testing.T) {
+	app, store, tmpDir := newTestApp(t)
+	payload := []byte("agent direct download content")
+	ts := serveRangedPayload(payload, "", 0)
+	defer ts.Close()
+
+	// 1. 设置 APIKey
+	apiKey := "secret-agent-api-key-test"
+	st := app.GetSettings()
+	st.General.APIKey = apiKey
+	st.Download.DefaultDirectory = tmpDir
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+
+	// 2. 启动环回 HTTP 服务
+	if err := app.loopbackServer.Start(); err != nil {
+		t.Fatalf("loopbackServer.Start failed: %v", err)
+	}
+	defer func() { _ = app.loopbackServer.Stop() }()
+
+	port := app.loopbackServer.Port()
+	urlEndpoint := fmt.Sprintf("http://127.0.0.1:%d%s", port, protocol.PathTasks)
+
+	// 3. 发送 POST /api/v1/tasks 请求
+	reqBody := fmt.Sprintf(`{"url": "%s/download"}`, ts.URL)
+	httpReq, _ := http.NewRequest("POST", urlEndpoint, strings.NewReader(reqBody))
+	httpReq.Header.Set(protocol.HeaderToken, apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+	}
+
+	var created server.CreateTaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if created.Filename != "flow.bin" {
+		t.Errorf("expected Filename 'flow.bin', got %s", created.Filename)
+	}
+
+	// 4. 关键断言：文件信息窗口队列必须为空（跳过了人工弹窗确认）
+	active, err := app.GetActiveFileInfo()
+	if err != nil {
+		t.Fatalf("GetActiveFileInfo failed: %v", err)
+	}
+	if active != nil {
+		t.Errorf("expected active FileInfo to be nil (window skipped), but got %+v", active)
+	}
+
+	// 5. 等待任务完成并验证落盘
+	waitAppTask(t, store, created.TaskID, task.StatusCompleted)
+	outPath := filepath.Join(created.Directory, created.Filename)
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("failed to read downloaded file: %v", err)
+	}
+	if string(data) != string(payload) {
+		t.Errorf("downloaded content mismatch")
+	}
+
+	// 6. 再次以相同 URL 直接下载：自动生成序号副本 agent_file (1).bin，不覆盖
+	httpReq2, _ := http.NewRequest("POST", urlEndpoint, strings.NewReader(reqBody))
+	httpReq2.Header.Set(protocol.HeaderToken, apiKey)
+	httpReq2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(httpReq2)
+	if err != nil {
+		t.Fatalf("second HTTP request failed: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("expected second 201 Created, got %d", resp2.StatusCode)
+	}
+	var created2 server.CreateTaskResponse
+	if err := json.NewDecoder(resp2.Body).Decode(&created2); err != nil {
+		t.Fatalf("failed to decode second response: %v", err)
+	}
+	if created2.Filename != "flow (1).bin" {
+		t.Errorf("expected second filename 'flow (1).bin', got %s", created2.Filename)
+	}
 }

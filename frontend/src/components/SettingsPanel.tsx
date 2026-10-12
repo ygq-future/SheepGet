@@ -39,6 +39,9 @@ import {
   FolderOpen,
   ExternalLink,
   Sparkles,
+  Eye,
+  EyeOff,
+  Copy,
 } from 'lucide-react';
 import { AboutUpdatesView } from './AboutUpdatesView';
 import { CleanupModal } from './CleanupModal';
@@ -221,10 +224,11 @@ function CustomCategoryItem({
 
   return (
     <Reorder.Item
+      as="div"
       value={cat}
       dragListener={false}
       dragControls={dragControls}
-      className="space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
+      className="list-none space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 transition-colors hover:border-[var(--border-hover)]"
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -449,6 +453,8 @@ export function SettingsPanel() {
     configModels.CategoryConfig[] | null
   >(null);
   const [serverPortDraft, setServerPortDraft] = useState<string | null>(null);
+  const [apiKeyDraft, setAPIKeyDraft] = useState<string | null>(null);
+  const [showAPIKey, setShowAPIKey] = useState(false);
   const [restartingServer, setRestartingServer] = useState(false);
   const [migrationModalOpen, setMigrationModalOpen] = useState(false);
   const [pendingNewDir, setPendingNewDir] = useState<string | null>(null);
@@ -535,6 +541,46 @@ export function SettingsPanel() {
       showToast(`重启 HTTP 服务失败: ${String(err)}`, 'error');
     } finally {
       setRestartingServer(false);
+    }
+  };
+
+  const apiKey = apiKeyDraft ?? (general.apiKey || '');
+
+  const handleSaveAPIKey = async (val: string) => {
+    const trimmed = val.trim();
+    setAPIKeyDraft(null);
+    if (trimmed === (general.apiKey || '')) return;
+    try {
+      await updateSettings({
+        general: new configModels.GeneralConfig({
+          ...general,
+          apiKey: trimmed,
+        }),
+      });
+      showToast(
+        trimmed ? '已保存 API 访问密钥' : '已清除 API 访问密钥，使用动态会话令牌',
+        'success',
+      );
+    } catch (err) {
+      showToast(`保存 API 访问密钥失败: ${String(err)}`, 'error');
+    }
+  };
+
+  const handleGenerateAPIKey = async () => {
+    const randomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    setAPIKeyDraft(null);
+    try {
+      await updateSettings({
+        general: new configModels.GeneralConfig({
+          ...general,
+          apiKey: randomKey,
+        }),
+      });
+      showToast('已生成并保存新的 API 访问密钥', 'success');
+    } catch (err) {
+      showToast(`生成 API 密钥失败: ${String(err)}`, 'error');
     }
   };
 
@@ -1871,22 +1917,82 @@ export function SettingsPanel() {
                   description={`扩展通信监听端口，默认 ${Ports.DefaultServer}，修改后需重启`}
                 >
                   <div className="flex items-center gap-2">
-                    <Input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={5}
-                      value={serverPort}
-                      onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
-                      className="w-20 text-center font-mono text-xs"
-                    />
+                    <div className="w-44">
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={5}
+                        value={serverPort}
+                        onChange={(e) => setServerPortDraft(e.target.value.replace(/\D/g, ''))}
+                        className="text-center font-mono text-xs"
+                      />
+                    </div>
                     <Button
                       variant="secondary"
                       size="sm"
                       disabled={restartingServer}
                       onClick={() => void handleRestartServer()}
-                      className="h-8 text-xs"
+                      className="h-8 w-20 shrink-0 text-xs"
                     >
                       {restartingServer ? '重启中…' : '重启服务'}
+                    </Button>
+                  </div>
+                </SettingRow>
+
+                <SettingRow
+                  label="API 访问密钥"
+                  description="外部调用的固定鉴权密钥，留空使用动态令牌"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="relative w-44">
+                      <Input
+                        type={showAPIKey ? 'text' : 'password'}
+                        placeholder="输入或生成密钥"
+                        value={apiKey}
+                        onChange={(e) => setAPIKeyDraft(e.target.value)}
+                        onBlur={(e) => void handleSaveAPIKey(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            void handleSaveAPIKey((e.target as HTMLInputElement).value);
+                          }
+                        }}
+                        className="pr-14 font-mono text-xs"
+                      />
+                      <div className="absolute top-1/2 right-2 flex -translate-y-1/2 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowAPIKey(!showAPIKey)}
+                          className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                          title={showAPIKey ? '隐藏密钥' : '显示密钥'}
+                        >
+                          {showAPIKey ? (
+                            <EyeOff className="h-3.5 w-3.5" />
+                          ) : (
+                            <Eye className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        {apiKey && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void navigator.clipboard.writeText(apiKey);
+                              showToast('已复制 API 访问密钥到剪贴板', 'success');
+                            }}
+                            className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                            title="复制密钥"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleGenerateAPIKey()}
+                      className="h-8 w-20 shrink-0 text-xs"
+                    >
+                      生成密钥
                     </Button>
                   </div>
                 </SettingRow>

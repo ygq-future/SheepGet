@@ -40,6 +40,8 @@ type DownloadHandler interface {
 	HandleHLSVariants(ctx context.Context, req *HLSVariantsRequest) (*HLSVariantsResponse, error)
 	// HandleMediaProbe 为扩展面板探测一条链接的展示信息（时长与大小）。
 	HandleMediaProbe(ctx context.Context, req *MediaProbeRequest) (*MediaProbeResponse, error)
+	// HandleCreateTask 直接创建并启动下载任务，跳过文件信息确认窗口。
+	HandleCreateTask(ctx context.Context, req *CreateTaskRequest) (*CreateTaskResponse, error)
 }
 
 // ConfigProvider is implemented by the settings service to provide current takeover config sync data.
@@ -59,6 +61,7 @@ type Server struct {
 	port         int
 	sessionToken string
 	startedAt    int64
+	apiKey       string
 	lastErr      string
 
 	mu             sync.RWMutex
@@ -87,6 +90,13 @@ func (s *Server) SetTargetPort(port int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.targetPort = port
+}
+
+// SetAPIKey sets the configured static API key for external clients or LLM agents.
+func (s *Server) SetAPIKey(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apiKey = strings.TrimSpace(key)
 }
 
 // SetOnStatusChange configures a callback invoked whenever server status or connected client count changes.
@@ -294,7 +304,8 @@ func (s *Server) startWithListenerLocked(ln net.Listener) error {
 	mux.HandleFunc("POST "+protocol.PathHLSVariants, s.authMiddleware(s.handleHLSVariants))
 	mux.HandleFunc("POST "+protocol.PathMediaProbe, s.authMiddleware(s.handleMediaProbe))
 	mux.HandleFunc("GET "+protocol.PathEvents, s.handleEvents)
-
+	mux.HandleFunc("GET "+protocol.PathOpenAPISpec, s.handleOpenAPISpec)
+	mux.HandleFunc("POST "+protocol.PathTasks, s.authMiddleware(s.handleCreateTask))
 	srv := &http.Server{
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
@@ -357,8 +368,9 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		token := r.Header.Get(protocol.HeaderToken)
 		s.mu.RLock()
 		currentToken := s.sessionToken
+		apiKey := s.apiKey
 		s.mu.RUnlock()
-		if token == "" || token != currentToken {
+		if token == "" || (token != currentToken && (apiKey == "" || token != apiKey)) {
 			w.Header().Set("Content-Type", "application/json")
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
@@ -398,6 +410,122 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if strings.HasPrefix(origin, "http://") || strings.HasPrefix(origin, "https://") {
+		http.Error(w, `{"error":"forbidden web origin"}`, http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	spec := map[string]any{
+		"openapi": "3.1.0",
+		"info": map[string]any{
+			"title":       "SheepGet Desktop API",
+			"version":     version.Version,
+			"description": "Local HTTP loopback API for SheepGet download manager. External tools and LLM agents can trigger direct downloads.",
+		},
+		"servers": []map[string]any{
+			{
+				"url":         fmt.Sprintf("http://127.0.0.1:%d", s.Port()),
+				"description": "Local active server",
+			},
+		},
+		"components": map[string]any{
+			"securitySchemes": map[string]any{
+				"ApiKeyAuth": map[string]any{
+					"type":        "apiKey",
+					"in":          "header",
+					"name":        protocol.HeaderToken,
+					"description": "Session token from /api/v1/discover or static API Key configured in Settings.",
+				},
+			},
+		},
+		"security": []map[string]any{
+			{"ApiKeyAuth": []any{}},
+		},
+		"paths": map[string]any{
+			protocol.PathDiscover: map[string]any{
+				"get": map[string]any{
+					"summary":     "Discover active loopback server and session token",
+					"description": "Returns active port, version, and session token. Web origins (http/https) are strictly rejected.",
+					"security":    []any{},
+					"responses": map[string]any{
+						"200": map[string]any{
+							"description": "Active session metadata",
+							"content": map[string]any{
+								"application/json": map[string]any{
+									"schema": map[string]any{
+										"type": "object",
+										"properties": map[string]any{
+											"status":       map[string]any{"type": "string", "example": "ok"},
+											"version":      map[string]any{"type": "string"},
+											"port":         map[string]any{"type": "integer"},
+											"sessionToken": map[string]any{"type": "string"},
+											"startedAt":    map[string]any{"type": "integer"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			protocol.PathTasks: map[string]any{
+				"post": map[string]any{
+					"summary":     "Create and start a direct download task",
+					"description": "Directly triggers a download without prompting the FileInfo window. Displays progress window if enabled.",
+					"requestBody": map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{
+								"schema": map[string]any{
+									"type":     "object",
+									"required": []string{"url"},
+									"properties": map[string]any{
+										"url": map[string]any{
+											"type":        "string",
+											"description": "The URL to download (HTTP/HTTPS or HLS m3u8 playlist).",
+										},
+										"filename": map[string]any{
+											"type":        "string",
+											"description": "Optional custom filename.",
+										},
+										"directory": map[string]any{
+											"type":        "string",
+											"description": "Optional custom download directory.",
+										},
+										"headers": map[string]any{
+											"type":                 "object",
+											"additionalProperties": map[string]any{"type": "string"},
+											"description":          "Optional custom HTTP headers (Cookie, Referer, etc.).",
+										},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]any{
+						"201": map[string]any{
+							"description": "Download task successfully created and started",
+						},
+						"400": map[string]any{
+							"description": "Invalid input or unsupported URL scheme",
+						},
+						"401": map[string]any{
+							"description": "Unauthorized (missing or invalid token)",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_ = json.NewEncoder(w).Encode(spec)
 }
 
 // pingPayload answers liveness probes. The version is read once from internal/version
@@ -530,16 +658,53 @@ func (s *Server) handleMediaProbe(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req CreateTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON payload"})
+		return
+	}
+
+	parsedURL, err := url.Parse(req.URL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid URL scheme (only http/https supported)"})
+		return
+	}
+
+	if s.handler == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "handler not configured"})
+		return
+	}
+
+	resp, err := s.handler.HandleCreateTask(r.Context(), &req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get(protocol.QueryParamToken)
 	if token == "" {
 		token = r.Header.Get(protocol.HeaderToken)
 	}
-	if token != s.sessionToken {
+	s.mu.RLock()
+	curToken := s.sessionToken
+	apiKey := s.apiKey
+	s.mu.RUnlock()
+	if token == "" || (token != curToken && (apiKey == "" || token != apiKey)) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: []string{"*"},
 	})

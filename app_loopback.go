@@ -5,10 +5,15 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"strings"
 
 	"sheep-get/internal/config"
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/engine"
 	"sheep-get/internal/server"
+	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 )
 
@@ -45,6 +50,10 @@ func (a *loopbackServerAdapter) HandleHLSVariants(ctx context.Context, req *serv
 
 func (a *loopbackServerAdapter) HandleMediaProbe(ctx context.Context, req *server.MediaProbeRequest) (*server.MediaProbeResponse, error) {
 	return a.app.handleMediaProbe(ctx, req)
+}
+
+func (a *loopbackServerAdapter) HandleCreateTask(ctx context.Context, req *server.CreateTaskRequest) (*server.CreateTaskResponse, error) {
+	return a.app.handleCreateTask(ctx, req)
 }
 
 func (a *loopbackServerAdapter) GetTakeoverSync() server.TakeoverConfigSync {
@@ -104,6 +113,126 @@ func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*s
 	return &server.HandoverResponse{
 		Accepted:    resp.Handled,
 		QueueItemID: resp.RequestID,
+	}, nil
+}
+
+func (a *App) handleCreateTask(ctx context.Context, req *server.CreateTaskRequest) (*server.CreateTaskResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("empty request")
+	}
+	dlReq := window.DownloadRequest{
+		URL:       req.URL,
+		Filename:  req.Filename,
+		Directory: req.Directory,
+		Headers:   req.Headers,
+	}
+	return a.directDownload(ctx, dlReq)
+}
+
+// directDownload 直接创建并启动下载任务，跳过文件信息确认窗口，按设置呼起下载进度窗口。
+// 它不导出为 Wails 绑定——只被 loopback 服务器调用，导出只会把 server 包的类型泄漏进前端模型图。
+func (a *App) directDownload(ctx context.Context, req window.DownloadRequest) (*server.CreateTaskResponse, error) {
+	if a.manager == nil {
+		return nil, fmt.Errorf("download engine not initialized")
+	}
+	urlStr := strings.TrimSpace(req.URL)
+	if urlStr == "" {
+		return nil, fmt.Errorf("missing download URL")
+	}
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return nil, fmt.Errorf("invalid URL scheme (only http/https supported)")
+	}
+
+	st := a.GetSettings()
+	maxConn := req.MaxConn
+	if maxConn <= 0 {
+		maxConn = st.Download.DefaultConnectionsPerTask
+	}
+
+	// 1. 探测链接获取建议信息
+	probe, probeErr := a.manager.ProbeURL(ctx, urlStr, req.Headers)
+
+	// 2. 候选文件名
+	filename := engine.CleanFilename(req.Filename)
+	if filename == "" && probe != nil && probe.Filename != "" {
+		filename = probe.Filename
+	}
+	if filename == "" {
+		filename = engine.URLFilename(urlStr)
+	}
+	if filename == "" {
+		filename = engine.DefaultFilename
+	}
+
+	// 3. 处理 HLS 视频清单
+	isHLS := req.VariantURI != "" || strings.HasSuffix(strings.ToLower(urlStr), ".m3u8") || strings.HasSuffix(strings.ToLower(filename), ".m3u8") || (probe != nil && probe.HLS != nil)
+	if isHLS {
+		filename = engine.HLSOutputName(urlStr, filename)
+		if probe != nil && probe.HLS != nil && probe.HLS.Media == nil {
+			variantURI := req.VariantURI
+			if variantURI == "" && len(probe.HLS.Variants) > 0 {
+				variantURI = probe.HLS.Variants[0].URI
+			}
+			if variantURI != "" {
+				src, err := a.manager.ResolveHLSVariant(ctx, urlStr, variantURI, req.Headers)
+				if err == nil && src != nil {
+					engine.ApplyHLSSelection(probe, src)
+					if len(probe.HLS.Variants) > 1 {
+						filename = engine.HLSVariantFilename(filename, src.Variant)
+					}
+				}
+			}
+		}
+	}
+
+	// 4. 解析目标目录与分类
+	dir := req.Directory
+	categoryID := ""
+	if dir == "" {
+		cat, resolvedDir := st.Download.ResolveDestination(filename)
+		categoryID = cat.ID
+		dir = resolvedDir
+	} else {
+		cat, _ := st.Download.ResolveDestination(filename)
+		categoryID = cat.ID
+	}
+
+	// 5. 占用与重复处理：同名防覆盖安全处理
+	dupTask, _ := a.manager.FindDuplicateTask(ctx, urlStr)
+	occupancy := a.manager.Occupancy(ctx, nil)
+
+	var createdTask *task.Task
+	if dupTask != nil && dupTask.Status != task.StatusCompleted {
+		createdTask, err = a.manager.ResolveDuplicateFromProbeWithMetadata(ctx, dupTask.ID, "continue", dir, filename, maxConn, probe, categoryID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if occupancy.Taken(dir, filename) {
+			filename = occupancy.NumberedCopy(dir, filename)
+		}
+		if dupTask != nil && dupTask.Status == task.StatusCompleted {
+			createdTask, err = a.manager.ResolveDuplicateFromProbeWithMetadata(ctx, dupTask.ID, "copy", dir, filename, maxConn, probe, categoryID)
+		} else {
+			createdTask, err = a.manager.AddTaskFromProbeWithMetadata(ctx, urlStr, dir, filename, maxConn, req.Headers, probe, probeErr, req.PageURL, categoryID)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// 6. 唤起进度窗口（跳过文件信息确认窗口）
+	if createdTask != nil && st.Download.ShowProgressWindow {
+		a.ShowProgressWindow(createdTask.ID)
+	}
+
+	return &server.CreateTaskResponse{
+		TaskID:    createdTask.ID,
+		URL:       createdTask.URL,
+		Filename:  createdTask.Filename,
+		Directory: createdTask.Directory,
+		Status:    string(createdTask.Status),
 	}, nil
 }
 

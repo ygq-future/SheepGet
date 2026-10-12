@@ -190,6 +190,7 @@ func NewApp() *App {
 	} else {
 		loopbackSrv.SetTargetPort(protocol.PortDefaultServer)
 	}
+	loopbackSrv.SetAPIKey(st.General.APIKey)
 	loopbackSrv.SetOnStatusChange(func(status server.Status) {
 		if wailsApp := app.getApp(); wailsApp != nil {
 			wailsApp.Event.Emit(protocol.EventServerStatusChanged, status)
@@ -335,6 +336,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 	}
 	if a.loopbackServer != nil && s != nil {
 		a.loopbackServer.BroadcastTakeoverConfig(takeoverSyncFromSettings(s))
+		a.loopbackServer.SetAPIKey(s.General.APIKey)
 	}
 	if a.clipboardWatcher != nil {
 		a.clipboardWatcher.OnSettingsUpdated(s)
@@ -380,6 +382,9 @@ func (a *App) UpdateSettings(s config.Settings) (config.Settings, error) {
 			_, _ = a.settings.Update(updated)
 			return updated, fmt.Errorf("设置已保存但本地端口重启失败: %w", restartErr)
 		}
+	}
+	if err == nil && a.loopbackServer != nil {
+		a.loopbackServer.SetAPIKey(updated.General.APIKey)
 	}
 	return updated, err
 }

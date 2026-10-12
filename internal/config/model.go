@@ -116,8 +116,9 @@ type GeneralConfig struct {
 	LightweightMode bool `json:"lightweightMode"`
 	// EnableLogging 控制是否把运行日志写进数据目录的 logs/。默认关闭：正常使用不落盘，
 	// 需要排查时才打开（滚动上限见 internal/logging）。
-	EnableLogging bool `json:"enableLogging"`
-	ServerPort    int  `json:"serverPort"`
+	EnableLogging bool   `json:"enableLogging"`
+	ServerPort    int    `json:"serverPort"`
+	APIKey        string `json:"apiKey"`
 }
 
 // ProxyMode specifies the proxy strategy.
@@ -390,6 +391,7 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 	if s.General.ServerPort < 1024 || s.General.ServerPort > 65535 {
 		s.General.ServerPort = protocol.PortDefaultServer
 	}
+	s.General.APIKey = strings.TrimSpace(s.General.APIKey)
 
 	// Validate Theme
 	switch s.Appearance.Theme {

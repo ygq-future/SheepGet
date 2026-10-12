@@ -11,6 +11,8 @@ export const Paths = {
   HLSVariants: '/api/v1/hls/variants',
   MediaProbe: '/api/v1/media/probe',
   Events: '/api/v1/events',
+  Tasks: '/api/v1/tasks',
+  OpenAPISpec: '/api/v1/openapi.json',
 } as const;
 
 export const HeaderNames = {
