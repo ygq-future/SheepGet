@@ -508,7 +508,7 @@ type probeJob struct {
 }
 
 func (qc *QueueController) asyncProbeItem(job probeJob) {
-	probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	// 带上这一项的请求上下文：防盗链或需要登录的链接，没有 Referer/Cookie 只会探出 403，

@@ -131,3 +131,14 @@ export function aggregateSegmentCells(
   }
   return cells;
 }
+
+/**
+ * 为未知大小任务计算平滑渐进百分比（0% ~ 95%）：
+ * 从 0 开始，随着已下载字节数平滑递增；越接近 90% 增长越平缓，封顶 95%。
+ */
+export function calculateUnknownSizeProgress(downloaded: number): number {
+  if (downloaded <= 0) return 0;
+  const mb = downloaded / (1024 * 1024);
+  const raw = (Math.log10(mb + 0.1) + 1) * 30;
+  return Math.min(95, Math.max(1, Math.round(raw)));
+}

@@ -52,15 +52,16 @@ type Config struct {
 
 // ProbeResult holds the probed metadata and duplicate-task state for a URL.
 type ProbeResult struct {
-	URL           string     `json:"url"`
-	FinalURL      string     `json:"finalUrl,omitempty"`
-	Filename      string     `json:"filename"`
-	TotalBytes    int64      `json:"totalBytes"`
-	Resumable     bool       `json:"resumable"`
-	ETag          string     `json:"etag"`
-	LastModified  string     `json:"lastModified"`
-	ContentType   string     `json:"contentType"`
-	DuplicateTask *task.Task `json:"duplicateTask,omitempty"`
+	URL            string     `json:"url"`
+	FinalURL       string     `json:"finalUrl,omitempty"`
+	Filename       string     `json:"filename"`
+	TotalBytes     int64      `json:"totalBytes"`
+	Resumable      bool       `json:"resumable"`
+	ETag           string     `json:"etag"`
+	LastModified   string     `json:"lastModified"`
+	ContentType    string     `json:"contentType"`
+	DirectTransfer bool       `json:"directTransfer,omitempty"`
+	DuplicateTask  *task.Task `json:"duplicateTask,omitempty"`
 	// HLS 是这条链接的 HLS 事实；为空表示它不是清单，按普通文件下载。
 	HLS *HLSProbe `json:"hls,omitempty"`
 }
@@ -350,6 +351,7 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		probe.ETag = info.ETag
 		probe.LastModified = info.LastModified
 		probe.ContentType = info.ContentType
+		probe.DirectTransfer = info.DirectTransfer
 	}
 
 	if looksLikePlaylist(urlStr, probe.ContentType) {
@@ -1145,32 +1147,46 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 
 	now := time.Now()
 	if probeErr != nil {
-		// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
-		t := &task.Task{
-			ID:             nextTaskID(),
-			URL:            urlStr,
-			PageURL:        pageURL,
-			CategoryID:     categoryID,
-			Filename:       filename,
-			Directory:      dir,
-			TempDir:        m.getTempDir(),
-			TotalBytes:     -1,
-			Status:         task.StatusError,
-			FailurePhase:   task.FailurePhaseTransfer,
-			ErrorMsg:       probeErr.Error(),
-			MaxConcurrency: maxConn,
-			RequestHeaders: creds,
-			CreatedAt:      now,
-			UpdatedAt:      now,
+		if errors.Is(probeErr, context.DeadlineExceeded) || errors.Is(probeErr, context.Canceled) || strings.Contains(strings.ToLower(probeErr.Error()), "deadline exceeded") {
+			// 探测阶段由于网络延迟或多次重定向未能在时限内获取到元数据，
+			// 但这不代表资源不存在或无法下载。降级为未知大小普通任务，进入队列调度实际下载。
+			m.log().Warn("pre-download probe timed out, falling back to queued download", "url", logging.SafeURL(urlStr), "error", probeErr.Error())
+			probeErr = nil
+			if probe == nil {
+				probe = &ProbeResult{
+					URL:        urlStr,
+					TotalBytes: -1,
+					Filename:   extractFilenameFromURL(urlStr),
+				}
+			}
+		} else {
+			// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
+			t := &task.Task{
+				ID:             nextTaskID(),
+				URL:            urlStr,
+				PageURL:        pageURL,
+				CategoryID:     categoryID,
+				Filename:       filename,
+				Directory:      dir,
+				TempDir:        m.getTempDir(),
+				TotalBytes:     -1,
+				Status:         task.StatusError,
+				FailurePhase:   task.FailurePhaseTransfer,
+				ErrorMsg:       probeErr.Error(),
+				MaxConcurrency: maxConn,
+				RequestHeaders: creds,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			}
+			if t.Filename == "" {
+				t.Filename = extractFilenameFromURL(urlStr)
+			}
+			if saveErr := m.store.Save(ctx, t); saveErr != nil {
+				return nil, saveErr
+			}
+			m.notify(t)
+			return t, nil
 		}
-		if t.Filename == "" {
-			t.Filename = extractFilenameFromURL(urlStr)
-		}
-		if saveErr := m.store.Save(ctx, t); saveErr != nil {
-			return nil, saveErr
-		}
-		m.notify(t)
-		return t, nil
 	}
 
 	// 清单还没定下要下哪一版就不能建任务：下出来的会是清单本身（只是名字被改成 .mp4），
@@ -1212,6 +1228,7 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 		ETag:           probe.ETag,
 		LastModified:   probe.LastModified,
 		RequestHeaders: creds,
+		DirectTransfer: probe.DirectTransfer,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -1293,6 +1310,28 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 	}
 	if t.FailurePhase == task.FailurePhaseProcessing {
 		return ErrProcessingRetryRequired
+	}
+	// 若任务大小未知或之前失败，重试前重新探测一次元数据
+	if t.TotalBytes <= 0 && t.URL != "" {
+		var headers map[string]string
+		if t.RequestHeaders != nil {
+			headers = t.RequestHeaders.RawHeaders()
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if probe, probeErr := m.ProbeURL(probeCtx, t.URL, headers); probeErr == nil && probe != nil {
+			if probe.TotalBytes > 0 {
+				t.TotalBytes = probe.TotalBytes
+				t.Resumable = probe.Resumable
+			}
+			if probe.FinalURL != "" && t.FinalURL == "" {
+				t.FinalURL = probe.FinalURL
+			}
+			if probe.DirectTransfer {
+				t.DirectTransfer = true
+			}
+			_ = m.store.Save(ctx, t)
+		}
+		cancel()
 	}
 	return m.Resume(ctx, id)
 }

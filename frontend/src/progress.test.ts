@@ -5,6 +5,7 @@ import {
   calculateChunkDividers,
   aggregateSegmentCells,
   isProcessingFailure,
+  calculateUnknownSizeProgress,
 } from './lib/progress';
 import * as taskModels from '../bindings/sheep-get/internal/task/models';
 
@@ -284,5 +285,26 @@ describe('aggregateSegmentCells (HLS segment cell bar)', () => {
     // 填充从左侧开始：第一格必满，最后一格必空
     expect(cells[0]).toBe(1);
     expect(cells[cells.length - 1]).toBe(0);
+  });
+});
+
+describe('calculateUnknownSizeProgress', () => {
+  it('returns 0 for 0 or negative downloaded bytes', () => {
+    expect(calculateUnknownSizeProgress(0)).toBe(0);
+    expect(calculateUnknownSizeProgress(-100)).toBe(0);
+  });
+
+  it('grows smoothly as downloaded bytes increase and caps at 95%', () => {
+    const p1k = calculateUnknownSizeProgress(1024);
+    const p1m = calculateUnknownSizeProgress(1024 * 1024);
+    const p10m = calculateUnknownSizeProgress(10 * 1024 * 1024);
+    const p100m = calculateUnknownSizeProgress(100 * 1024 * 1024);
+    const p1g = calculateUnknownSizeProgress(1024 * 1024 * 1024);
+
+    expect(p1k).toBeGreaterThan(0);
+    expect(p1m).toBeGreaterThan(p1k);
+    expect(p10m).toBeGreaterThan(p1m);
+    expect(p100m).toBeGreaterThan(p10m);
+    expect(p1g).toBeLessThanOrEqual(95);
   });
 });

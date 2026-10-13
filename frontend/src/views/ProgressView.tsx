@@ -43,6 +43,7 @@ import {
   calculateChunkDividers,
   aggregateSegmentCells,
   isProcessingFailure,
+  calculateUnknownSizeProgress,
 } from '../lib/progress';
 
 /**
@@ -574,11 +575,11 @@ export function ProgressView() {
               <LayoutGroup id="active-tasks-list">
                 <AnimatePresence mode="popLayout">
                   {sortedActive.map((t) => {
+                    const isUnknownSize = t.totalBytes <= 0;
                     const percent =
                       t.totalBytes > 0
                         ? Math.min(100, Math.round((t.downloaded / t.totalBytes) * 100))
-                        : 0;
-                    const isUnknownSize = t.totalBytes <= 0;
+                        : calculateUnknownSizeProgress(t.downloaded);
                     const isProcessingError = isProcessingFailure(t);
                     const isFocused = focusedTaskId === t.id;
 
@@ -710,9 +711,6 @@ export function ProgressView() {
                                   </div>
                                 );
                               })()
-                            ) : isUnknownSize &&
-                              t.status === taskModels.Status.StatusDownloading ? (
-                              <div className="animate-indeterminate h-full w-2/5 rounded-full bg-[var(--accent)]" />
                             ) : t.chunks && t.chunks.length > 1 ? (
                               (() => {
                                 const chunkItems = calculateChunkProgress(t.chunks, t.totalBytes);
@@ -768,7 +766,9 @@ export function ProgressView() {
                                 className={`h-full rounded-full transition-[width] duration-200 ease-linear ${
                                   t.status === taskModels.Status.StatusError
                                     ? 'bg-rose-500'
-                                    : 'bg-[var(--accent)]'
+                                    : t.status === taskModels.Status.StatusPaused
+                                      ? 'bg-[var(--text-muted)]/70'
+                                      : 'bg-[var(--accent)]'
                                 }`}
                                 style={{ width: `${percent}%` }}
                               />

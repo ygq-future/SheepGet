@@ -574,3 +574,67 @@ func TestHTTPDownloader_RedirectFinalURLAndVersionConsistency(t *testing.T) {
 		t.Fatal("downloaded content does not match expected payload")
 	}
 }
+
+func TestHTTPDownloader_SingleStreamResolvesTotalSizeAndResumable(t *testing.T) {
+	payload := []byte("dynamic content size resolved via single stream")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer ts.Close()
+
+	downloader := engine.NewHTTPDownloader(nil)
+	tmpDir := t.TempDir()
+	downloader.SetTempDirectory(tmpDir)
+
+	dlTask := &task.Task{
+		ID:         "task-unknown-size-resolve",
+		URL:        ts.URL + "/stream.bin",
+		Filename:   "stream.bin",
+		Directory:  tmpDir,
+		TotalBytes: -1,
+		Resumable:  false,
+	}
+
+	err := downloader.Download(context.Background(), dlTask, nil)
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	if dlTask.TotalBytes != int64(len(payload)) {
+		t.Fatalf("expected TotalBytes to be resolved to %d, got %d", len(payload), dlTask.TotalBytes)
+	}
+	if !dlTask.Resumable {
+		t.Fatal("expected task to be marked resumable from Accept-Ranges")
+	}
+}
+
+func TestHTTPDownloader_ProbeDirectFallbackWhenProxyFails(t *testing.T) {
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetServer.Close()
+
+	downloader := engine.NewHTTPDownloader(nil)
+	// 配置一个无法连通的自定义代理
+	_ = downloader.SetProxy("custom", "http://127.0.0.1:59999")
+
+	info, err := downloader.Probe(context.Background(), targetServer.URL+"/test.bin", nil)
+	if err != nil {
+		t.Fatalf("expected direct fallback to succeed, got: %v", err)
+	}
+	if !info.DirectTransfer {
+		t.Fatal("expected DirectTransfer to be true after fallback")
+	}
+
+	dlTask := &task.Task{
+		ID:             "direct-task",
+		DirectTransfer: true,
+	}
+	client := downloader.GetClientForTask(dlTask)
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+}

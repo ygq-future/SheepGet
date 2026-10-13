@@ -113,13 +113,14 @@ func isFatalStatusCode(code int) bool {
 
 // HTTPProbeInfo holds the result of probing an HTTP/HTTPS resource.
 type HTTPProbeInfo struct {
-	TotalBytes   int64  `json:"totalBytes"`
-	Resumable    bool   `json:"resumable"`
-	ETag         string `json:"etag"`
-	LastModified string `json:"lastModified"`
-	Filename     string `json:"filename"`
-	ContentType  string `json:"contentType"`
-	FinalURL     string `json:"finalUrl,omitempty"`
+	TotalBytes     int64  `json:"totalBytes"`
+	Resumable      bool   `json:"resumable"`
+	ETag           string `json:"etag"`
+	LastModified   string `json:"lastModified"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"contentType"`
+	FinalURL       string `json:"finalUrl,omitempty"`
+	DirectTransfer bool   `json:"directTransfer,omitempty"`
 }
 
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
@@ -268,6 +269,33 @@ func (d *HTTPDownloader) GetClientForDownload() *http.Client {
 	}
 }
 
+// GetClientForTask returns an *http.Client configured for the specific task run.
+// If the task is marked for direct transfer (e.g. fallback when proxy failed during probe), it uses a direct connection.
+func (d *HTTPDownloader) GetClientForTask(t *task.Task) *http.Client {
+	if t != nil && t.DirectTransfer {
+		tr, err := createHTTPTransport("direct", "")
+		if err == nil {
+			return &http.Client{
+				Transport: tr,
+				Timeout:   0,
+			}
+		}
+	}
+	return d.GetClientForDownload()
+}
+
+func (d *HTTPDownloader) isProxyConfigured() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.proxyMode == "custom" && strings.TrimSpace(d.customProxyAddr) != "" {
+		return true
+	}
+	if d.proxyMode == "system" {
+		return isSystemProxyActive()
+	}
+	return false
+}
+
 func createHTTPTransport(proxyMode, customAddr string) (*http.Transport, error) {
 	var proxyFunc func(*http.Request) (*url.URL, error)
 	switch proxyMode {
@@ -285,7 +313,7 @@ func createHTTPTransport(proxyMode, customAddr string) (*http.Transport, error) 
 			proxyFunc = nil
 		}
 	default: // "system"
-		proxyFunc = http.ProxyFromEnvironment
+		proxyFunc = systemProxyFunc()
 	}
 
 	return &http.Transport{
@@ -351,6 +379,35 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 // Probe inspects URL metadata without downloading the body. creds carries the request
 // context of the task (Referer/Cookie/Authorization) so expired links can be re-checked.
 func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credentials.RequestCredentials) (*HTTPProbeInfo, error) {
+	info, err := d.probeWithClient(ctx, d.client, urlStr, creds)
+	if err == nil {
+		return info, nil
+	}
+
+	// 若当前处于代理模式（custom 代理或启用的 system 代理），且探测失败（超时/连接重置等）：
+	// 尝试一次使用直连探测；若直连成功，则本次下载标记为直连下载（DirectTransfer = true）。
+	if !d.customClient && d.isProxyConfigured() {
+		directTr, trErr := createHTTPTransport("direct", "")
+		if trErr == nil {
+			directClient := &http.Client{Transport: directTr, Timeout: 0}
+			directCtx := ctx
+			if ctx.Err() != nil {
+				var cancel context.CancelFunc
+				directCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+			}
+			if directInfo, directErr := d.probeWithClient(directCtx, directClient, urlStr, creds); directErr == nil {
+				d.log().Info("probe succeeded via direct connection fallback, task will use direct transfer", "url", logging.SafeURL(urlStr))
+				directInfo.DirectTransfer = true
+				return directInfo, nil
+			}
+		}
+	}
+
+	return nil, err
+}
+
+func (d *HTTPDownloader) probeWithClient(ctx context.Context, client *http.Client, urlStr string, creds credentials.RequestCredentials) (*HTTPProbeInfo, error) {
 	var resp *http.Response
 	var err error
 	for range 2 {
@@ -366,9 +423,8 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 		req.Header.Set("User-Agent", UserAgentChrome)
 		req.Header.Set("Accept", "*/*")
 		applyRequestHeaders(req, creds)
-		req.Close = true
 
-		resp, err = d.client.Do(req)
+		resp, err = client.Do(req)
 		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
 			break
 		}
@@ -405,8 +461,7 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 			headReq.Header.Set("User-Agent", UserAgentChrome)
 			headReq.Header.Set("Accept", "*/*")
 			applyRequestHeaders(headReq, creds)
-			headReq.Close = true
-			resp, err = d.client.Do(headReq)
+			resp, err = client.Do(headReq)
 		}
 	}
 
@@ -517,7 +572,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, sink Transf
 		return fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 
-	client := d.GetClientForDownload()
+	client := d.GetClientForTask(t)
 
 	// If the resource is not resumable or total size is unknown, fallback to single-stream download
 	if !t.Resumable || t.TotalBytes <= 0 {
@@ -578,10 +633,27 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned error status: %s", resp.Status)
 	}
+	var downloaded int64
+	// 动态回填响应头大小与续传支持：如果任务之前未探出大小（totalBytes <= 0），从真实响应头中提取
+	if t.TotalBytes <= 0 {
+		cl := resp.ContentLength
+		if cl <= 0 && resp.Header.Get("Content-Length") != "" {
+			if parsed, pErr := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64); pErr == nil && parsed > 0 {
+				cl = parsed
+			}
+		}
+		if cl > 0 {
+			t.TotalBytes = cl
+			if resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == http.StatusPartialContent {
+				t.Resumable = true
+			}
+			logger.Info("resolved total size from single stream response header", "task", t.ID, "totalBytes", t.TotalBytes, "resumable", t.Resumable)
+			publishProgress(t, downloaded, sink)
+		}
+	}
 
 	body := watch.Reader(resp.Body)
 	buf := make([]byte, 64*1024)
-	var downloaded int64
 	for {
 		select {
 		case <-ctx.Done():
@@ -607,6 +679,9 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 	}
 
 	_ = file.Close()
+	if t.TotalBytes <= 0 && downloaded > 0 {
+		t.TotalBytes = downloaded
+	}
 	if t.LastModified == "" && resp.Header.Get("Last-Modified") != "" {
 		t.LastModified = resp.Header.Get("Last-Modified")
 	}

@@ -154,6 +154,33 @@ func TestManager_ImmediateErrorKeepsTask(t *testing.T) {
 	}
 }
 
+func TestManager_ProbeTimeoutFallsBackToQueuedTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	storeFile := filepath.Join(tmpDir, "tasks.json")
+	store, _ := task.NewFileTaskStore(storeFile)
+
+	mgr := engine.NewManager(store, nil, engine.Config{MaxActiveTasks: 2})
+	defer mgr.Close()
+
+	ctx := context.Background()
+	targetURL := "https://example.com/slow-to-probe.apk"
+
+	// 模拟预探测超时
+	t1, err := mgr.AddTaskFromProbe(ctx, targetURL, tmpDir, "slow.apk", 2, nil, nil, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("AddTaskFromProbe should not fail on timeout, got: %v", err)
+	}
+	if t1.Status != task.StatusQueued {
+		t.Fatalf("expected task to be in StatusQueued on probe timeout fallback, got %v (errorMsg: %q)", t1.Status, t1.ErrorMsg)
+	}
+	if t1.TotalBytes != -1 {
+		t.Fatalf("expected TotalBytes to be -1, got %d", t1.TotalBytes)
+	}
+	if t1.Filename != "slow.apk" {
+		t.Fatalf("expected Filename to be slow.apk, got %s", t1.Filename)
+	}
+}
+
 // TestManager_RetryContractByFailurePhase pins the contract the UI uses to choose a retry
 // action: 传输失败走 Retry，处理失败只能走 RetryProcessing，避免按错误文案猜测失败类型。
 func TestManager_RetryContractByFailurePhase(t *testing.T) {
