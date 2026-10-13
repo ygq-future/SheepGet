@@ -102,8 +102,17 @@ func DestinationOccupied(dir, filename string, dupTask *task.Task) bool {
 	if FileExists(filepath.Join(dir, filename)) {
 		return true
 	}
-	return dupTask != nil && dupTask.Filename != "" && dupTask.Filename != filename &&
-		FileExists(filepath.Join(dir, dupTask.Filename))
+	// 仅当 dupTask 与当前任务属于同一目标文件（例如为序号副本避让 name (1).ext 寻找原名 name.ext）时，
+	// 才检查 dupTask.Filename。如果 dupTask 是清晰度不同、天然不同名的 HLS 任务，则不能跨文件判定占用。
+	if dupTask != nil && dupTask.Filename != "" && dupTask.Filename != filename {
+		if dupTask.IsHLS() {
+			// HLS 任务不同分辨率拥有不同的成品名字，若当前选定的 filename 在磁盘上不存在，
+			// 不应将其他分辨率文件的存在视为当前任务的目标位置被占用。
+			return false
+		}
+		return FileExists(filepath.Join(dir, dupTask.Filename))
+	}
+	return false
 }
 
 var numberedSuffixRegex = regexp.MustCompile(`^(.*) \(\d+\)$`)

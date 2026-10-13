@@ -752,7 +752,11 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 		if tasks, err := a.manager.List(a.ctx); err == nil {
 			for _, t := range tasks {
 				if t.URL == urlStr && t.Filename != "" {
+					// 如果两边都是指定不同分辨率的 HLS 视频，且文件名不同，不应视为同文件冲突
 					if engine.FileExists(filepath.Join(dir, t.Filename)) {
+						if t.IsHLS() && t.Filename != filename {
+							continue
+						}
 						exists = true
 						break
 					}
@@ -799,7 +803,20 @@ func (a *App) CheckURLFilesExist(urlStr, dir, filename string) FileConflictResul
 func (a *App) ResolveDuplicateDecision(urlStr, dir, filename string) duplicate.Decision {
 	var dupTask *task.Task
 	if a.manager != nil && urlStr != "" {
-		dupTask, _ = a.manager.FindDuplicateTask(a.ctx, urlStr)
+		var variantURI string
+		if a.windowQueue != nil {
+			if act, _ := a.windowQueue.GetActive(); act != nil && act.URL == urlStr {
+				if act.QualityLabel != "" && act.Variants != nil {
+					for _, opt := range act.Variants {
+						if opt.Label == act.QualityLabel {
+							variantURI = opt.URI
+							break
+						}
+					}
+				}
+			}
+		}
+		dupTask, _ = a.manager.FindDuplicateTaskWithVariant(a.ctx, urlStr, variantURI)
 	}
 	if dir == "" {
 		dir = a.categoryDirectory(filename)

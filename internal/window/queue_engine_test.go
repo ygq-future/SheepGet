@@ -144,6 +144,11 @@ func (e *blockingEngine) FindDuplicateTask(context.Context, string) (*task.Task,
 	return nil, nil
 }
 
+func (e *blockingEngine) FindDuplicateTaskWithVariant(context.Context, string, string) (*task.Task, error) {
+	e.enter("FindDuplicateTask")
+	return nil, nil
+}
+
 func (e *blockingEngine) AddTask(context.Context, string, string, string, int) (*task.Task, error) {
 	e.enter("AddTask")
 	return &task.Task{ID: "task_manual"}, nil

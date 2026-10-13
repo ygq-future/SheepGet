@@ -55,6 +55,7 @@ type DownloadEngine interface {
 	// 联网的地方。
 	ResolveHLSVariant(ctx context.Context, playlistURL, variantURI string, headers map[string]string) (*hls.Source, error)
 	FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error)
+	FindDuplicateTaskWithVariant(ctx context.Context, urlStr, variantURI string) (*task.Task, error)
 	AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
 	AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
 	AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error)
@@ -363,7 +364,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	// Fast local duplicate check without blocking on network probe
 	var dupTask *task.Task
 	if req.URL != "" {
-		dupTask, _ = qc.engine.FindDuplicateTask(ctx, req.URL)
+		dupTask, _ = qc.engine.FindDuplicateTaskWithVariant(ctx, req.URL, req.VariantURI)
 	}
 
 	filename := engine.CleanFilename(req.Filename)
@@ -599,7 +600,12 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 		targetItem.Resumable = probe.Resumable
 		applyHLSFacts(targetItem, probe)
 		if probe.DuplicateTask != nil {
+			// 若当前项已选定清晰度且是 HLS，则需要同清晰度才视为重复
 			targetItem.DuplicateTask = probe.DuplicateTask
+			if targetItem.media != nil && targetItem.media.Variant.URI != "" {
+				dup, _ := qc.engine.FindDuplicateTaskWithVariant(context.Background(), reqURL, targetItem.media.Variant.URI)
+				targetItem.DuplicateTask = dup
+			}
 		}
 		if probe.Filename != "" && (targetItem.Filename == engine.DefaultFilename || targetItem.Filename == engine.URLFilename(reqURL)) {
 			targetItem.Filename = probe.Filename
@@ -759,6 +765,16 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 		item.SuggestedFilename = occupancy.Suggest(item.Directory, item.Filename)
 		item.FileConflict = occupancy.Taken(item.Directory, item.Filename)
 	}
+	// 选定清晰度后重新核算该变体的重复任务与裁决结果
+	dupTask, _ := qc.engine.FindDuplicateTaskWithVariant(ctx, job.url, variantURI)
+	item.DuplicateTask = dupTask
+	policy := qc.settings.Get().Download.DuplicateURLPolicy
+	item.DuplicateDecision = duplicate.Decide(duplicate.Facts{
+		Policy:              policy,
+		HasHistory:          dupTask != nil,
+		HistoryCompleted:    dupTask != nil && dupTask.Status == task.StatusCompleted,
+		DestinationOccupied: engine.DestinationOccupied(item.Directory, item.Filename, dupTask),
+	})
 	var start *preDownloadStart
 	if item.PreDownload && !item.FileConflict && item.DuplicateTask == nil && item.PreDownloadTaskID == "" && !item.preDownloadStarting {
 		item.preDownloadStarting = true

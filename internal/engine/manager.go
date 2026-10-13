@@ -716,6 +716,13 @@ func (m *Manager) Occupancy(ctx context.Context, reserved Reserved) Occupancy {
 
 // FindDuplicateTask finds an existing task with matching urlStr from local store without network probe.
 func (m *Manager) FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error) {
+	return m.FindDuplicateTaskWithVariant(ctx, urlStr, "")
+}
+
+// FindDuplicateTaskWithVariant 在本地存储中查找匹配的已有任务。
+// 当 variantURI 不为空（HLS 视频多清晰度）时，仅匹配同清晰度变体的历史任务；
+// 若历史任务与待下载任务为不同清晰度规格，则判定为不同下载目标，不构成重复任务。
+func (m *Manager) FindDuplicateTaskWithVariant(ctx context.Context, urlStr, variantURI string) (*task.Task, error) {
 	if urlStr == "" {
 		return nil, nil
 	}
@@ -723,10 +730,23 @@ func (m *Manager) FindDuplicateTask(ctx context.Context, urlStr string) (*task.T
 	if err != nil {
 		return nil, err
 	}
+	variantURI = strings.TrimSpace(variantURI)
 	for _, ext := range existingList {
-		if ext.URL == urlStr {
-			return ext, nil
+		if ext.URL != urlStr {
+			continue
 		}
+		// 若指定了目标清晰度变体
+		if variantURI != "" {
+			// 如果历史任务也是 HLS 且记录了变体信息，比对变体是否一致
+			if ext.IsHLS() && ext.Media != nil && ext.Media.Variant.URI != "" {
+				if ext.Media.Variant.URI == variantURI {
+					return ext, nil
+				}
+				// 同 Master 链接但不同清晰度变体，跳过匹配
+				continue
+			}
+		}
+		return ext, nil
 	}
 	return nil, nil
 }

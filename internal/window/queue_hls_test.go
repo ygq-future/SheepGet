@@ -42,6 +42,15 @@ func (e *hlsProbeEngine) FindDuplicateTask(context.Context, string) (*task.Task,
 	return e.duplicateTask, nil
 }
 
+func (e *hlsProbeEngine) FindDuplicateTaskWithVariant(_ context.Context, _, variantURI string) (*task.Task, error) {
+	if e.duplicateTask != nil && e.duplicateTask.IsHLS() && e.duplicateTask.Media != nil && variantURI != "" {
+		if e.duplicateTask.Media.Variant.URI != variantURI {
+			return nil, nil
+		}
+	}
+	return e.duplicateTask, nil
+}
+
 func (e *hlsProbeEngine) AddTask(context.Context, string, string, string, int) (*task.Task, error) {
 	return nil, errors.New("AddTask should not be called in HLS selection tests")
 }
@@ -475,5 +484,79 @@ func TestQueueController_SelectHLSVariant_UpdatesFilenameWithResolution(t *testi
 	}
 	if item.Filename != "video_1080p.mp4" {
 		t.Errorf("expected Filename = %q, got %q", "video_1080p.mp4", item.Filename)
+	}
+}
+
+func TestQueueController_HLS_DifferentVariantsAreNotDuplicates(t *testing.T) {
+	masterURL := "https://example.com/master.m3u8"
+	existing184 := &task.Task{
+		ID:       "task_184",
+		URL:      masterURL,
+		Filename: "video_184p.mp4",
+		Status:   task.StatusCompleted,
+		Media: &hls.Source{
+			PlaylistURL: masterURL,
+			Variant:     hls.Variant{URI: "https://example.com/184.m3u8", Height: 184},
+		},
+	}
+
+	eng := &hlsProbeEngine{
+		duplicateTask: existing184,
+		probe: &engine.ProbeResult{
+			URL:           masterURL,
+			Filename:      "video.m3u8",
+			TotalBytes:    -1,
+			DuplicateTask: existing184,
+			HLS: &engine.HLSProbe{
+				IsHLS:       true,
+				PlaylistURL: masterURL,
+				Variants: []hls.Variant{
+					{URI: "https://example.com/184.m3u8", Height: 184},
+					{URI: "https://example.com/380.m3u8", Height: 380},
+				},
+			},
+		},
+		resolve: &hls.Source{
+			PlaylistURL: masterURL,
+			Variant:     hls.Variant{URI: "https://example.com/380.m3u8", Height: 380},
+			Duration:    100,
+			TotalBytes:  30 * 1024 * 1024,
+		},
+	}
+
+	winView := &mockWindowView{}
+	qc := newQueueController(eng, &testSettingsProvider{settings: defaultSettingsForTest(t)}, winView, inlineOps)
+
+	// 1. Enqueue with 380p variantURI preselected (e.g. from browser extension handover)
+	resp, err := qc.Enqueue(context.Background(), DownloadRequest{
+		URL:        masterURL,
+		VariantURI: "https://example.com/380.m3u8",
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	active, err := qc.GetActive()
+	if err != nil {
+		t.Fatalf("GetActive failed: %v", err)
+	}
+	// 380p is different from existing 184p -> DuplicateTask must be nil!
+	if active.DuplicateTask != nil {
+		t.Fatalf("expected active.DuplicateTask to be nil for different variant, got %+v", active.DuplicateTask)
+	}
+
+	// 2. Select same variant 184p -> should now detect duplicate!
+	eng.resolve = &hls.Source{
+		PlaylistURL: masterURL,
+		Variant:     hls.Variant{URI: "https://example.com/184.m3u8", Height: 184},
+		Duration:    100,
+		TotalBytes:  15 * 1024 * 1024,
+	}
+	if err := qc.SelectHLSVariant(context.Background(), resp.RequestID, masterURL, "https://example.com/184.m3u8"); err != nil {
+		t.Fatalf("SelectHLSVariant failed: %v", err)
+	}
+	active184, _ := qc.GetActive()
+	if active184.DuplicateTask == nil || active184.DuplicateTask.ID != "task_184" {
+		t.Fatalf("expected DuplicateTask to match task_184 when selecting same variant, got %+v", active184.DuplicateTask)
 	}
 }
