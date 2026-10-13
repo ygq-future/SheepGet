@@ -149,7 +149,7 @@ test('version check rejects drifted copies and --set rewrites every source', () 
   const cli = join(fixture, 'scripts/version.mjs');
   const read = (file) => readFileSync(join(fixture, file), 'utf8');
   try {
-    for (const file of [...versionFiles(), 'scripts/version.mjs']) {
+    for (const file of [...versionFiles(root), 'scripts/version.mjs']) {
       mkdirSync(dirname(join(fixture, file)), { recursive: true });
       copyFileSync(join(root, file), join(fixture, file));
     }
@@ -171,6 +171,10 @@ test('version check rejects drifted copies and --set rewrites every source', () 
     assert.match(read('package.json'), /"version": "9\.9\.9"/);
 
     const target = '2.5.0';
+    writeFileSync(
+      join(fixture, `.github/release-note/v${target}.md`),
+      `# v${target}\nRelease notes.`,
+    );
     const applied = exec(process.execPath, [cli, '--set', target]);
     assert.equal(applied.status, 0, applied.stdout + applied.stderr);
     assert.equal(exec(process.execPath, [cli, '--check']).status, 0);
@@ -180,6 +184,18 @@ test('version check rejects drifted copies and --set rewrites every source', () 
     assert.match(read('.github/workflows/release.yml'), /default: 'v2\.5\.0'/);
     assert.match(read('README.md'), /SheepGet_2\.5\.0_x64-setup\.exe/);
     assert.equal(readInfo(root).version, version);
+
+    // Rejects missing release note
+    rmSync(join(fixture, `.github/release-note/v${target}.md`));
+    const missingNote = exec(process.execPath, [cli, '--check']);
+    assert.notEqual(missingNote.status, 0);
+    assert.match(missingNote.stderr, /Missing release note/);
+
+    // Rejects empty release note
+    writeFileSync(join(fixture, `.github/release-note/v${target}.md`), '   \n  ');
+    const emptyNote = exec(process.execPath, [cli, '--check']);
+    assert.notEqual(emptyNote.status, 0);
+    assert.match(emptyNote.stderr, /Empty release note/);
   } finally {
     assert.ok(resolve(fixture).startsWith(resolve(base) + sep));
     rmSync(fixture, { recursive: true, force: true });
@@ -192,7 +208,7 @@ test('extension version check validates format and detects drift', () => {
   const fixture = mkdtempSync(join(base, 'ext-version-probe-'));
   const cli = join(fixture, 'scripts/version.mjs');
   try {
-    for (const file of [...versionFiles(), 'scripts/version.mjs']) {
+    for (const file of [...versionFiles(root), 'scripts/version.mjs']) {
       mkdirSync(dirname(join(fixture, file)), { recursive: true });
       copyFileSync(join(root, file), join(fixture, file));
     }

@@ -76,9 +76,20 @@ export function readInfo(root) {
   return parseInfoBlock(readFileSync(join(root, SSOT_FILE), 'utf8')).values;
 }
 
-/** Every file carrying the product version: the SSOT first, then each mirror. */
-export function versionFiles() {
-  return [SSOT_FILE, ...new Set(MIRRORS.map((mirror) => mirror.file))];
+/** Every file carrying the product version: the SSOT first, each mirror, and the release note. */
+export function versionFiles(root) {
+  const files = [SSOT_FILE, ...new Set(MIRRORS.map((mirror) => mirror.file))];
+  if (root) {
+    try {
+      const version = readInfo(root).version;
+      if (version && VERSION_PATTERN.test(version)) {
+        files.push(`.github/release-note/v${version}.md`);
+      }
+    } catch {
+      // ignore if config cannot be parsed
+    }
+  }
+  return files;
 }
 
 function lineNumber(text, index) {
@@ -124,6 +135,22 @@ export function checkVersion(root) {
       `${drift.length} version source(s) disagree with ${SSOT_FILE} (${version}):\n  ${drift.join(
         '\n  ',
       )}`,
+    );
+  }
+
+  const releaseNoteFile = `.github/release-note/v${version}.md`;
+  const releaseNotePath = join(root, releaseNoteFile);
+  if (!existsSync(releaseNotePath)) {
+    throw new Error(
+      `Missing release note for v${version}: ${releaseNoteFile} does not exist.\n` +
+        `  Every desktop version bump MUST have a corresponding release note before release.`,
+    );
+  }
+  const noteContent = readFileSync(releaseNotePath, 'utf8').trim();
+  if (noteContent.length === 0) {
+    throw new Error(
+      `Empty release note for v${version}: ${releaseNoteFile} is empty.\n` +
+        `  Please provide meaningful release notes before release.`,
     );
   }
   return version;

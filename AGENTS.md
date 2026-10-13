@@ -110,6 +110,11 @@
    - 发布前必须在 Windows 下检查生成的 `SheepGet.exe`“属性 -> 详细信息”中的“产品版本”与“文件版本”，确认已与目标版本号严格一致，严禁残留模板占位符；
    - 开启自启动后验证 Windows“设置 -> 启动应用”管理面板中的产品名称（`SheepGet`）与发布者（`SheepGet`）显示正常，严禁出现未解析模板宏。
 
+5. **发布说明硬约束（Release Notes Mandatory）**：
+   - 每次桌面端版本升级与发版，**必须**在 `.github/release-note/vX.Y.Z.md` 撰写本次版本的发布说明（包含核心特性、关键修复、各平台分发包表格与升级说明）；
+   - 严禁缺失 Release Notes，严禁发布说明回退/静默使用旧版本模板；
+   - `scripts/version.mjs --check` 与质量门禁（stage `version`）强制校验 `.github/release-note/vX.Y.Z.md` 存在且非空，未撰写将直接阻断门禁。
+
 ## 代码质量约束
 
 - 优先简单、清晰的实现，避免过度设计和无意义抽象；
