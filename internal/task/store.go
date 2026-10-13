@@ -86,7 +86,7 @@ func (s *FileTaskStore) persistLocked() error {
 		}
 		list = append(list, pt)
 	}
-	data, err := json.MarshalIndent(list, "", "  ")
+	data, err := json.Marshal(list)
 	if err != nil {
 		return fmt.Errorf("failed to marshal tasks: %w", err)
 	}
