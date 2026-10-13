@@ -18,6 +18,7 @@ import {
   ValidateDirectory,
   CheckDirectoryHasFiles,
   MigrateDownloadDirectory,
+  OpenSkillDirectory,
 } from '../../bindings/sheep-get/app';
 import {
   Sun,
@@ -42,6 +43,7 @@ import {
   Eye,
   EyeOff,
   Copy,
+  Bot,
 } from 'lucide-react';
 import { AboutUpdatesView } from './AboutUpdatesView';
 import { CleanupModal } from './CleanupModal';
@@ -547,40 +549,27 @@ export function SettingsPanel() {
   const apiKey = apiKeyDraft ?? (general.apiKey || '');
 
   const handleSaveAPIKey = async (val: string) => {
-    const trimmed = val.trim();
+    let target = val.trim();
+    if (!target) {
+      target = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
     setAPIKeyDraft(null);
-    if (trimmed === (general.apiKey || '')) return;
+    if (target === (general.apiKey || '')) return;
     try {
       await updateSettings({
         general: new configModels.GeneralConfig({
           ...general,
-          apiKey: trimmed,
+          apiKey: target,
         }),
       });
       showToast(
-        trimmed ? '已保存 API 访问密钥' : '已清除 API 访问密钥，使用动态会话令牌',
+        val.trim() ? '已保存自定义 API 访问密钥' : '已自动生成并保存新的 API 访问密钥',
         'success',
       );
     } catch (err) {
       showToast(`保存 API 访问密钥失败: ${String(err)}`, 'error');
-    }
-  };
-
-  const handleGenerateAPIKey = async () => {
-    const randomKey = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    setAPIKeyDraft(null);
-    try {
-      await updateSettings({
-        general: new configModels.GeneralConfig({
-          ...general,
-          apiKey: randomKey,
-        }),
-      });
-      showToast('已生成并保存新的 API 访问密钥', 'success');
-    } catch (err) {
-      showToast(`生成 API 密钥失败: ${String(err)}`, 'error');
     }
   };
 
@@ -1941,13 +1930,13 @@ export function SettingsPanel() {
 
                 <SettingRow
                   label="API 访问密钥"
-                  description="外部调用的固定鉴权密钥，留空使用动态令牌"
+                  description="外部调用的固定鉴权密钥，清空时将自动生成新密钥"
                 >
                   <div className="flex items-center gap-2">
                     <div className="relative w-44">
                       <Input
                         type={showAPIKey ? 'text' : 'password'}
-                        placeholder="输入或生成密钥"
+                        placeholder="输入自定义密钥"
                         value={apiKey}
                         onChange={(e) => setAPIKeyDraft(e.target.value)}
                         onBlur={(e) => void handleSaveAPIKey(e.target.value)}
@@ -1989,10 +1978,23 @@ export function SettingsPanel() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => void handleGenerateAPIKey()}
-                      className="h-8 w-20 shrink-0 text-xs"
+                      onClick={() => {
+                        void (async () => {
+                          try {
+                            await OpenSkillDirectory();
+                          } catch (err: unknown) {
+                            showToast(
+                              `无法打开 Skill 目录: ${err instanceof Error ? err.message : String(err)}`,
+                              'error',
+                            );
+                          }
+                        })();
+                      }}
+                      className="h-8 w-20 shrink-0 gap-1 text-xs"
+                      title="打开存放 Agent Skill (SKILL.md) 的目录"
                     >
-                      生成密钥
+                      <Bot className="h-3.5 w-3.5 text-emerald-500" />
+                      <span>Skill 目录</span>
                     </Button>
                   </div>
                 </SettingRow>

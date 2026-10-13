@@ -101,6 +101,11 @@ Section
     File /nonfatal /r "..\..\bin\extension\*.*"
     SetOutPath $INSTDIR
 
+    ; Agent Skill assets
+    SetOutPath "$INSTDIR\skills"
+    File /nonfatal /r "..\..\bin\skills\*.*"
+    SetOutPath $INSTDIR
+
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

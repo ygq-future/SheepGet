@@ -20,6 +20,7 @@ const (
 type Storage struct {
 	Mode    Mode   `json:"mode"`
 	DataDir string `json:"dataDir"`
+	ExecDir string `json:"execDir"`
 }
 
 // ConfigFile returns the path to config.json
@@ -45,6 +46,16 @@ func (s *Storage) LogsDir() string {
 // SessionFile returns the path to session.json (runtime metadata for the active loopback server)
 func (s *Storage) SessionFile() string {
 	return filepath.Join(s.DataDir, "session.json")
+}
+
+// SkillFile returns the path to skills/sheep-get/SKILL.md in the application root directory
+func (s *Storage) SkillFile() string {
+	return filepath.Join(s.ExecDir, "skills", "sheep-get", "SKILL.md")
+}
+
+// SkillDir returns the path to the skills parent directory in the application root directory
+func (s *Storage) SkillDir() string {
+	return filepath.Join(s.ExecDir, "skills")
 }
 
 // ResolveDataDir checks whether portable mode applies according to ADR-0003,
@@ -104,6 +115,7 @@ func ResolveDataDir(execDir string) (*Storage, error) {
 	return &Storage{
 		Mode:    mode,
 		DataDir: dataDir,
+		ExecDir: execDir,
 	}, nil
 }
 

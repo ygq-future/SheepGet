@@ -106,6 +106,7 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 		storage: &storage.Storage{
 			Mode:    storage.ModeInstalled,
 			DataDir: tmpDir,
+			ExecDir: tmpDir,
 		},
 	}
 	adapter := &loopbackServerAdapter{app: app}
@@ -1887,5 +1888,38 @@ func TestApp_DirectDownloadViaHTTPAndAPIKey(t *testing.T) {
 	}
 	if created2.Filename != "flow (1).bin" {
 		t.Errorf("expected second filename 'flow (1).bin', got %s", created2.Filename)
+	}
+}
+
+func TestApp_SkillSyncAndOpenDirectory(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+
+	skillFile := filepath.Join(tmpDir, "skills", "sheep-get", "SKILL.md")
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("expected SKILL.md to be created on startup, got error: %v", err)
+	}
+	if !strings.Contains(string(data), "name: sheep-get") {
+		t.Errorf("expected skill frontmatter in SKILL.md")
+	}
+
+	// 1. Update APIKey in Settings -> SKILL.md must be updated with new APIKey
+	newKey := "skill-sync-test-key-999"
+	st := app.GetSettings()
+	st.General.APIKey = newKey
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+
+	dataAfterUpdate, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("failed to read updated SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(dataAfterUpdate), newKey) {
+		t.Errorf("expected new APIKey %s in SKILL.md, content:\n%s", newKey, string(dataAfterUpdate))
+	}
+
+	if _, err := os.Stat(filepath.Dir(skillFile)); err != nil {
+		t.Errorf("expected skill directory to exist: %v", err)
 	}
 }

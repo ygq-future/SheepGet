@@ -17,6 +17,7 @@ import (
 	"sheep-get/internal/logging"
 	"sheep-get/internal/protocol"
 	"sheep-get/internal/server"
+	"sheep-get/internal/skill"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
@@ -201,6 +202,7 @@ func NewApp() *App {
 	updater := update.NewService(storeDir, nil)
 	_ = updater.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr)
 	app.updater = updater
+	app.syncSkillFile()
 
 	return app
 }
@@ -253,6 +255,7 @@ func (a *App) startup(ctx context.Context) {
 					_, _ = a.settings.Update(st)
 				}
 			}
+			a.syncSkillFile()
 		}
 	}
 	a.migrateHistoricalTasksCategory(ctx)
@@ -355,6 +358,9 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 			a.windows.CloseHidden(winNameProgress)
 		}
 	}
+	if s != nil {
+		a.syncSkillFile()
+	}
 	return nil
 }
 
@@ -383,8 +389,11 @@ func (a *App) UpdateSettings(s config.Settings) (config.Settings, error) {
 			return updated, fmt.Errorf("设置已保存但本地端口重启失败: %w", restartErr)
 		}
 	}
-	if err == nil && a.loopbackServer != nil {
-		a.loopbackServer.SetAPIKey(updated.General.APIKey)
+	if err == nil {
+		if a.loopbackServer != nil {
+			a.loopbackServer.SetAPIKey(updated.General.APIKey)
+		}
+		a.syncSkillFile()
 	}
 	return updated, err
 }
@@ -429,6 +438,7 @@ func (a *App) RestartServer(port int) (int, error) {
 			_, _ = a.settings.Update(st)
 		}
 	}
+	a.syncSkillFile()
 	return actualPort, nil
 }
 
@@ -452,13 +462,19 @@ func (a *App) GetServerStatus() server.Status {
 func (a *App) GetStorageInfo() map[string]string {
 	mode := "installed"
 	dataDir := ""
+	execDir := ""
+	skillDir := ""
 	if a.storage != nil {
 		mode = string(a.storage.Mode)
 		dataDir = a.storage.DataDir
+		execDir = a.storage.ExecDir
+		skillDir = a.storage.SkillDir()
 	}
 	return map[string]string{
-		"mode":    mode,
-		"dataDir": dataDir,
+		"mode":     mode,
+		"dataDir":  dataDir,
+		"execDir":  execDir,
+		"skillDir": skillDir,
 	}
 }
 
@@ -981,6 +997,55 @@ func (a *App) OpenExtensionFolder() error {
 		cmd = exec.Command("explorer", "/select,", dir)
 	case "darwin":
 		cmd = exec.Command("open", "-R", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+
+	return cmd.Start()
+}
+
+// syncSkillFile 将最新的本地环回端口和 API Key 渲染并原子写入 SKILL.md
+func (a *App) syncSkillFile() {
+	if a.storage == nil {
+		return
+	}
+	port := protocol.PortDefaultServer
+	apiKey := ""
+	if a.settings != nil {
+		st := a.settings.Get()
+		if st.General.ServerPort > 0 {
+			port = st.General.ServerPort
+		}
+		apiKey = st.General.APIKey
+	}
+	if a.loopbackServer != nil && a.loopbackServer.Port() > 0 {
+		port = a.loopbackServer.Port()
+	}
+
+	if err := skill.Sync(a.storage.ExecDir, port, apiKey); err != nil {
+		a.log().Warn("同步 Agent Skill 文件失败", "error", err.Error(), "execDir", a.storage.ExecDir)
+	}
+}
+
+// OpenSkillDirectory reveals the skills parent directory in the system file manager.
+func (a *App) OpenSkillDirectory() error {
+	if a.storage == nil {
+		return fmt.Errorf("storage not initialized")
+	}
+	// 确保目录和最新的 SKILL.md 存在
+	a.syncSkillFile()
+
+	dir := a.storage.SkillDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to ensure skill directory: %w", err)
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	case "darwin":
+		cmd = exec.Command("open", dir)
 	default:
 		cmd = exec.Command("xdg-open", dir)
 	}

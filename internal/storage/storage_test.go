@@ -81,6 +81,15 @@ func TestResolveDataDir_InstalledMode(t *testing.T) {
 	if res.SessionFile() != filepath.Join(res.DataDir, "session.json") {
 		t.Errorf("unexpected SessionFile path: %s", res.SessionFile())
 	}
+	if res.SkillFile() != filepath.Join(tempDir, "skills", "sheep-get", "SKILL.md") {
+		t.Errorf("unexpected SkillFile path: %s", res.SkillFile())
+	}
+	if res.SkillDir() != filepath.Join(tempDir, "skills") {
+		t.Errorf("unexpected SkillDir path: %s", res.SkillDir())
+	}
+	if res.ExecDir != tempDir {
+		t.Errorf("unexpected ExecDir: %s, expected %s", res.ExecDir, tempDir)
+	}
 }
 
 func TestStorage_PhysicalIsolation(t *testing.T) {

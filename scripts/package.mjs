@@ -192,6 +192,21 @@ async function main() {
   rmSync(extTargetDir, { recursive: true, force: true });
   cpSync(extSourceDir, extTargetDir, { recursive: true });
   cpSync(extTargetDir, join(binDir, 'extension'), { recursive: true });
+  // Stage Agent Skill
+  const skillSourcePath = join(root, 'internal', 'skill', 'template.md');
+  const skillsTargetDir = join(distDir, 'skills', 'sheep-get');
+  rmSync(join(distDir, 'skills'), { recursive: true, force: true });
+  mkdirSync(skillsTargetDir, { recursive: true });
+  // Render initial default skill without fixed token, default port 9248
+  const rawSkillTpl = readFileSync(skillSourcePath, 'utf-8');
+  const initialSkillContent = rawSkillTpl
+    .replace(/\{\{\.Port\}\}/g, '9248')
+    .replace(/\{\{\.APIKey\}\}/g, '')
+    .replace(/\{\{- if \.APIKey\}\}[\s\S]*?\{\{- else\}\}/g, '')
+    .replace(/\{\{- end\}\}/g, '')
+    .replace(/\{\{if \.APIKey\}\}.*?\{\{else\}\}(.*?)\{\{end\}\}/g, '$1');
+  writeFileSync(join(skillsTargetDir, 'SKILL.md'), initialSkillContent, 'utf-8');
+  cpSync(join(distDir, 'skills'), join(binDir, 'skills'), { recursive: true });
 
   const artifacts = [];
 
@@ -227,6 +242,7 @@ async function main() {
     mkdirSync(x64PortDir, { recursive: true });
     cpSync(x64Exe, join(x64PortDir, 'SheepGet.exe'));
     cpSync(extTargetDir, join(x64PortDir, 'extension'), { recursive: true });
+    cpSync(join(distDir, 'skills'), join(x64PortDir, 'skills'), { recursive: true });
     cpSync(join(root, 'README.md'), join(x64PortDir, 'README.md'));
     writeFileSync(join(x64PortDir, 'portable'), '', 'utf8');
     mkdirSync(join(x64PortDir, 'data'), { recursive: true });
@@ -329,6 +345,7 @@ async function main() {
     mkdirSync(armPortDir, { recursive: true });
     cpSync(arm64Exe, join(armPortDir, 'SheepGet.exe'));
     cpSync(extTargetDir, join(armPortDir, 'extension'), { recursive: true });
+    cpSync(join(distDir, 'skills'), join(armPortDir, 'skills'), { recursive: true });
     cpSync(join(root, 'README.md'), join(armPortDir, 'README.md'));
     writeFileSync(join(armPortDir, 'portable'), '', 'utf8');
     mkdirSync(join(armPortDir, 'data'), { recursive: true });
@@ -481,6 +498,7 @@ async function main() {
     );
     cpSync(join(root, 'build', 'icons', 'icon.png'), join(linuxPortDir, 'sheepget.png'));
     cpSync(extTargetDir, join(linuxPortDir, 'extension'), { recursive: true });
+    cpSync(join(distDir, 'skills'), join(linuxPortDir, 'skills'), { recursive: true });
     cpSync(join(root, 'README.md'), join(linuxPortDir, 'README.md'));
     writeFileSync(join(linuxPortDir, 'portable'), '', 'utf8');
     mkdirSync(join(linuxPortDir, 'data'), { recursive: true });

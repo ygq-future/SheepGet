@@ -277,6 +277,13 @@ export function OpenSettingsWindow(): $CancellablePromise<void> {
 }
 
 /**
+ * OpenSkillDirectory reveals the skills parent directory in the system file manager.
+ */
+export function OpenSkillDirectory(): $CancellablePromise<void> {
+    return $Call.ByID(2636350377);
+}
+
+/**
  * PauseTask pauses an active or queued task
  */
 export function PauseTask(id: string): $CancellablePromise<void> {

@@ -2,8 +2,8 @@
 package config
 
 import (
-	"sheep-get/internal/protocol"
-
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -11,8 +11,18 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sheep-get/internal/protocol"
 	"strings"
 )
+
+// GenerateRandomToken generates a 32-character (16-byte) random hex token for APIKey.
+func GenerateRandomToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("sheepget_%d", protocol.PortDefaultServer)
+	}
+	return hex.EncodeToString(b)
+}
 
 // ThemeMode specifies the UI theme mode.
 type ThemeMode string
@@ -349,6 +359,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			LightweightMode: false,
 			EnableLogging:   false,
 			ServerPort:      protocol.PortDefaultServer,
+			APIKey:          GenerateRandomToken(),
 		},
 		Appearance: AppearanceConfig{
 			Theme:       ThemeSystem,
@@ -392,7 +403,9 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 		s.General.ServerPort = protocol.PortDefaultServer
 	}
 	s.General.APIKey = strings.TrimSpace(s.General.APIKey)
-
+	if s.General.APIKey == "" {
+		s.General.APIKey = GenerateRandomToken()
+	}
 	// Validate Theme
 	switch s.Appearance.Theme {
 	case ThemeSystem, ThemeLight, ThemeDark:
