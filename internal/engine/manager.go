@@ -1068,6 +1068,7 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 		return nil, err
 	}
 	t.Downloaded = 0
+	t.ElapsedNano = 0
 	t.Chunks = nil
 	t.Status = task.StatusQueued
 	t.ErrorMsg = ""
@@ -1438,8 +1439,8 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	t.UpdatedAt = time.Now()
 	_ = m.store.Save(bgCtx, t)
 	m.notify(t)
-
-	sink := newProgressSink(bgCtx, m, taskID)
+	baseElapsed := t.ElapsedNano
+	sink := newProgressSink(bgCtx, m, taskID, baseElapsed, taskStarted)
 
 	// TransferDone 是「分片已经全部就绪」这一事实的记录。处理失败重试时它让任务直接进入
 	// 处理阶段，不必再为取一次清单把网络走一遍（ADR-0004：两条失败路径各自恢复）。
@@ -1487,7 +1488,7 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 			m.removeSegmentDir(t)
 		}
 	}
-
+	t.ElapsedNano = baseElapsed + time.Since(taskStarted).Nanoseconds()
 	t.Speed = 0
 	switch {
 	case transferErr != nil && canceledOrPaused(transferErr, ctx):

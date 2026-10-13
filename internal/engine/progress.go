@@ -25,9 +25,11 @@ const (
 // 它在传输侧的一致性锁内被调用（分片路径是 coord.mu，HLS 是清单侧的锁），因此自己也只做
 // 短临界区的记账，落盘与广播放在锁外。
 type progressSink struct {
-	manager *Manager
-	ctx     context.Context
-	taskID  string
+	manager     *Manager
+	ctx         context.Context
+	taskID      string
+	baseElapsed int64     // 本轮运行启动前已累计的耗时（纳秒）
+	runStarted  time.Time // 本轮运行开始的时刻
 
 	mu          sync.Mutex
 	published   int64     // 已发布的字节数：速度采样与节流都以它为基准
@@ -35,8 +37,14 @@ type progressSink struct {
 	lastSave    time.Time // 上一次落盘的时刻
 }
 
-func newProgressSink(ctx context.Context, m *Manager, taskID string) *progressSink {
-	return &progressSink{manager: m, ctx: ctx, taskID: taskID}
+func newProgressSink(ctx context.Context, m *Manager, taskID string, baseElapsed int64, runStarted time.Time) *progressSink {
+	return &progressSink{
+		manager:     m,
+		ctx:         ctx,
+		taskID:      taskID,
+		baseElapsed: baseElapsed,
+		runStarted:  runStarted,
+	}
 }
 
 // WantsSnapshot 报告此刻是否需要一份快照。它可能被多个分片工作协程并发调用，
@@ -69,6 +77,10 @@ func (s *progressSink) PublishSnapshot(snapshot *task.Task) {
 		s.lastSave = time.Now()
 	}
 	s.mu.Unlock()
+
+	if !s.runStarted.IsZero() {
+		snapshot.ElapsedNano = s.baseElapsed + time.Since(s.runStarted).Nanoseconds()
+	}
 
 	m := s.manager
 	m.mu.Lock()

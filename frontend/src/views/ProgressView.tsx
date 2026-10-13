@@ -36,7 +36,7 @@ import {
 } from '../../bindings/sheep-get/app';
 import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
-import { formatBytes, formatSpeed } from '../lib/format';
+import { formatBytes, formatSpeed, formatTimeHMS } from '../lib/format';
 import { progressWindowHeightFor } from '../lib/windowSize';
 import {
   calculateChunkProgress,
@@ -512,6 +512,14 @@ export function ProgressView() {
                             <span className="font-mono">
                               {formatBytes(t.totalBytes || t.downloaded)}
                             </span>
+                            {t.elapsedNano && t.elapsedNano > 0 && (
+                              <>
+                                <span>•</span>
+                                <span className="font-mono text-emerald-600 dark:text-emerald-400">
+                                  耗时 {formatTimeHMS(t.elapsedNano / 1e9)}
+                                </span>
+                              </>
+                            )}
                             <span>•</span>
                             <span className="truncate font-mono" title={t.directory}>
                               {t.directory}
@@ -769,7 +777,7 @@ export function ProgressView() {
 
                           {/* Detail Metrics Row */}
                           <div className="flex items-center justify-between font-mono text-[10px] text-[var(--text-muted)]">
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                               <span>{formatBytes(t.downloaded)}</span>
                               <span>/</span>
                               <span>{isUnknownSize ? '未知大小' : formatBytes(t.totalBytes)}</span>
@@ -791,8 +799,29 @@ export function ProgressView() {
                                   </span>
                                 </>
                               )}
+                              {/* 下载已用时间 */}
+                              {t.elapsedNano && t.elapsedNano > 0 && (
+                                <>
+                                  <span>•</span>
+                                  <span>已用 {formatTimeHMS(t.elapsedNano / 1e9)}</span>
+                                </>
+                              )}
+                              {/* 下载预估剩余时间 (ETA) */}
+                              {t.status === taskModels.Status.StatusDownloading &&
+                                !isUnknownSize &&
+                                t.speed > 0 &&
+                                t.totalBytes > t.downloaded && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-[var(--accent)]">
+                                      剩余 {formatTimeHMS((t.totalBytes - t.downloaded) / t.speed)}
+                                    </span>
+                                  </>
+                                )}
                             </div>
-                            <div>{isUnknownSize ? '未知大小' : `${percent}%`}</div>
+                            <div className="shrink-0">
+                              {isUnknownSize ? '未知大小' : `${percent}%`}
+                            </div>
                           </div>
 
                           {/* Error message if error */}

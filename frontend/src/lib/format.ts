@@ -27,6 +27,30 @@ export function formatDuration(seconds: number): string {
   return `${pad(mins)}:${pad(secs)}`;
 }
 
+/**
+ * formatTimeHMS 格式化下载耗时或预估剩余时间为动态省略的 xxhxxmxxs。
+ * 规则：
+ * - 不超出分钟：只显示秒（如 45s、0s）；
+ * - 不超出小时：只显示分秒，分钟无前导零，秒补双位（如 5m20s、0m05s）；
+ * - 超出小时：显示时分秒，小时无前导零，分秒补双位（如 1h05m20s）。
+ */
+export function formatTimeHMS(seconds: number): string {
+  if (!seconds || isNaN(seconds) || seconds <= 0) return '0s';
+  const totalSecs = Math.floor(seconds);
+  const hrs = Math.floor(totalSecs / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  if (hrs > 0) {
+    return `${hrs}h${pad(mins)}m${pad(secs)}s`;
+  }
+  if (mins > 0) {
+    return `${mins}m${pad(secs)}s`;
+  }
+  return `${secs}s`;
+}
+
 export function formatDateTime(dateStr?: string): string {
   if (!dateStr) return '-';
   const d = new Date(dateStr);
@@ -37,5 +61,5 @@ export function formatDateTime(dateStr?: string): string {
   const day = pad(d.getDate());
   const hours = pad(d.getHours());
   const mins = pad(d.getMinutes());
-  return `${year}-${month}-${day} ${hours}:${mins}`;
+  return `${year}/${month}/${day} ${hours}:${mins}`;
 }

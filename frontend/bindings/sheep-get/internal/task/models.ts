@@ -142,6 +142,12 @@ export class Task {
     "updatedAt": string;
 
     /**
+     * ElapsedNano 记录任务累计的实际下载与传输耗时（纳秒）。
+     * 仅统计处于活跃下载/传输阶段的时间，不计入排队、暂停、网络重连等待或失败停滞时间。
+     * 任务完成后固化为最终耗时；界面据此格式化为动态耗时时长（如 45s、5m20s、1h05m20s）。
+     */
+    "elapsedNano"?: number;
+    /**
      * Chunks for multi-connection download state
      */
     "chunks"?: Chunk[];

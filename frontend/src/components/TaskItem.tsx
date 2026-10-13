@@ -1,7 +1,13 @@
 import { type MouseEvent } from 'react';
 import { motion } from 'motion/react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
-import { formatBytes, formatSpeed, formatDuration, formatDateTime } from '../lib/format';
+import {
+  formatBytes,
+  formatSpeed,
+  formatDuration,
+  formatDateTime,
+  formatTimeHMS,
+} from '../lib/format';
 import { FileTypeIcon, isMediaFile } from '../lib/fileIcon';
 import { isProcessingFailure } from '../lib/progress';
 import { TaskActions } from './TaskActions';
@@ -46,7 +52,11 @@ export function TaskItem({
   // 音视频文件的时长：文件落地后从本地文件里读出来，读不到就没有这一项，
   // 不显示任何占位——未知就是未知，不编一个数值出来。
   const durationText = isMediaFile(t.filename) && t.duration ? formatDuration(t.duration) : null;
-
+  // 任务最终下载耗时：仅在已完成任务上展示，来源于后端累积记录的净耗时 ElapsedNano
+  const downloadElapsedText =
+    t.status === task.Status.StatusCompleted && t.elapsedNano && t.elapsedNano > 0
+      ? formatTimeHMS(t.elapsedNano / 1e9)
+      : null;
   const handleRowClick = (e: MouseEvent) => {
     e.stopPropagation();
     if (onToggleSelect) {
@@ -166,13 +176,19 @@ export function TaskItem({
           )}
         </div>
 
-        {/* Last connected time with year */}
-        <div className="font-mono text-[11px] text-[var(--text-muted)]" title="最后连接时间">
-          {formatDateTime(t.updatedAt || t.createdAt)}
+        {/* Last connected time with year & optional final download duration */}
+        <div className="flex items-center gap-1.5 font-mono text-[11px] text-[var(--text-muted)]">
+          <span title="最后连接时间">{formatDateTime(t.updatedAt || t.createdAt)}</span>
+          {downloadElapsedText && (
+            <span
+              className="text-[10px] text-emerald-600/90 dark:text-emerald-400/90"
+              title="下载总耗时"
+            >
+              ({downloadElapsedText})
+            </span>
+          )}
         </div>
-
-        {/* Progress percent / Status badge */}
-        <div className="min-w-16 text-right">{renderStatus()}</div>
+        <div className="shrink-0">{renderStatus()}</div>
       </div>
 
       {/* Hover Floating Actions (Absolute overlay - zero layout footprint when idle) */}

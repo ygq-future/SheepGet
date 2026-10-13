@@ -100,6 +100,9 @@ func TestManager_EventPayloadIsPrivateCopy(t *testing.T) {
 			t.Fatalf("failed to list tasks: %v", listErr)
 		}
 		if len(tasks) == 1 && tasks[0].Status == task.StatusCompleted {
+			if tasks[0].ElapsedNano <= 0 {
+				t.Errorf("completed task should record positive ElapsedNano, got %d", tasks[0].ElapsedNano)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
@@ -122,5 +125,61 @@ func TestManager_EventPayloadIsPrivateCopy(t *testing.T) {
 	if downloading.Downloaded >= int64(len(payload)) {
 		t.Errorf("event payload changed after it was published: downloaded = %d, want less than %d",
 			downloading.Downloaded, len(payload))
+	}
+}
+
+func TestManager_AccumulatesElapsedNanoOnlyWhileRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	payload := make([]byte, 512<<10)
+	ts := serveRanged(payload, 2*time.Millisecond, "")
+	defer ts.Close()
+
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+
+	ctx := context.Background()
+	created, err := mgr.AddTaskWithHeaders(ctx, ts.URL+"/big.bin", tmpDir, "big.bin", 2, nil)
+	if err != nil {
+		t.Fatalf("failed to add task: %v", err)
+	}
+
+	// Wait until some bytes are downloaded, then pause
+	waitForDownloaded(t, store, created.ID, 5*time.Second)
+	if err := mgr.Pause(ctx, created.ID); err != nil {
+		t.Fatalf("failed to pause task: %v", err)
+	}
+	_ = waitForStatus(t, store, created.ID, 5*time.Second, task.StatusPaused, task.StatusCompleted)
+	time.Sleep(50 * time.Millisecond)
+	paused, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("failed to get paused task: %v", err)
+	}
+	if paused.ElapsedNano <= 0 {
+		t.Fatalf("expected positive ElapsedNano after running, got %d", paused.ElapsedNano)
+	}
+
+	if paused.Status == task.StatusPaused {
+		elapsedAtPause := paused.ElapsedNano
+		time.Sleep(150 * time.Millisecond)
+		afterIdle, getErr := store.Get(ctx, created.ID)
+		if getErr != nil {
+			t.Fatalf("failed to get task: %v", getErr)
+		}
+		if afterIdle.ElapsedNano != elapsedAtPause {
+			t.Fatalf("paused task should not accumulate elapsed time: got %d, want %d", afterIdle.ElapsedNano, elapsedAtPause)
+		}
+
+		if err := mgr.Resume(ctx, created.ID); err != nil {
+			t.Fatalf("failed to resume task: %v", err)
+		}
+		completed := waitForStatus(t, store, created.ID, 10*time.Second, task.StatusCompleted)
+		if completed.ElapsedNano <= elapsedAtPause {
+			t.Fatalf("expected resumed task to accumulate further ElapsedNano: got %d <= %d", completed.ElapsedNano, elapsedAtPause)
+		}
 	}
 }
