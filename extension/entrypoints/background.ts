@@ -24,6 +24,7 @@ import {
   setStoredTargetPort,
 } from '../lib/storage';
 import { applyConfig, readyConfig } from '../lib/takeoverConfig';
+import { injectContentScriptsIntoExistingTabs } from '../lib/reinject';
 import type {
   DesktopStatus,
   DirectClickHandoverMessage,
@@ -267,6 +268,12 @@ export default defineBackground(() => {
         applyPageContext(sender.tab?.id, msg.pageTitle, msg.pageUrl);
       }
       sendResponse(undefined);
+    } else if (msg?.type === 'REPORT_DOM_MEDIA') {
+      const tabId = sender.tab?.id;
+      if (tabId !== undefined && tabId !== null && Array.isArray(msg.resources)) {
+        applyDomMediaReport(tabId, msg.resources);
+      }
+      sendResponse(undefined);
     } else if (msg?.type === 'HANDOVER_MEDIA') {
       void (async () => {
         const preferredTabId = (msg as { tabId?: number }).tabId ?? sender.tab?.id;
@@ -429,6 +436,11 @@ export default defineBackground(() => {
       void updateBadge(tabId);
     }
   });
+
+  // 8. 扩展安装/更新/重载时，自动向所有已有标签页重新注入 Content Script，免去手动刷新网页
+  chrome.runtime.onInstalled?.addListener(() => {
+    void injectContentScriptsIntoExistingTabs();
+  });
 });
 
 // publishTabResources 把某个标签页的最新嗅探结果推给页面内的悬浮条。
@@ -492,6 +504,58 @@ function suggestFilename(
 
   const suffix = detected.isHls ? '.mp4' : `.${detected.mime.split('/').pop() || 'mp4'}`;
   return sanitizeFilename(pageTitle + suffix);
+}
+
+/**
+ * 接收内容脚本主动上报的页面 DOM 媒体资源（<video>/<source>）。
+ * 当扩展重启/重载导致内存资源池清空时，该机制可瞬间恢复标签页已有媒体资源。
+ */
+function applyDomMediaReport(tabId: number, resources: Array<{ url: string; filename?: string }>) {
+  if (!resources.length) return;
+  let list = tabMediaPool.get(tabId);
+  if (!list) {
+    list = [];
+    tabMediaPool.set(tabId, list);
+  }
+
+  const pageCtx = tabPageContext.get(tabId);
+  let changed = false;
+
+  for (const item of resources) {
+    if (!item.url || !item.url.startsWith('http')) continue;
+    const isHls = item.url.includes('.m3u8');
+    const rawFallback =
+      item.filename ||
+      item.url.split('?')[0]?.split('/').pop() ||
+      (isHls ? 'stream.m3u8' : 'media.mp4');
+    const detected = {
+      isHls,
+      mime: isHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
+    };
+    const suggestedName = suggestFilename(rawFallback, detected, pageCtx?.title);
+
+    const resource: MediaResource = {
+      id: `${tabId}_dom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      url: item.url,
+      tabId,
+      filename: suggestedName,
+      mimeType: detected.mime,
+      isHls,
+      pageTitle: pageCtx?.title,
+      pageUrl: pageCtx?.url,
+      foundAt: Date.now(),
+    };
+
+    if (addResourceOnce(list, resource)) {
+      changed = true;
+      scheduleMediaProbe(resource);
+    }
+  }
+
+  if (changed) {
+    void updateBadge(tabId);
+    publishTabResources(tabId);
+  }
 }
 
 /** 去掉文件名里的非法字符，避免把换行/路径分隔符/控制符带进文件名。 */

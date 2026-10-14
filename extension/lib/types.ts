@@ -121,6 +121,15 @@ export interface ReportPageContextMessage {
   pageUrl: string;
 }
 
+/** content script 主动上报页面 DOM 树中现存的媒体（video/audio/source）资源，供重载后瞬间恢复媒体池。 */
+export interface ReportDomMediaMessage {
+  type: 'REPORT_DOM_MEDIA';
+  resources: Array<{
+    url: string;
+    filename?: string;
+  }>;
+}
+
 export interface HandoverMediaMessage {
   type: 'HANDOVER_MEDIA';
   resource: {
@@ -216,4 +225,5 @@ export type ExtensionMessage =
   | ReconnectMessage
   | SetTargetPortMessage
   | ShortcutClickMessage
-  | DirectClickHandoverMessage;
+  | DirectClickHandoverMessage
+  | ReportDomMediaMessage;

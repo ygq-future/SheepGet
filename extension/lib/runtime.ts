@@ -20,6 +20,27 @@ export interface SafeSendMessageOptions {
   onContextInvalidated?: () => void;
 }
 
+interface Catchable {
+  catch(onRejected?: (reason: unknown) => unknown): unknown;
+}
+
+function isCatchable(val: unknown): val is Catchable {
+  if (!val || (typeof val !== 'object' && typeof val !== 'function')) {
+    return false;
+  }
+  return 'catch' in val && typeof val.catch === 'function';
+}
+
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+    return err.message;
+  }
+  return String(err || '');
+}
+
 /**
  * 安全地向扩展后台发送消息，捕获上下文失效错误，杜绝未捕获的 Extension context invalidated 报错。
  * @returns boolean 表示是否成功发起调用（若已失效返回 false）
@@ -35,7 +56,7 @@ export function safeSendMessage<T = unknown>(
   }
 
   try {
-    chrome.runtime.sendMessage(message, (res: T | undefined) => {
+    const result = chrome.runtime.sendMessage(message, (res: T | undefined) => {
       const err = chrome.runtime.lastError;
       if (err) {
         const errMsg = String(err.message || '');
@@ -50,9 +71,21 @@ export function safeSendMessage<T = unknown>(
       }
       responseCallback?.(res);
     });
+    if (isCatchable(result)) {
+      result.catch((err: unknown) => {
+        const errMsg = extractErrorMessage(err);
+        if (
+          errMsg.includes('Extension context invalidated') ||
+          errMsg.includes('context invalidated') ||
+          !isExtensionContextValid()
+        ) {
+          options?.onContextInvalidated?.();
+        }
+      });
+    }
     return true;
   } catch (err: unknown) {
-    const errMsg = String((err as Error)?.message || err);
+    const errMsg = extractErrorMessage(err);
     if (errMsg.includes('Extension context invalidated') || !isExtensionContextValid()) {
       options?.onContextInvalidated?.();
     }

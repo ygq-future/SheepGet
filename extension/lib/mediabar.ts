@@ -87,6 +87,58 @@ export interface PlayerFrameClaimedMessage {
   version: 1;
 }
 
+/**
+ * 从 HTMLMediaElement (video/audio) 提取可能的所有候选媒体 URL（归一化为完整绝对 URL）。
+ * 优先取 currentSrc / src，若无则扫描子级 <source> 元素的 src。
+ */
+export function extractMediaUrls(target: PlayerTarget | HTMLMediaElement | Element): string[] {
+  const urls: string[] = [];
+  if (!target || typeof target !== 'object' || !('tagName' in target)) return urls;
+
+  const media = target as HTMLMediaElement;
+  const rawSources: string[] = [];
+
+  if (media.currentSrc) rawSources.push(media.currentSrc);
+  if (media.src) rawSources.push(media.src);
+
+  if ('querySelectorAll' in media && typeof media.querySelectorAll === 'function') {
+    try {
+      const sources = media.querySelectorAll('source');
+      for (const s of Array.from(sources)) {
+        if (s.src) rawSources.push(s.src);
+        const rawSrc = s.getAttribute('src');
+        if (rawSrc) rawSources.push(rawSrc);
+      }
+    } catch {
+      // Ignore DOM query error
+    }
+  }
+
+  const rawSrcAttr = media.getAttribute?.('src');
+  if (rawSrcAttr) rawSources.push(rawSrcAttr);
+
+  const base = typeof location !== 'undefined' ? location.href : 'http://localhost';
+  for (const raw of rawSources) {
+    if (!raw) continue;
+    if (raw.startsWith('blob:') || raw.startsWith('data:')) {
+      if (!urls.includes(raw)) urls.push(raw);
+      continue;
+    }
+    try {
+      const resolved = new URL(raw, base).href;
+      if (!urls.includes(resolved)) {
+        urls.push(resolved);
+      }
+    } catch {
+      if (!urls.includes(raw)) {
+        urls.push(raw);
+      }
+    }
+  }
+
+  return urls;
+}
+
 interface TrackedPlayer {
   target: PlayerTarget;
   container: HTMLDivElement;
@@ -190,7 +242,7 @@ export class MediaBarManager {
       // 只有在关联资源真正发生改变（例如此前未关联，现在新探测到了资源；或者切换了视频源）时才重新渲染。
       // 绝不能在资源未变时反复调用 renderBar 重建 DOM，否则会造成闪烁并销毁正在展示的清晰度下拉菜单。
       if (tracked.resource !== prevResource) {
-        if (!tracked.shadowRoot.querySelector('.variant-menu')) {
+        if (!tracked.shadowRoot?.querySelector?.('.variant-menu')) {
           this.renderBar(tracked);
         }
       }
@@ -306,7 +358,9 @@ export class MediaBarManager {
     this.players.set(target, {
       target,
       container: tracked?.container ?? ({ style: {} } as HTMLDivElement),
-      shadowRoot: tracked?.shadowRoot ?? ({} as ShadowRoot),
+      shadowRoot:
+        tracked?.shadowRoot ??
+        ({ querySelector: () => null, getElementById: () => null } as unknown as ShadowRoot),
       dismissed: tracked?.dismissed ?? false,
       ...tracked,
     });
@@ -395,6 +449,12 @@ export class MediaBarManager {
 
   private scheduleUpdate() {
     if (this.frame) return;
+    if (typeof requestAnimationFrame !== 'function') {
+      for (const tracked of this.players.values()) {
+        this.update(tracked);
+      }
+      return;
+    }
     let ranSync = false;
     const rafId = requestAnimationFrame(() => {
       ranSync = true;
@@ -491,28 +551,36 @@ export class MediaBarManager {
       return;
     }
     tracked.resource = undefined;
-    const target = tracked.target;
-    let currentSrc = '';
-    if ('currentSrc' in target || 'src' in target) {
-      const media = target as HTMLMediaElement;
-      currentSrc = media.currentSrc || media.src || '';
-    }
-    if (!currentSrc && tracked.initialSrc) {
-      currentSrc = tracked.initialSrc;
+
+    const candidateUrls = extractMediaUrls(tracked.target);
+    if (!candidateUrls.length && tracked.initialSrc) {
+      candidateUrls.push(tracked.initialSrc);
     }
 
-    // 1. Direct src match
-    if (currentSrc && !currentSrc.startsWith('blob:')) {
-      const match = this.availableResources.find((r) => r.url === currentSrc);
-      if (match) {
-        tracked.resource = match;
-        if (match.isHls) this.prefetchVariants(tracked);
-        return;
+    // 1. Direct or resolved candidate match
+    for (const cand of candidateUrls) {
+      if (!cand.startsWith('blob:')) {
+        const match = this.availableResources.find((r) => {
+          if (r.url === cand) return true;
+          try {
+            const u1 = new URL(r.url);
+            const u2 = new URL(cand);
+            return u1.origin === u2.origin && u1.pathname === u2.pathname;
+          } catch {
+            return false;
+          }
+        });
+        if (match) {
+          tracked.resource = match;
+          if (match.isHls) this.prefetchVariants(tracked);
+          return;
+        }
       }
     }
 
     // 2. Blob match (MSE / HLS player instance attached to blob: URL)
-    if (currentSrc.startsWith('blob:')) {
+    const hasBlob = candidateUrls.some((u) => u.startsWith('blob:'));
+    if (hasBlob) {
       const hlsResource = this.availableResources.find((r) => r.isHls);
       if (hlsResource) {
         tracked.resource = hlsResource;

@@ -1,4 +1,4 @@
-import { MediaBarManager } from '../lib/mediabar';
+import { MediaBarManager, extractMediaUrls } from '../lib/mediabar';
 import { inferPageTitle, type MediaResource } from '../lib/media';
 import { safeSendMessage } from '../lib/runtime';
 import { KEY_MASKS, keyStateReply, normalizeKeyName, updateKeyMask } from '../lib/shortcuts';
@@ -12,9 +12,17 @@ import type {
   KeyStateMessage,
   KeyStateReport,
   ResetKeysMessage,
+  ReportDomMediaMessage,
   ShortcutClickMessage,
   TakeoverConfigSync,
 } from '../lib/types';
+
+declare global {
+  interface Window {
+    __SHEEPGET_CONTENT_CLEANUP__?: () => void;
+  }
+}
+
 export default defineContentScript({
   matches: ['*://*/*'],
   runAt: 'document_start',
@@ -23,8 +31,43 @@ export default defineContentScript({
   allFrames: true,
   matchAboutBlank: true,
   main() {
+    // 1. 若当前页面已有旧版本 content script 注册的清理函数，先执行旧实例清理，
+    // 销毁旧 DOM 悬浮条与监听器，实现无缝热重注入平滑交接。
+    if (typeof window.__SHEEPGET_CONTENT_CLEANUP__ === 'function') {
+      try {
+        window.__SHEEPGET_CONTENT_CLEANUP__();
+      } catch {
+        // Ignore cleanup error
+      }
+    }
+
+    // 2. 物理强力清除：若页面上遗留有旧版本脚本创建的孤儿悬浮条 DOM 节点（例如从尚未支持
+    // __SHEEPGET_CONTENT_CLEANUP__ 的老版本升级热注入），强制将其全部移除，杜绝失效的僵尸 DOM 遮挡新 UI。
+    if (typeof document !== 'undefined') {
+      try {
+        document.querySelectorAll('.sheepget-mediabar-host').forEach((el) => {
+          el.remove();
+        });
+      } catch {
+        // Ignore DOM error
+      }
+    }
+
+    const abortController = new AbortController();
+    const { signal } = abortController;
+
     let localKeyMask = 0;
     let localConfig: TakeoverConfigSync = DEFAULT_TAKEOVER_CONFIG;
+
+    const handleStorageChange = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string,
+    ) => {
+      const cfgChange = changes[STORAGE_KEYS.TAKEOVER_CONFIG];
+      if (areaName === 'local' && cfgChange?.newValue) {
+        localConfig = cfgChange.newValue as TakeoverConfigSync;
+      }
+    };
 
     // 同步本地接管配置副本，供点击事件捕获阶段做零延迟同步快判
     try {
@@ -34,24 +77,48 @@ export default defineContentScript({
             localConfig = res[STORAGE_KEYS.TAKEOVER_CONFIG] as TakeoverConfigSync;
           }
         });
-        chrome.storage.onChanged?.addListener((changes, areaName) => {
-          const cfgChange = changes[STORAGE_KEYS.TAKEOVER_CONFIG];
-          if (areaName === 'local' && cfgChange?.newValue) {
-            localConfig = cfgChange.newValue as TakeoverConfigSync;
-          }
-        });
+        chrome.storage.onChanged?.addListener(handleStorageChange);
       }
     } catch {
       // Ignore storage error
     }
 
-    function cleanUpKeyListeners() {
-      window.removeEventListener('keydown', handleKeyEvent, true);
-      window.removeEventListener('keyup', handleKeyEvent, true);
-      window.removeEventListener('click', handleClickEvent, true);
-      window.removeEventListener('auxclick', handleClickEvent, true);
-      window.removeEventListener('blur', handleBlur);
-    }
+    const mediaBar = new MediaBarManager();
+
+    const cleanup = () => {
+      try {
+        abortController.abort();
+      } catch {}
+
+      try {
+        mediaBar.stop();
+      } catch {}
+
+      try {
+        domMediaObserver?.disconnect();
+        clearTimeout(domMediaTimer);
+      } catch {}
+
+      try {
+        if (typeof document !== 'undefined') {
+          document.querySelectorAll('.sheepget-mediabar-host').forEach((el) => {
+            el.remove();
+          });
+        }
+      } catch {}
+      try {
+        if (typeof chrome !== 'undefined') {
+          chrome.storage?.onChanged?.removeListener?.(handleStorageChange);
+          chrome.runtime?.onMessage?.removeListener?.(handleRuntimeMessage);
+        }
+      } catch {}
+
+      if (window.__SHEEPGET_CONTENT_CLEANUP__ === cleanup) {
+        delete window.__SHEEPGET_CONTENT_CLEANUP__;
+      }
+    };
+
+    window.__SHEEPGET_CONTENT_CLEANUP__ = cleanup;
 
     function isEditableElement(target: EventTarget | null): boolean {
       if (!target || !(target instanceof HTMLElement)) return false;
@@ -73,7 +140,7 @@ export default defineContentScript({
         isDown,
       };
       safeSendMessage(msg, undefined, {
-        onContextInvalidated: cleanUpKeyListeners,
+        onContextInvalidated: cleanup,
       });
     }
 
@@ -101,7 +168,7 @@ export default defineContentScript({
           timestamp: Date.now(),
         };
         safeSendMessage(msg, undefined, {
-          onContextInvalidated: cleanUpKeyListeners,
+          onContextInvalidated: cleanup,
         });
       }
 
@@ -146,16 +213,16 @@ export default defineContentScript({
       localKeyMask = 0;
       const msg: ResetKeysMessage = { type: 'RESET_KEYS' };
       safeSendMessage(msg, undefined, {
-        onContextInvalidated: cleanUpKeyListeners,
+        onContextInvalidated: cleanup,
       });
     }
 
     // Capture phase listeners (IDM style) to intercept keys and clicks before page handlers
-    window.addEventListener('keydown', handleKeyEvent, true);
-    window.addEventListener('keyup', handleKeyEvent, true);
-    window.addEventListener('click', handleClickEvent, true);
-    window.addEventListener('auxclick', handleClickEvent, true);
-    window.addEventListener('blur', handleBlur);
+    window.addEventListener('keydown', handleKeyEvent, { capture: true, signal });
+    window.addEventListener('keyup', handleKeyEvent, { capture: true, signal });
+    window.addEventListener('click', handleClickEvent, { capture: true, signal });
+    window.addEventListener('auxclick', handleClickEvent, { capture: true, signal });
+    window.addEventListener('blur', handleBlur, { signal });
 
     // 上报页面真实标题与 URL：HLS 清单的 URL 末段往往是 index.m3u8，真正的视频名
     // 只存在于页面标题里（og:title / <title>）。background 据此给本标签页的资源命名。
@@ -169,20 +236,59 @@ export default defineContentScript({
       safeSendMessage(msg);
     }
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', reportPageContext, { once: true });
+      document.addEventListener('DOMContentLoaded', reportPageContext, { once: true, signal });
     } else {
       reportPageContext();
     }
 
     // Initialize media floating bar manager
-    const mediaBar = new MediaBarManager();
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        mediaBar.start();
-      });
-    } else {
+    const startMediaBar = () => {
       mediaBar.start();
+      reportDomMedia();
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startMediaBar, { once: true, signal });
+    } else {
+      startMediaBar();
     }
+
+    function reportDomMedia() {
+      if (typeof document === 'undefined') return;
+      const mediaElements = document.querySelectorAll('video, audio');
+      const foundUrls = new Set<string>();
+
+      for (const el of Array.from(mediaElements)) {
+        const candidateUrls = extractMediaUrls(el as HTMLMediaElement);
+        for (const u of candidateUrls) {
+          if (u.startsWith('http://') || u.startsWith('https://')) {
+            foundUrls.add(u);
+          }
+        }
+      }
+
+      if (foundUrls.size > 0) {
+        const msg: ReportDomMediaMessage = {
+          type: 'REPORT_DOM_MEDIA',
+          resources: Array.from(foundUrls).map((url) => ({ url })),
+        };
+        safeSendMessage(msg);
+      }
+    }
+
+    let domMediaTimer: number | undefined;
+    let domMediaObserver: MutationObserver | undefined;
+    try {
+      domMediaObserver = new MutationObserver(() => {
+        clearTimeout(domMediaTimer);
+        domMediaTimer = window.setTimeout(() => {
+          reportDomMedia();
+        }, 300);
+      });
+      domMediaObserver.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
+    } catch {}
 
     // Request currently detected media resources for this tab
     safeSendMessage<MediaResource[]>({ type: 'GET_TAB_MEDIA' }, (res) => {
@@ -191,23 +297,27 @@ export default defineContentScript({
       }
     });
 
+    const handleRuntimeMessage = (
+      msg: BackgroundMessage,
+      _sender: unknown,
+      sendResponse: (report: KeyStateReport) => void,
+    ) => {
+      if (msg?.type === 'TAB_MEDIA_UPDATED') {
+        mediaBar.setResources(msg.resources);
+        return;
+      }
+      if (msg?.type === 'QUERY_KEY_STATE') {
+        // 后台刚被唤醒时手上没有按键状态，问的就是这个页面此刻的本地掩码；
+        // 没按住键时不回应答（见 lib/shortcuts.ts 的 keyStateReply）。
+        const report = keyStateReply(localKeyMask);
+        if (report) sendResponse(report);
+      }
+    };
+
     // 之后新嗅探到的资源由 background 主动推送：播放器后加载、用户点了播放才发起
     // 媒体请求的页面，首次拉取必然为空，只能靠这条推送完成关联。
     try {
-      chrome.runtime.onMessage.addListener(
-        (msg: BackgroundMessage, _sender, sendResponse: (report: KeyStateReport) => void) => {
-          if (msg?.type === 'TAB_MEDIA_UPDATED') {
-            mediaBar.setResources(msg.resources);
-            return;
-          }
-          if (msg?.type === 'QUERY_KEY_STATE') {
-            // 后台刚被唤醒时手上没有按键状态，问的就是这个页面此刻的本地掩码；
-            // 没按住键时不回应答（见 lib/shortcuts.ts 的 keyStateReply）。
-            const report = keyStateReply(localKeyMask);
-            if (report) sendResponse(report);
-          }
-        },
-      );
+      chrome.runtime?.onMessage?.addListener(handleRuntimeMessage);
     } catch {
       // Extension context might be invalidated
     }

@@ -109,4 +109,28 @@ describe('runtime context and safe messaging', () => {
     assert.equal(sent, true);
     assert.deepEqual(response, { success: true });
   });
+
+  it('safeSendMessage catches rejected Promise from chrome.runtime.sendMessage', async () => {
+    let invalidated = false;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    const mockRuntime = {
+      id: 'mock-ext-id',
+      lastError: undefined,
+      sendMessage: () => {
+        return Promise.reject(new Error('Extension context invalidated.'));
+      },
+    };
+    (globalThis as unknown as { chrome?: unknown }).chrome = { runtime: mockRuntime };
+
+    const sent = safeSendMessage('test', undefined, {
+      onContextInvalidated: () => {
+        invalidated = true;
+        resolve();
+      },
+    });
+
+    assert.equal(sent, true);
+    await promise;
+    assert.equal(invalidated, true);
+  });
 });

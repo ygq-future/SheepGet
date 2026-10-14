@@ -6,6 +6,7 @@ import {
   MEDIA_BAR_VIEWPORT_PADDING,
   shouldShowDismissAll,
   MediaBarManager,
+  extractMediaUrls,
 } from './mediabar';
 
 interface Box {
@@ -787,5 +788,93 @@ describe('mediabar iframe tracking and cross-frame delegation', () => {
       globalThis.requestAnimationFrame = originalRaf;
       globalThis.cancelAnimationFrame = originalCaf;
     }
+  });
+});
+
+describe('extractMediaUrls and multi-resource source matching', () => {
+  it('extracts candidate URLs from video with child source elements', () => {
+    const mockVideo = {
+      tagName: 'VIDEO',
+      currentSrc: '',
+      src: '',
+      querySelectorAll: (sel: string) => {
+        if (sel === 'source') {
+          return [
+            { src: 'https://example.com/componentdemos/websearch.mp4', getAttribute: () => null },
+            {
+              src: '',
+              getAttribute: (attr: string) => (attr === 'src' ? '/relative/path.mp4' : null),
+            },
+          ];
+        }
+        return [];
+      },
+      getAttribute: () => null,
+    } as unknown as HTMLVideoElement;
+
+    const urls = extractMediaUrls(mockVideo);
+    assert.ok(urls.includes('https://example.com/componentdemos/websearch.mp4'));
+    assert.ok(urls.some((u) => u.endsWith('/relative/path.mp4')));
+  });
+
+  it('correctly associates player via source tag when page has multiple resources', () => {
+    const manager = new MediaBarManager();
+    const mockVideo = {
+      tagName: 'VIDEO',
+      currentSrc: '',
+      src: '',
+      querySelectorAll: (sel: string) => {
+        if (sel === 'source') {
+          return [
+            {
+              src: 'https://www.rareui.com/componentdemos/websearch.mp4',
+              getAttribute: () => null,
+            },
+          ];
+        }
+        return [];
+      },
+      getAttribute: () => null,
+    } as unknown as HTMLVideoElement;
+
+    manager.registerTestPlayer(mockVideo);
+    const tracked = manager.getTrackedPlayer(mockVideo);
+    assert.ok(tracked, 'tracked player should exist');
+
+    const resources = [
+      {
+        id: '1',
+        tabId: 1,
+        url: 'https://www.rareui.com/componentdemos/voicenote.mp4',
+        filename: 'voicenote.mp4',
+        mimeType: 'video/mp4',
+        isHls: false,
+        foundAt: 1,
+      },
+      {
+        id: '2',
+        tabId: 1,
+        url: 'https://www.rareui.com/componentdemos/websearch.mp4',
+        filename: 'websearch.mp4',
+        mimeType: 'video/mp4',
+        isHls: false,
+        foundAt: 2,
+      },
+      {
+        id: '3',
+        tabId: 1,
+        url: 'https://www.rareui.com/componentdemos/imagegen.mp4',
+        filename: 'imagegen.mp4',
+        mimeType: 'video/mp4',
+        isHls: false,
+        foundAt: 3,
+      },
+    ];
+
+    manager.setResources(resources);
+
+    assert.ok(tracked.resource, 'player should be associated with matched resource');
+    assert.equal(tracked.resource?.url, 'https://www.rareui.com/componentdemos/websearch.mp4');
+    assert.equal(tracked.resource?.filename, 'websearch.mp4');
   });
 });
