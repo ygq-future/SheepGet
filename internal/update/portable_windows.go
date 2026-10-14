@@ -7,14 +7,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
 // GeneratePortableUpdateScript creates a Windows batch script for upgrading portable SheepGet.
 func GeneratePortableUpdateScript(scriptPath, extractedDir, appDir, exeName string, pid int) error {
 	batContent := fmt.Sprintf(`@echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
-
 set PID=%d
 set SRC=%s
 set DEST=%s
@@ -59,7 +60,8 @@ rd /s /q "%%SRC%%" 2>NUL
 (goto) 2>nul & del "%%~f0" & exit
 `, pid, extractedDir, appDir, exeName)
 
-	return os.WriteFile(scriptPath, []byte(batContent), 0755)
+	crlfContent := strings.ReplaceAll(strings.ReplaceAll(batContent, "\r\n", "\n"), "\n", "\r\n")
+	return os.WriteFile(scriptPath, []byte(crlfContent), 0755)
 }
 
 // LaunchPortableUpdater creates the helper script, launches it in a detached process, and prepares to exit.

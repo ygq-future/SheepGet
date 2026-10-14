@@ -35,8 +35,45 @@ func TestGeneratePortableUpdateScript(t *testing.T) {
 	if !strings.Contains(str, "SheepGet.exe") {
 		t.Errorf("expected script to contain SheepGet.exe")
 	}
-	// On Windows, script must explicitly exit to avoid leaving orphan cmd prompt
-	if runtime.GOOS == "windows" && !strings.Contains(str, "exit") {
-		t.Errorf("expected Windows update script to contain explicit exit")
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(str, "exit") {
+			t.Errorf("expected Windows update script to contain explicit exit")
+		}
+		if !strings.Contains(str, "chcp 65001") {
+			t.Errorf("expected Windows update script to set UTF-8 code page (chcp 65001)")
+		}
+		// Windows batch script must strictly use CRLF line endings
+		if !strings.Contains(str, "\r\n") {
+			t.Errorf("expected Windows update script to contain CRLF line endings")
+		}
+		normalized := strings.ReplaceAll(str, "\r\n", "")
+		if strings.Contains(normalized, "\n") {
+			t.Errorf("found bare LF line endings in Windows update script")
+		}
+	}
+}
+
+func TestGeneratePortableUpdateScript_ChinesePath(t *testing.T) {
+	tempDir := t.TempDir()
+	scriptPath := filepath.Join(tempDir, "test_update_script_cn")
+
+	cnSrc := "D:\\测试下载\\临时目录"
+	cnDest := "D:\\软件工具\\SheepGet便携版"
+	err := GeneratePortableUpdateScript(scriptPath, cnSrc, cnDest, "SheepGet.exe", 9999)
+	if err != nil {
+		t.Fatalf("GeneratePortableUpdateScript failed: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("failed to read generated script: %v", err)
+	}
+
+	str := string(content)
+	if !strings.Contains(str, cnSrc) {
+		t.Errorf("expected script to contain Chinese source path: %s", cnSrc)
+	}
+	if !strings.Contains(str, cnDest) {
+		t.Errorf("expected script to contain Chinese destination path: %s", cnDest)
 	}
 }
