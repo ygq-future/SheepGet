@@ -711,14 +711,15 @@ func (d *HTTPDownloader) commitCompletedFile(partPath, destPath string, t *task.
 }
 
 type chunkTracker struct {
-	claimed    bool
-	active     bool
-	splitCount int
-	lastSplit  time.Time
-	speed      int64 // bytes/sec
-	lastBytes  int64
-	lastUpdate time.Time
-	retries    int
+	claimed      bool
+	active       bool
+	splitCount   int
+	lastSplit    time.Time
+	speed        int64 // bytes/sec
+	lastBytes    int64
+	lastUpdate   time.Time
+	retries      int
+	backoffUntil time.Time
 }
 
 type chunkCoordinator struct {
@@ -735,6 +736,7 @@ type chunkCoordinator struct {
 	// requests 统计这次传输真正发出去的 HTTP 请求数（含重试与拆分出来的子块）。
 	// 它是「慢」与「碎」的度量：同样的字节数下请求数暴涨，说明是在跟一个不配合的服务器死磕。
 	requests atomic.Int64
+	lastErr  error
 }
 
 // publishLocked 在持锁状态下把当前进度交出去。必须在持有 coord.mu 时调用：快照要与分片状态
@@ -813,22 +815,32 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 			}
 			continue
 		}
-
-		// 3. Claim next available unclaimed chunk
+		// 3. Claim next available unclaimed chunk (excluding chunks in backoff cooldown)
+		now := time.Now()
+		var earliestBackoff time.Time
+		hasPendingChunks := false
 		for i := range coord.t.Chunks {
 			c := &coord.t.Chunks[i]
 			trk := coord.trackers[c.Index]
 			if !c.Completed && trk != nil && !trk.claimed {
+				hasPendingChunks = true
+				if !trk.backoffUntil.IsZero() && now.Before(trk.backoffUntil) {
+					if earliestBackoff.IsZero() || trk.backoffUntil.Before(earliestBackoff) {
+						earliestBackoff = trk.backoffUntil
+					}
+					continue
+				}
 				trk.claimed = true
 				trk.active = true
 				trk.lastBytes = c.Downloaded
-				trk.lastUpdate = time.Now()
+				trk.lastUpdate = now
+				trk.backoffUntil = time.Time{}
 				coord.mu.Unlock()
 				return c.Index
 			}
 		}
 
-		// 3. Try to assist a slow chunk by dynamically splitting its remaining range
+		// 4. Try to assist a slow chunk by dynamically splitting its remaining range
 		split := coord.trySplitSlowChunkLocked()
 		if split.newIdx != -1 {
 			coord.mu.Unlock()
@@ -839,9 +851,26 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 			return split.newIdx
 		}
 
-		// 4. Check if any workers are still active
+		// 5. Check if any workers are still active
 		activeWorkers = coord.countActiveWorkersLocked()
 		if activeWorkers == 0 {
+			// 若没有活跃 worker，但有分块处于退避隔离中，等待最早的退避到期进行自愈替补
+			if hasPendingChunks && !earliestBackoff.IsZero() {
+				waitDur := time.Until(earliestBackoff)
+				if waitDur > 2*time.Second {
+					waitDur = 2 * time.Second
+				}
+				if waitDur < 20*time.Millisecond {
+					waitDur = 20 * time.Millisecond
+				}
+				coord.mu.Unlock()
+				select {
+				case <-ctx.Done():
+					return -1
+				case <-time.After(waitDur):
+				}
+				continue
+			}
 			coord.mu.Unlock()
 			return -1
 		}
@@ -1041,6 +1070,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			coord.mu.Lock()
 			if trk := coord.trackers[chunkIdx]; trk != nil {
 				trk.retries = 0
+				trk.backoffUntil = time.Time{}
 			}
 			c := &coord.t.Chunks[chunkIdx]
 			if c.Downloaded >= (c.End - c.Start + 1) {
@@ -1051,6 +1081,11 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 				"chunk", chunkIdx, "range", fmt.Sprintf("%d-%d", chunkStart, chunkEnd),
 				"ms", time.Since(requestStart).Milliseconds())
 			return nil
+		}
+
+		// Fatal errors abort immediately
+		if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) || IsFatalError(chunkErr) {
+			return chunkErr
 		}
 
 		// 服务端限流（503 或 429）：触发自适应并发收缩
@@ -1067,25 +1102,38 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 				currentRetries = trk.retries
 				trk.retries++
 			}
+			activeWorkers := coord.countActiveWorkersLocked()
 			coord.mu.Unlock()
 
 			if currentRetries >= maxChunkRetries {
-				return fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, currentRetries, chunkErr)
-			}
-
-			// 若当前并发允许数小于已激活 worker，且还有其他 worker 在运行，说明当前槽位已超标，主动释放分片让位退出
-			coord.mu.Lock()
-			activeWorkers := coord.countActiveWorkersLocked()
-			if activeWorkers > newLimit {
-				targetChunk := &coord.t.Chunks[chunkIdx]
-				if !targetChunk.Completed && trk != nil {
+				coord.mu.Lock()
+				coord.lastErr = fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, currentRetries, chunkErr)
+				coord.mu.Unlock()
+				if activeWorkers <= 1 {
+					return coord.lastErr
+				}
+				coord.mu.Lock()
+				if trk != nil {
 					trk.claimed = false
 					trk.active = false
+					trk.backoffUntil = time.Now().Add(retryBackoff(currentRetries))
 				}
 				coord.mu.Unlock()
 				return nil
 			}
-			coord.mu.Unlock()
+
+			// 若当前并发允许数小于已激活 worker，且还有其他 worker 在运行，说明当前槽位已超标，主动释放分片让位退出
+			if activeWorkers > newLimit {
+				coord.mu.Lock()
+				targetChunk := &coord.t.Chunks[chunkIdx]
+				if !targetChunk.Completed && trk != nil {
+					trk.claimed = false
+					trk.active = false
+					trk.backoffUntil = time.Now().Add(retryBackoff(currentRetries))
+				}
+				coord.mu.Unlock()
+				return nil
+			}
 
 			delay := retryBackoff(currentRetries)
 			select {
@@ -1096,10 +1144,9 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			continue
 		}
 
-		// Fatal errors abort immediately
-		if errors.Is(chunkErr, context.Canceled) || errors.Is(chunkErr, ErrVersionMismatch) || errors.Is(chunkErr, ErrRangeNotSupported) || IsFatalError(chunkErr) {
-			return chunkErr
-		}
+		// 瞬态网络故障、看门狗停摆（Stall）或连接断开：
+		// 1. 冻结当前并发窗口，防止继续向上扩容
+		coord.adaptive.FreezeOnFailure()
 
 		coord.mu.Lock()
 		trk := coord.trackers[chunkIdx]
@@ -1112,17 +1159,41 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			retries = trk.retries
 			trk.retries++
 		}
+		activeWorkers := coord.countActiveWorkersLocked()
 		coord.mu.Unlock()
 
+		logger.Warn("chunk request failed, isolating or retrying",
+			"chunk", chunkIdx,
+			"retries", retries,
+			"activeWorkers", activeWorkers,
+			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
+			"ms", time.Since(requestStart).Milliseconds(),
+			"error", logging.SafeError(chunkErr).Error())
+
 		if retries >= maxChunkRetries {
-			return fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, retries, chunkErr)
+			coord.mu.Lock()
+			coord.lastErr = fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, retries, chunkErr)
+			coord.mu.Unlock()
+			if activeWorkers <= 1 {
+				return coord.lastErr
+			}
 		}
 
+		// 若还有其他活跃 worker 在全速下载，触发单线故障隔离：
+		// 释放当前分片，其余健康线程保持全速拉流，被隔离分块在退避结束后由空闲线程替补
+		if activeWorkers > 1 {
+			coord.mu.Lock()
+			if trk != nil {
+				trk.claimed = false
+				trk.active = false
+				trk.backoffUntil = time.Now().Add(retryBackoff(retries))
+			}
+			coord.mu.Unlock()
+			return nil
+		}
+
+		// 唯一存活的 worker，在原地退避重试
 		delay := retryBackoff(retries)
-		logger.Warn("chunk request failed, retrying",
-			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
-			"ms", time.Since(requestStart).Milliseconds(), "error", logging.SafeError(chunkErr).Error())
-		// Transient network drop, stall or 429 rate limit: back off and retry.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -1202,6 +1273,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	body := watch.Reader(resp.Body)
 	buf := make([]byte, 64*1024)
 	offset := start
+	var streamEstablished bool
 	for {
 		select {
 		case <-ctx.Done():
@@ -1211,6 +1283,11 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 
 		n, rErr := body.Read(buf)
 		if n > 0 {
+			if !streamEstablished {
+				streamEstablished = true
+				coord.adaptive.OnStreamEstablished()
+			}
+
 			coord.mu.Lock()
 			chunk := &coord.t.Chunks[chunkIdx]
 			targetEnd := chunk.End
@@ -1362,8 +1439,15 @@ func (d *HTTPDownloader) downloadChunks(ctx context.Context, t *task.Task, partP
 		return ctx.Err()
 	}
 
+	coord.mu.Lock()
+	lastErr := coord.lastErr
+	coord.mu.Unlock()
+
 	for _, c := range t.Chunks {
 		if !c.Completed {
+			if lastErr != nil {
+				return lastErr
+			}
 			return errors.New("not all chunks completed")
 		}
 	}

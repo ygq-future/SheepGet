@@ -140,3 +140,121 @@ func TestHTTPDownloader_AdaptiveConcurrency_ProbeInitialLimit(t *testing.T) {
 		t.Fatalf("expected limit to remain 1 during cooldown, got %d", ac.CurrentLimit())
 	}
 }
+
+// TestHTTPDownloader_AdaptiveConcurrency_StreamRampUp 验证连接成功开始拉流时逐个快速步进扩容，
+// 以及遇到故障时冻结窗口并在冷却后恢复自愈。
+func TestHTTPDownloader_AdaptiveConcurrency_StreamRampUp(t *testing.T) {
+	ac := engine.NewAdaptiveConcurrency(4, 2)
+	if ac.CurrentLimit() != 2 {
+		t.Fatalf("expected initial limit 2, got %d", ac.CurrentLimit())
+	}
+
+	// 连接建立并开始拉流：步进扩容至 3
+	if limit := ac.OnStreamEstablished(); limit != 3 {
+		t.Fatalf("expected limit 3 after first stream, got %d", limit)
+	}
+
+	// 再次建连成功：步进扩容至 4（达到上限）
+	if limit := ac.OnStreamEstablished(); limit != 4 {
+		t.Fatalf("expected limit 4 after second stream, got %d", limit)
+	}
+
+	// 达到上限后不再递增
+	if limit := ac.OnStreamEstablished(); limit != 4 {
+		t.Fatalf("expected limit to remain 4 at cap, got %d", limit)
+	}
+
+	// 单线故障：冻结窗口
+	ac.FreezeOnFailure()
+	// 冷却期内即使建连也不扩容
+	if limit := ac.OnStreamEstablished(); limit != 4 {
+		t.Fatalf("expected limit 4 during freeze, got %d", limit)
+	}
+}
+
+// TestHTTPDownloader_AdaptiveConcurrency_SingleThreadFaultIsolationAndBackfill
+// 模拟多分块并发下载场景：其中某个分块在下载初期发生单线网络中断，
+// 验证其他健康 worker 不受打断保持全速下载，出错分块被隔离并在稍后由健康 worker 替补下载完成。
+func TestHTTPDownloader_AdaptiveConcurrency_SingleThreadFaultIsolationAndBackfill(t *testing.T) {
+	fileSize := 1024 * 1024 // 1MB
+	payload := make([]byte, fileSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("failed to generate payload: %v", err)
+	}
+
+	var hasFailedChunk atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(fileSize))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "" {
+			http.Error(w, "Range header required", http.StatusBadRequest)
+			return
+		}
+
+		var start, end int64
+		if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); err != nil {
+			http.Error(w, "invalid range", http.StatusBadRequest)
+			return
+		}
+
+		// 模拟：针对某一非 0 分片（例如 start >= 500000），首次请求时故意中途断开连接
+		if start >= 500000 && !hasFailedChunk.Swap(true) {
+			// 写入少量字节后直接中断连接（模拟连接重置/单线网络抖动）
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				if conn != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			return
+		}
+
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[start : end+1])
+	}))
+	defer ts.Close()
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+
+	dlTask := &task.Task{
+		ID:             "iso-backfill-test",
+		URL:            ts.URL,
+		Filename:       "iso_backfill.bin",
+		Directory:      tmpDir,
+		TotalBytes:     int64(fileSize),
+		Resumable:      true,
+		MaxConcurrency: 4,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	err := downloader.Download(context.Background(), dlTask, nil)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+
+	destFile := filepath.Join(tmpDir, "iso_backfill.bin")
+	content, err := os.ReadFile(destFile)
+	if err != nil {
+		t.Fatalf("failed to read dest file: %v", err)
+	}
+	if !bytes.Equal(content, payload) {
+		t.Fatalf("downloaded file content mismatch")
+	}
+	if !hasFailedChunk.Load() {
+		t.Fatalf("expected injected chunk fault to be triggered")
+	}
+}

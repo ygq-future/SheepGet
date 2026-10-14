@@ -67,7 +67,26 @@ func (ac *AdaptiveConcurrency) CurrentLimit() int {
 	return ac.currentLimit
 }
 
-// OnSuccess 在一个分块或请求成功传输后被调用，推动窗口平稳扩容。
+// OnStreamEstablished 在一个分块连接成功建立并开始拉流时调用（收到首包数据触发）。
+// 只要未处于降级冷却期，平滑向上扩容 1 个并发槽位，快速达到 maxLimit。
+func (ac *AdaptiveConcurrency) OnStreamEstablished() int {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+
+	if ac.currentLimit >= ac.maxLimit {
+		return ac.currentLimit
+	}
+
+	// 若处于降级冷却期，不尝试扩容
+	if !ac.lastBackoff.IsZero() && time.Since(ac.lastBackoff) < ac.cooldown {
+		return ac.currentLimit
+	}
+
+	ac.currentLimit++
+	return ac.currentLimit
+}
+
+// OnSuccess 在一个分块或请求成功传输后被调用，推动窗口在冷却期过后平稳扩容。
 func (ac *AdaptiveConcurrency) OnSuccess() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
@@ -90,6 +109,14 @@ func (ac *AdaptiveConcurrency) OnSuccess() {
 			ac.currentLimit = ac.maxLimit
 		}
 	}
+}
+
+// FreezeOnFailure 在遇到连接故障或临时网络中断时调用，冻结当前并发窗口，防止继续盲目扩容。
+func (ac *AdaptiveConcurrency) FreezeOnFailure() {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.lastBackoff = time.Now()
+	ac.successCount = 0
 }
 
 // OnRateLimit 在请求遇到服务端限流（如 503 Service Unavailable、429 Too Many Requests）时调用。
