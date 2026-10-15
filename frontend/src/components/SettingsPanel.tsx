@@ -881,6 +881,16 @@ export function SettingsPanel() {
       download: new configModels.DownloadConfig({
         ...download,
         preDownload,
+        skipFileInfoConfirm: preDownload ? download.skipFileInfoConfirm : false,
+      }),
+    });
+  };
+
+  const handleSkipFileInfoConfirmChange = async (skipFileInfoConfirm: boolean) => {
+    await updateSettings({
+      download: new configModels.DownloadConfig({
+        ...download,
+        skipFileInfoConfirm,
       }),
     });
   };
@@ -1717,6 +1727,17 @@ export function SettingsPanel() {
                   <Switch
                     checked={!!download.preDownload}
                     onCheckedChange={(checked) => void handlePreDownloadChange(checked)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label="跳过文件信息确认"
+                  description="接管下载且探测无冲突时直接静默开始，无需手动点击确认"
+                >
+                  <Switch
+                    checked={!!(download.preDownload && download.skipFileInfoConfirm)}
+                    disabled={!download.preDownload}
+                    onCheckedChange={(checked) => void handleSkipFileInfoConfirmChange(checked)}
                   />
                 </SettingRow>
 

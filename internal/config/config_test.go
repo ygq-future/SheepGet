@@ -26,6 +26,9 @@ func TestDefaultSettings(t *testing.T) {
 	if s.Download.PreDownload != false {
 		t.Errorf("expected PreDownload false, got %v", s.Download.PreDownload)
 	}
+	if s.Download.SkipFileInfoConfirm != false {
+		t.Errorf("expected SkipFileInfoConfirm false, got %v", s.Download.SkipFileInfoConfirm)
+	}
 	// 日志默认关闭：正常使用不落盘，只有用户打开开关才写。
 	if s.General.EnableLogging {
 		t.Errorf("expected EnableLogging false by default, got true")
@@ -125,6 +128,8 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 			MaxConcurrentDownloads:    -5,
 			DefaultConnectionsPerTask: 100, // too big
 			DefaultDirectory:          "",
+			PreDownload:               false,
+			SkipFileInfoConfirm:       true, // should be reset because PreDownload is false
 		},
 	}
 
@@ -146,6 +151,9 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	}
 	if validated.Download.DefaultDirectory != "/fallback/dir" {
 		t.Errorf("expected fallback dir, got %s", validated.Download.DefaultDirectory)
+	}
+	if validated.Download.SkipFileInfoConfirm != false {
+		t.Errorf("expected SkipFileInfoConfirm reset to false when PreDownload is false, got true")
 	}
 	if validated.Proxy.Mode != ProxyModeSystem {
 		t.Errorf("expected fallback to ProxyModeSystem, got %s", validated.Proxy.Mode)

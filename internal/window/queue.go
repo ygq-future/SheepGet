@@ -148,6 +148,7 @@ type FileInfoItem struct {
 	submitting           bool
 	preDownloadStarting  bool
 	preDownloadStartedCh chan struct{}
+	skipConfirm          bool
 
 	// probe 是登记时那次探测的原始结果，probeErr 是它的失败原因，probeDone 在探测
 	// 结束时关闭。提交建任务（AddTaskFromProbe）只认这一份结果，探测还在路上时就靠在
@@ -186,6 +187,7 @@ type QueueController struct {
 	// 时间戳在同一刻会重复，不能当唯一标识用。
 	requestSeq      uint64
 	onShowCompleted func(taskID string)
+	onSubmitTask    func(t *task.Task)
 }
 
 func NewQueueController(eng DownloadEngine, settings SettingsProvider, winView WindowView) *QueueController {
@@ -210,6 +212,13 @@ func (qc *QueueController) SetOnShowCompleted(fn func(taskID string)) {
 	qc.mu.Lock()
 	defer qc.mu.Unlock()
 	qc.onShowCompleted = fn
+}
+
+// SetOnSubmitTask registers a hook to be triggered when a task is successfully submitted.
+func (qc *QueueController) SetOnSubmitTask(fn func(t *task.Task)) {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	qc.onSubmitTask = fn
 }
 
 // QueueLength returns the number of items currently in the queue.
@@ -446,6 +455,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		Headers:           req.Headers,
 		PageURL:           req.PageURL,
 		Probing:           req.URL != "",
+		skipConfirm:       preDownload && activeSettings.Download.SkipFileInfoConfirm && req.URL != "",
 	}
 	// 有链接就一定会探测：探测的完成信号在这里就先挂上，提交才知道该等谁。
 	if req.URL != "" {
@@ -455,9 +465,11 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	qc.items = append(qc.items, item)
 	qc.updateQueueNumbersLocked()
 
-	// 立刻显示窗口并置前，界面同时拿到本次登记的这一项。
-	actions.show()
-	actions.focus()
+	// 只有不需要跳过确认时，才在登记时立刻显示窗口并置前；跳过确认的项先静默探测
+	if !item.skipConfirm {
+		actions.show()
+		actions.focus()
+	}
 	if len(qc.items) == 1 {
 		itemCopy := *item
 		actions.emit(protocol.EventFileInfoNext, &itemCopy)
@@ -526,10 +538,102 @@ func (qc *QueueController) asyncProbeItem(job probeJob) {
 	}
 
 	start := qc.applyProbeResult(job, probe, probeErr)
-	if start == nil {
+	if start != nil {
+		qc.startPreDownload(start)
+	}
+	qc.checkAutoSubmit(job.itemID)
+}
+
+func (qc *QueueController) checkAutoSubmit(itemID string) {
+	qc.mu.Lock()
+	targetItem := qc.itemByIDLocked(itemID)
+	if targetItem == nil || !targetItem.skipConfirm {
+		qc.mu.Unlock()
 		return
 	}
-	qc.startPreDownload(start)
+
+	// 必须无探测错误，且探测结果非空
+	if targetItem.probeErr != nil || targetItem.probe == nil {
+		qc.mu.Unlock()
+		qc.fallbackToShow(itemID)
+		return
+	}
+
+	// 如果是 HLS，必须已经选定清晰度（有 media）
+	if targetItem.probe.HLS != nil && targetItem.media == nil {
+		qc.mu.Unlock()
+		qc.fallbackToShow(itemID)
+		return
+	}
+
+	// 如果有文件冲突（且没有被自动决议为序号副本等）
+	if targetItem.FileConflict {
+		qc.mu.Unlock()
+		qc.fallbackToShow(itemID)
+		return
+	}
+
+	// 重复链接处理：如果有重复任务，但策略没有默认动作（比如 prompt 每次询问），必须弹窗让用户选
+	if targetItem.DuplicateTask != nil && targetItem.DuplicateDecision.Default == "" {
+		qc.mu.Unlock()
+		qc.fallbackToShow(itemID)
+		return
+	}
+
+	// 如果重复策略是 ActionShowCompleted（跳过并查看完成记录）：
+	// 已经在 applyProbeResult 中唤起了 onShowCompleted，不需要再发起下载，直接从队列中移除此项
+	if targetItem.DuplicateDecision.Default == duplicate.ActionShowCompleted {
+		actions := newWindowActions(qc.windowView)
+		defer actions.run(qc.runOps)
+		defer qc.mu.Unlock()
+
+		if idx := qc.indexOfLocked(targetItem.ID); idx >= 0 {
+			qc.items = append(qc.items[:idx], qc.items[idx+1:]...)
+			if qc.activeIndex > idx {
+				qc.activeIndex--
+			}
+			qc.advanceQueueLocked(actions)
+		}
+		return
+	}
+
+	sub := FileInfoSubmission{
+		RequestID:  targetItem.ID,
+		URL:        targetItem.URL,
+		Directory:  targetItem.Directory,
+		Filename:   targetItem.Filename,
+		MaxConn:    targetItem.MaxConn,
+		CategoryID: targetItem.CategoryID,
+		Action:     targetItem.DuplicateDecision.Default,
+	}
+	qc.mu.Unlock()
+
+	// 锁外调用 submitItem 完成自动转正
+	if _, err := qc.submitItem(context.Background(), itemID, sub); err != nil {
+		qc.fallbackToShow(itemID)
+	}
+}
+
+func (qc *QueueController) fallbackToShow(itemID string) {
+	qc.mu.Lock()
+	targetItem := qc.itemByIDLocked(itemID)
+	if targetItem == nil {
+		qc.mu.Unlock()
+		return
+	}
+	actions := newWindowActions(qc.windowView)
+	defer actions.run(qc.runOps)
+	defer qc.mu.Unlock()
+
+	targetItem.skipConfirm = false
+	if idx := qc.indexOfLocked(itemID); idx >= 0 {
+		qc.activeIndex = idx
+	}
+	qc.updateQueueNumbersLocked()
+	actions.show()
+	actions.focus()
+	itemCopy := *targetItem
+	actions.emit(protocol.EventFileInfoNext, &itemCopy)
 }
 
 func (qc *QueueController) startPreDownload(start *preDownloadStart) {
@@ -876,7 +980,26 @@ func (qc *QueueController) finishPreDownloadStart(start *preDownloadStart, preTa
 // 因此寻常的提交根本不联网、瞬时返回；只有用户改过链接、或链接是手输的（没有任何探测
 // 结果）才退回让引擎自己探。
 func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (*task.Task, error) {
-	plan, err := qc.beginSubmit(ctx, sub)
+	qc.mu.Lock()
+	if len(qc.items) == 0 {
+		qc.mu.Unlock()
+		return nil, fmt.Errorf("no active file info request")
+	}
+	if qc.activeIndex >= len(qc.items) {
+		qc.activeIndex = 0
+	}
+	active := qc.items[qc.activeIndex]
+	if sub.RequestID != active.ID {
+		qc.mu.Unlock()
+		return nil, ErrStaleFileInfoSubmission
+	}
+	qc.mu.Unlock()
+
+	return qc.submitItem(ctx, sub.RequestID, sub)
+}
+
+func (qc *QueueController) submitItem(ctx context.Context, itemID string, sub FileInfoSubmission) (*task.Task, error) {
+	plan, err := qc.beginSubmitItem(ctx, itemID, sub)
 	if err != nil {
 		return nil, err
 	}
@@ -903,6 +1026,10 @@ func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (
 		if plan.item.PageURL != "" && resTask.PageURL == "" {
 			resTask.PageURL = plan.item.PageURL
 			_ = qc.engine.SetTaskPageURL(ctx, resTask.ID, plan.item.PageURL)
+		}
+		if qc.onSubmitTask != nil {
+			onSubmit := qc.onSubmitTask
+			actions.add(func() { onSubmit(resTask) })
 		}
 	}
 	// 按 ID 摘除：提交期间用户可能已经切到别的项上，按位置删会删错人。
@@ -948,19 +1075,12 @@ func (p *submitPlan) apply() {
 }
 
 // beginSubmit 在锁内确认这一项可以提交，标出「提交在路上」，并取走这次提交需要的事实。
-func (qc *QueueController) beginSubmit(ctx context.Context, sub FileInfoSubmission) (*submitPlan, error) {
+func (qc *QueueController) beginSubmitItem(ctx context.Context, itemID string, sub FileInfoSubmission) (*submitPlan, error) {
 	for {
 		qc.mu.Lock()
 
-		if len(qc.items) == 0 {
-			qc.mu.Unlock()
-			return nil, fmt.Errorf("no active file info request")
-		}
-		if qc.activeIndex >= len(qc.items) {
-			qc.activeIndex = 0
-		}
-		active := qc.items[qc.activeIndex]
-		if sub.RequestID != active.ID {
+		active := qc.itemByIDLocked(itemID)
+		if active == nil {
 			qc.mu.Unlock()
 			return nil, ErrStaleFileInfoSubmission
 		}

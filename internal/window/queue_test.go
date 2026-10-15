@@ -3,6 +3,7 @@ package window
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1330,5 +1331,127 @@ func TestQueueController_Enqueue_SanitizesFilenamePath(t *testing.T) {
 	}
 	if item.SuggestedFilename != wantFilename {
 		t.Errorf("expected suggested filename %q, got %q", wantFilename, item.SuggestedFilename)
+	}
+}
+
+func TestQueueController_SkipFileInfoConfirm_AutoSubmit(t *testing.T) {
+	ctx := context.Background()
+	payload := []byte("hello skip confirm test")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer ts.Close()
+
+	winView := &mockWindowView{}
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create task store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 3})
+	t.Cleanup(mgr.Close)
+
+	settings := config.DefaultSettings(tmpDir, filepath.Join(tmpDir, "temp"))
+	settings.Download.PreDownload = true
+	settings.Download.SkipFileInfoConfirm = true
+	settings.Download.DefaultConnectionsPerTask = 2
+	settingsProvider := &testSettingsProvider{settings: settings}
+
+	qc := newQueueController(mgr, settingsProvider, winView, inlineOps)
+
+	var submittedTaskID string
+	qc.SetOnSubmitTask(func(task *task.Task) {
+		submittedTaskID = task.ID
+	})
+
+	urlStr := ts.URL + "/auto_test.bin"
+	resp, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       urlStr,
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	if !resp.Handled {
+		t.Fatalf("expected handled enqueue")
+	}
+
+	// 初始 Enqueue 时窗口不得显示
+	if winView.shown || winView.showCount > 0 {
+		t.Fatalf("expected window NOT to be shown when skipFileInfoConfirm is enabled, got showCount=%d", winView.showCount)
+	}
+
+	// 等待异步探测并自动完成提交
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if qc.QueueLength() == 0 && submittedTaskID != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if qc.QueueLength() != 0 {
+		t.Fatalf("expected queue length 0 after auto submit, got %d", qc.QueueLength())
+	}
+	if submittedTaskID == "" {
+		t.Fatalf("expected task to be submitted automatically")
+	}
+	if winView.showCount > 0 {
+		t.Errorf("window should never have been shown, got showCount=%d", winView.showCount)
+	}
+
+	saved, err := store.Get(ctx, submittedTaskID)
+	if err != nil {
+		t.Fatalf("get submitted task failed: %v", err)
+	}
+	if saved.URL != urlStr {
+		t.Errorf("task URL = %s, want %s", saved.URL, urlStr)
+	}
+}
+
+func TestQueueController_SkipFileInfoConfirm_FallbackOnError(t *testing.T) {
+	ctx := context.Background()
+	winView := &mockWindowView{}
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to create task store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 3})
+	t.Cleanup(mgr.Close)
+
+	settings := config.DefaultSettings(tmpDir, filepath.Join(tmpDir, "temp"))
+	settings.Download.PreDownload = true
+	settings.Download.SkipFileInfoConfirm = true
+	settingsProvider := &testSettingsProvider{settings: settings}
+
+	qc := newQueueController(mgr, settingsProvider, winView, inlineOps)
+
+	unreachableURL := "http://127.0.0.1:54321/unreachable_err.bin"
+	_, err = qc.Enqueue(ctx, DownloadRequest{
+		URL:       unreachableURL,
+		Directory: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	// 探测失败后应回退唤起窗口
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if winView.showCount > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if winView.showCount == 0 {
+		t.Fatalf("expected window to be shown after probe error fallback")
+	}
+	if qc.QueueLength() != 1 {
+		t.Fatalf("expected item to remain in queue for manual confirmation, got length %d", qc.QueueLength())
 	}
 }

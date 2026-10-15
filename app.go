@@ -183,6 +183,19 @@ func NewApp() *App {
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
+	app.windowQueue.SetOnSubmitTask(func(t *task.Task) {
+		if t != nil && app.settings != nil {
+			st := app.settings.Get()
+			if st.Download.ShowProgressWindow {
+				app.ShowProgressWindow(t.ID)
+			}
+			if app.fileInfoQueueLength() > 0 {
+				if fileWin, ok := app.windows.Find(winNameFileInfo); ok && fileWin.IsVisible() {
+					fileWin.Raise()
+				}
+			}
+		}
+	})
 	adapter := &loopbackServerAdapter{app: app}
 	loopbackSrv := server.NewServer(storeDir.SessionFile(), adapter, adapter)
 	st := settingsSvc.Get()
@@ -952,17 +965,6 @@ func (a *App) SubmitFileInfo(sub window.FileInfoSubmission) (*task.Task, error) 
 	t, err := a.windowQueue.Submit(a.ctx, sub)
 	if err != nil {
 		return nil, err
-	}
-	if t != nil && a.settings != nil {
-		st := a.settings.Get()
-		if st.Download.ShowProgressWindow {
-			a.ShowProgressWindow(t.ID)
-			if a.fileInfoQueueLength() > 0 {
-				if fileWin, ok := a.windows.Find(winNameFileInfo); ok {
-					fileWin.Raise()
-				}
-			}
-		}
 	}
 	return t, nil
 }

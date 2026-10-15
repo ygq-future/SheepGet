@@ -107,6 +107,7 @@ export class ClipboardConfig {
 export class DownloadConfig {
     "duplicateUrlPolicy": DuplicateURLPolicy;
     "preDownload": boolean;
+    "skipFileInfoConfirm": boolean;
     "maxConcurrentDownloads": number;
     "defaultConnectionsPerTask": number;
     "defaultDirectory": string;
@@ -125,6 +126,9 @@ export class DownloadConfig {
         }
         if (!("preDownload" in $$source)) {
             this["preDownload"] = false;
+        }
+        if (!("skipFileInfoConfirm" in $$source)) {
+            this["skipFileInfoConfirm"] = false;
         }
         if (!("maxConcurrentDownloads" in $$source)) {
             this["maxConcurrentDownloads"] = 0;
@@ -164,14 +168,14 @@ export class DownloadConfig {
      * Creates a new DownloadConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): DownloadConfig {
-        const $$createField10_0 = $$createType2;
         const $$createField11_0 = $$createType2;
+        const $$createField12_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("builtinCategories" in $$parsedSource) {
-            $$parsedSource["builtinCategories"] = $$createField10_0($$parsedSource["builtinCategories"]);
+            $$parsedSource["builtinCategories"] = $$createField11_0($$parsedSource["builtinCategories"]);
         }
         if ("customCategories" in $$parsedSource) {
-            $$parsedSource["customCategories"] = $$createField11_0($$parsedSource["customCategories"]);
+            $$parsedSource["customCategories"] = $$createField12_0($$parsedSource["customCategories"]);
         }
         return new DownloadConfig($$parsedSource as Partial<DownloadConfig>);
     }

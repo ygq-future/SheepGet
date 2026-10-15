@@ -81,6 +81,7 @@ type CategoryConfig struct {
 type DownloadConfig struct {
 	DuplicateURLPolicy        DuplicateURLPolicy `json:"duplicateUrlPolicy"`
 	PreDownload               bool               `json:"preDownload"`
+	SkipFileInfoConfirm       bool               `json:"skipFileInfoConfirm"`
 	MaxConcurrentDownloads    int                `json:"maxConcurrentDownloads"`
 	DefaultConnectionsPerTask int                `json:"defaultConnectionsPerTask"`
 	DefaultDirectory          string             `json:"defaultDirectory"`
@@ -368,6 +369,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 		Download: DownloadConfig{
 			DuplicateURLPolicy:        DuplicatePolicyAsk,
 			PreDownload:               false,
+			SkipFileInfoConfirm:       false,
 			MaxConcurrentDownloads:    3,
 			DefaultConnectionsPerTask: DefaultConnectionsPerTask,
 			DefaultDirectory:          defaultDownloadDir,
@@ -430,6 +432,11 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 		s.Download.DuplicateURLPolicy = DuplicatePolicyOverwrite
 	default:
 		s.Download.DuplicateURLPolicy = defaults.Download.DuplicateURLPolicy
+	}
+
+	// Interlocking: SkipFileInfoConfirm requires PreDownload
+	if !s.Download.PreDownload {
+		s.Download.SkipFileInfoConfirm = false
 	}
 
 	// Validate MaxConcurrentDownloads (bounded 1-32)
