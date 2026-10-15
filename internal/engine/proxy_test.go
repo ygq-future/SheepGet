@@ -167,3 +167,180 @@ func TestHTTPDownloader_ProxyIsolation(t *testing.T) {
 		t.Errorf("downloaded file contents do not match payload")
 	}
 }
+
+// TestHTTPDownloader_MidTransferProxyFallbackToDirect 验证 P0-1：
+// 当任务初始通过代理正常开始分块传输，但传输中途代理服务器崩溃/断流时，
+// 下载器能够自动通过直连探针验证目标服务器可达，无缝切换为直连（标记 DirectTransfer=true）并完成剩余分片下载。
+func TestHTTPDownloader_MidTransferProxyFallbackToDirect(t *testing.T) {
+	fileSize := 1024 * 1024 // 1MB
+	payload := make([]byte, fileSize)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	var directHits atomic.Int64
+	var proxyHits atomic.Int64
+	var proxyDead atomic.Bool
+
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Via-Proxy") == "" {
+			directHits.Add(1)
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", `"mid-proxy-etag"`)
+		rangeHdr := r.Header.Get("Range")
+		if rangeHdr == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+			return
+		}
+		var start, end int64
+		_, _ = fmt.Sscanf(rangeHdr, "bytes=%d-%d", &start, &end)
+		if end >= int64(len(payload)) {
+			end = int64(len(payload)) - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[start : end+1])
+	}))
+	defer targetServer.Close()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits := proxyHits.Add(1)
+		// 第 1 次分块请求允许通过代理成功完成，随后模拟代理崩溃（直接断开底层连接）
+		if hits > 1 || proxyDead.Load() {
+			proxyDead.Store(true)
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				if conn != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			http.Error(w, "proxy down", http.StatusBadGateway)
+			return
+		}
+
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, r.RequestURI, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for k, v := range r.Header {
+			outReq.Header[k] = v
+		}
+		outReq.Header.Set("X-Via-Proxy", "1")
+		resp, err := http.DefaultTransport.RoundTrip(outReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer proxyServer.Close()
+
+	dl := engine.NewHTTPDownloader(nil)
+	if err := dl.SetProxy("custom", proxyServer.URL); err != nil {
+		t.Fatalf("failed to set proxy: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	dlTask := &task.Task{
+		ID:             "task-mid-proxy-fallback",
+		URL:            targetServer.URL,
+		Directory:      tempDir,
+		Filename:       "mid_fallback.bin",
+		TotalBytes:     int64(len(payload)),
+		Resumable:      true,
+		ETag:           `"mid-proxy-etag"`,
+		MaxConcurrency: 2,
+	}
+
+	if err := dl.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("expected download to succeed via mid-transfer direct fallback, got error: %v", err)
+	}
+	if !dlTask.DirectTransfer {
+		t.Errorf("expected task.DirectTransfer to be set to true after mid-transfer proxy failure")
+	}
+	if directHits.Load() == 0 {
+		t.Errorf("expected target server to receive direct requests after proxy died")
+	}
+
+	got, err := os.ReadFile(filepath.Join(tempDir, "mid_fallback.bin"))
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("downloaded file content mismatch")
+	}
+}
+
+// TestHTTPDownloader_SingleStreamMidTransferProxyFallbackToDirect 验证 P0-1 单流场景：
+// 当单流下载在读取响应体中途因代理断流报错时，自动切换为直连完成下载。
+func TestHTTPDownloader_SingleStreamMidTransferProxyFallbackToDirect(t *testing.T) {
+	payload := []byte("single-stream-full-payload-after-proxy-midstream-abort-1234567890")
+	var directHits atomic.Int64
+
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Via-Proxy") == "" {
+			directHits.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer targetServer.Close()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 模拟代理在返回了前几个字节后突然掐断 TCP 连接（unexpected EOF）
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload[:10])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hj.Hijack()
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+	}))
+	defer proxyServer.Close()
+
+	dl := engine.NewHTTPDownloader(nil)
+	if err := dl.SetProxy("custom", proxyServer.URL); err != nil {
+		t.Fatalf("failed to set proxy: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	dlTask := &task.Task{
+		ID:             "task-single-mid-proxy",
+		URL:            targetServer.URL,
+		Directory:      tempDir,
+		Filename:       "single_mid.bin",
+		TotalBytes:     -1,
+		Resumable:      false,
+		MaxConcurrency: 1,
+	}
+
+	if err := dl.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("expected single stream download to recover via direct fallback, got: %v", err)
+	}
+	if !dlTask.DirectTransfer {
+		t.Errorf("expected task.DirectTransfer to be true")
+	}
+	if directHits.Load() == 0 {
+		t.Errorf("expected direct hits on targetServer")
+	}
+	got, err := os.ReadFile(filepath.Join(tempDir, "single_mid.bin"))
+	if err != nil || string(got) != string(payload) {
+		t.Fatalf("unexpected file content: %q, err=%v", string(got), err)
+	}
+}

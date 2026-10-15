@@ -13,6 +13,8 @@ import (
 
 	mp4codecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/pmp4"
+
+	"sheep-get/internal/atomicfile"
 )
 
 const tsPacketSize = 188
@@ -329,7 +331,7 @@ func (a *accumulator) write(output string) error {
 		_ = os.Remove(partPath)
 		return fmt.Errorf("写入成品失败: %w", err)
 	}
-	if err := os.Rename(partPath, output); err != nil {
+	if err := atomicfile.Rename(partPath, output); err != nil {
 		_ = os.Remove(partPath)
 		return fmt.Errorf("无法把成品移动到 %s: %w", output, err)
 	}

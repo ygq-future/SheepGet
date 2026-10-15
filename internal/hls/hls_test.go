@@ -810,3 +810,88 @@ func TestInputsPaths(t *testing.T) {
 		t.Fatal("空输入应当展开成空路径")
 	}
 }
+
+// TestFetcher_WithFallbackSwitchesToDirectOnProxyFailure 验证 P0-1 HLS 侧：
+// 当主客户端（代理）故障（连接失败或返回 502 Bad Gateway）时，Fetcher 自动切换至备用直连客户端完成清单与分片拉取。
+func TestFetcher_WithFallbackSwitchesToDirectOnProxyFailure(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/index.m3u8":
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n"))
+		case "/seg0.ts":
+			_, _ = w.Write([]byte("segment-payload-bytes"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer target.Close()
+
+	brokenProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer brokenProxy.Close()
+
+	proxyURL, _ := url.Parse(brokenProxy.URL)
+	proxyClient := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}
+
+	var fallbackTriggered bool
+	f := hls.NewFetcher(proxyClient, credentials.New(nil)).WithFallback(target.Client(), func() {
+		fallbackTriggered = true
+	})
+
+	inspected, err := hls.Inspect(context.Background(), f, target.URL+"/index.m3u8")
+	if err != nil {
+		t.Fatalf("expected Inspect to succeed via fallback client, got: %v", err)
+	}
+	if !fallbackTriggered {
+		t.Fatalf("expected onFallback callback to be invoked")
+	}
+	sel, err := hls.Resolve(context.Background(), f, target.URL+"/index.m3u8", inspected.Variants[0], "")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	dir := t.TempDir()
+	inputs, err := f.Download(context.Background(), sel.VideoPlaylist, dir, 2, nil)
+	if err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+	if len(inputs.Segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(inputs.Segments))
+	}
+	got, err := os.ReadFile(filepath.Join(dir, inputs.Segments[0]))
+	if err != nil || string(got) != "segment-payload-bytes" {
+		t.Fatalf("unexpected segment content: %q, err=%v", string(got), err)
+	}
+}
+
+// TestFetcher_WithFallbackWhenBothFailReturnsError 验证主代理返回 502 且备用直连也失败或返回 404 时，
+// 正确返回错误，绝不出现 (nil, nil) 空指针或读取已关闭 Body。
+func TestFetcher_WithFallbackWhenBothFailReturnsError(t *testing.T) {
+	brokenProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer brokenProxy.Close()
+
+	notFoundTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer notFoundTarget.Close()
+
+	proxyURL, _ := url.Parse(brokenProxy.URL)
+	proxyClient := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}
+
+	f := hls.NewFetcher(proxyClient, credentials.New(nil)).WithFallback(notFoundTarget.Client(), nil)
+	if _, err := hls.Inspect(context.Background(), f, notFoundTarget.URL+"/missing.m3u8"); err == nil {
+		t.Fatalf("expected error when both proxy (502) and fallback target (404) fail")
+	}
+
+	// Closed fallback server (connection error on fallback after 502 on proxy)
+	notFoundTarget.Close()
+	if _, err := hls.Inspect(context.Background(), f, notFoundTarget.URL+"/missing.m3u8"); err == nil {
+		t.Fatalf("expected error when proxy returns 502 and fallback fails to connect")
+	}
+}

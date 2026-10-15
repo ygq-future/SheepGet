@@ -258,3 +258,195 @@ func TestHTTPDownloader_AdaptiveConcurrency_SingleThreadFaultIsolationAndBackfil
 		t.Fatalf("expected injected chunk fault to be triggered")
 	}
 }
+
+// TestHTTPDownloader_AdaptiveConcurrency_ConnResetAnd403Storm 验证 P0-2：
+// 当服务端不返回 429/503，而是对超出并发上限（如 >2）的连接直接 TCP Reset 掐断或返回 403 Forbidden 时，
+// 自适应并发控制器能够缩减并发窗口并完成下载，而非因重试耗尽或 Fatal 403 中止任务。
+func TestHTTPDownloader_AdaptiveConcurrency_ConnResetAnd403Storm(t *testing.T) {
+	fileSize := 1024 * 1024 // 1MB
+	payload := make([]byte, fileSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("failed to generate payload: %v", err)
+	}
+
+	var activeConns atomic.Int64
+	const maxAllowedConns = 2
+	var rejectedCount atomic.Int64
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := activeConns.Add(1)
+		defer activeConns.Add(-1)
+
+		if cur > maxAllowedConns {
+			n := rejectedCount.Add(1)
+			// 交替模拟防火墙/Nginx 在并发超限时的两种典型非标行为：直接返回 403 Forbidden 或直接 RST 掐断连接
+			if n%2 == 0 {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("403 Forbidden: connection limit exceeded"))
+				return
+			}
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				if conn != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			return
+		}
+
+		w.Header().Set("Accept-Ranges", "bytes")
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+			return
+		}
+
+		rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+		parts := strings.Split(rangeSpec, "-")
+		start, _ := strconv.ParseInt(parts[0], 10, 64)
+		end, _ := strconv.ParseInt(parts[1], 10, 64)
+		if end >= int64(len(payload)) {
+			end = int64(len(payload)) - 1
+		}
+
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+
+		chunkLen := int(end - start + 1)
+		step := 32 * 1024
+		for written := 0; written < chunkLen; {
+			toWrite := step
+			if written+toWrite > chunkLen {
+				toWrite = chunkLen - written
+			}
+			_, _ = w.Write(payload[start+int64(written) : start+int64(written+toWrite)])
+			written += toWrite
+			time.Sleep(15 * time.Millisecond)
+		}
+	}))
+	defer ts.Close()
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+
+	dlTask := &task.Task{
+		ID:             "task-adaptive-rst-403",
+		URL:            ts.URL,
+		Filename:       "adaptive_rst_403.bin",
+		Directory:      tmpDir,
+		TotalBytes:     int64(fileSize),
+		MaxConcurrency: 6,
+		Resumable:      true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := downloader.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("Download failed under connection reset/403 storm: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "adaptive_rst_403.bin"))
+	if err != nil {
+		t.Fatalf("failed to read dest file: %v", err)
+	}
+	if !bytes.Equal(content, payload) {
+		t.Fatalf("downloaded file content mismatch")
+	}
+}
+
+// TestHTTPDownloader_ExpiredFinalURLRefreshFromOrigin 验证 P0-3：
+// 当任务记录了 302 重定向后的临时 CDN 签名地址 FinalURL（FinalURL != URL），
+// 传输或续传时旧 FinalURL 因过期返回 403 Forbidden / 410 Gone，下载器能自动回源原始 URL 获取新签名地址并完成传输。
+func TestHTTPDownloader_ExpiredFinalURLRefreshFromOrigin(t *testing.T) {
+	fileSize := 512 * 1024 // 512KB
+	payload := make([]byte, fileSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("failed to generate payload: %v", err)
+	}
+
+	var originRedirects atomic.Int64
+	var expiredHits atomic.Int64
+
+	var serverURL string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/origin/release.zip":
+			originRedirects.Add(1)
+			http.Redirect(w, r, serverURL+"/cdn/fresh_token/release.zip", http.StatusFound)
+			return
+		case "/cdn/expired_token/release.zip":
+			expiredHits.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("403 token expired"))
+			return
+		case "/cdn/fresh_token/release.zip":
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"release-v1"`)
+			rangeHeader := r.Header.Get("Range")
+			if rangeHeader == "" {
+				w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(payload)
+				return
+			}
+			rangeSpec := strings.TrimPrefix(rangeHeader, "bytes=")
+			parts := strings.Split(rangeSpec, "-")
+			start, _ := strconv.ParseInt(parts[0], 10, 64)
+			end, _ := strconv.ParseInt(parts[1], 10, 64)
+			if end >= int64(len(payload)) {
+				end = int64(len(payload)) - 1
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(payload[start : end+1])
+			return
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	serverURL = ts.URL
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+
+	dlTask := &task.Task{
+		ID:             "task-expired-final-url",
+		URL:            ts.URL + "/origin/release.zip",
+		FinalURL:       ts.URL + "/cdn/expired_token/release.zip", // 模拟之前探测或暂停前留下的已过期 CDN 节点签名
+		Filename:       "release.zip",
+		Directory:      tmpDir,
+		TotalBytes:     int64(fileSize),
+		ETag:           `"release-v1"`,
+		MaxConcurrency: 2,
+		Resumable:      true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := downloader.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("expected download to recover by refreshing FinalURL from origin, got: %v", err)
+	}
+	if expiredHits.Load() == 0 {
+		t.Fatalf("expected initial request to hit expired FinalURL")
+	}
+	if originRedirects.Load() == 0 {
+		t.Fatalf("expected downloader to re-probe origin URL")
+	}
+	if dlTask.FinalURL != ts.URL+"/cdn/fresh_token/release.zip" {
+		t.Fatalf("expected FinalURL to be updated to fresh token URL, got %q", dlTask.FinalURL)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "release.zip"))
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+	if !bytes.Equal(content, payload) {
+		t.Fatalf("downloaded file content mismatch")
+	}
+}

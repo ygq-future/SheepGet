@@ -111,7 +111,7 @@ func (ac *AdaptiveConcurrency) OnSuccess() {
 	}
 }
 
-// FreezeOnFailure 在遇到连接故障或临时网络中断时调用，冻结当前并发窗口，防止继续盲目扩容。
+// FreezeOnFailure 在遇到单次连接故障或临时网络中断时调用，冻结当前并发窗口，防止继续盲目扩容。
 func (ac *AdaptiveConcurrency) FreezeOnFailure() {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
@@ -119,10 +119,10 @@ func (ac *AdaptiveConcurrency) FreezeOnFailure() {
 	ac.successCount = 0
 }
 
-// OnRateLimit 在请求遇到服务端限流（如 503 Service Unavailable、429 Too Many Requests）时调用。
+// OnRateLimit 在请求遇到服务端限流（如 503 Service Unavailable、429 Too Many Requests）或连接重置风暴时调用。
 // 策略：
 // 1. 首次遇到异常时停止扩容并保持/冻结当前并发数量；
-// 2. 若在时间窗口（冷却期）内持续遇到限流，则逐步回退并发（每次减 1），直到保底单线程（1）。
+// 2. 若在时间窗口（冷却期）内持续遇到限流或连接被拒，则逐步回退并发（每次减 1），直到保底单线程（1）。
 func (ac *AdaptiveConcurrency) OnRateLimit() int {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()

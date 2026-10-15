@@ -65,6 +65,7 @@ export class Source {
      * 分片长度通常不在清单里（除非用了 BYTERANGE），因此它多半要靠逐分片询问才能得到。
      */
     "totalBytes"?: number;
+    "directTransfer"?: boolean;
 
     /** Creates a new Source instance. */
     constructor($$source: Partial<Source> = {}) {

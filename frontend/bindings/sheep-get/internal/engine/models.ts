@@ -341,6 +341,7 @@ export class HLSProbe {
      * （Ticket 07：多清晰度在进入信息对话框前选择）。有它时建任务直接采用，不再重新探测。
      */
     "media"?: hls$0.Source | null;
+    "directTransfer"?: boolean;
 
     /** Creates a new HLSProbe instance. */
     constructor($$source: Partial<HLSProbe> = {}) {
@@ -384,6 +385,7 @@ export class ProbeResult {
     "etag": string;
     "lastModified": string;
     "contentType": string;
+    "directTransfer"?: boolean;
     "duplicateTask"?: task$0.Task | null;
 
     /**
@@ -422,14 +424,14 @@ export class ProbeResult {
      * Creates a new ProbeResult instance from a string or object.
      */
     static createFrom($$source: any = {}): ProbeResult {
-        const $$createField8_0 = $$createType1;
-        const $$createField9_0 = $$createType15;
+        const $$createField9_0 = $$createType1;
+        const $$createField10_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
-            $$parsedSource["duplicateTask"] = $$createField8_0($$parsedSource["duplicateTask"]);
+            $$parsedSource["duplicateTask"] = $$createField9_0($$parsedSource["duplicateTask"]);
         }
         if ("hls" in $$parsedSource) {
-            $$parsedSource["hls"] = $$createField9_0($$parsedSource["hls"]);
+            $$parsedSource["hls"] = $$createField10_0($$parsedSource["hls"]);
         }
         return new ProbeResult($$parsedSource as Partial<ProbeResult>);
     }

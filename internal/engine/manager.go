@@ -368,6 +368,9 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 			return probe, hlsErr
 		}
 		probe.HLS = hlsProbe
+		if hlsProbe.DirectTransfer {
+			probe.DirectTransfer = true
+		}
 		// 清单自己的字节数不是这次下载的大小——真正的分片要等清晰度选定后才知道。
 		probe.TotalBytes = -1
 		probe.Filename = HLSOutputName(urlStr, probe.Filename)
@@ -1236,6 +1239,9 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 	if probe.HLS != nil && probe.HLS.Media != nil {
 		t.Media = probe.HLS.Media
 		t.TotalBytes = probe.HLS.Media.TotalBytes
+		if probe.HLS.Media.DirectTransfer || probe.HLS.DirectTransfer {
+			t.DirectTransfer = true
+		}
 		// 清单声明的时长是下载前就能拿到的已知信息，界面据此展示；成品出来之后
 		// 不再覆盖它——同一个数值来回变只会让人以为哪里错了。
 		t.Duration = probe.HLS.Media.Duration

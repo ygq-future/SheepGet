@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"sheep-get/internal/atomicfile"
 	"sheep-get/internal/task"
 )
 
@@ -160,7 +161,7 @@ func URLFilename(rawURL string) string {
 // moveFile 把 srcPath 移动到 dstPath：同一文件系统内用 rename，rename 失败时退化为跨设备复制。
 // 失败时保留 srcPath，由调用方决定是报告错误还是丢弃已有数据；成功时 srcPath 不再存在。
 func moveFile(srcPath, dstPath string) error {
-	if err := os.Rename(srcPath, dstPath); err == nil {
+	if err := atomicfile.Rename(srcPath, dstPath); err == nil {
 		return nil
 	}
 	return safeTransferCrossDevice(srcPath, dstPath)
@@ -204,7 +205,7 @@ func safeTransferCrossDevice(srcPath, dstPath string) error {
 		return fmt.Errorf("close failed: %w", closeErr)
 	}
 
-	if err := os.Rename(transferPath, dstPath); err != nil {
+	if err := atomicfile.Rename(transferPath, dstPath); err != nil {
 		_ = os.Remove(transferPath)
 		return fmt.Errorf("rename to target destination failed: %w", err)
 	}

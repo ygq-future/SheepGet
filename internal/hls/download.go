@@ -109,12 +109,17 @@ func (in *Inputs) Paths(dir string) (initPaths, segmentPaths []string) {
 type ProgressFunc func(downloaded, total int64, completed, totalCount int, done []bool)
 
 // Fetcher 负责抓取清单、密钥与分片，始终带着任务的请求上下文（Referer/Cookie 等）。
+// 当配置了 fallbackClient（例如全局处于代理模式时备用的直连客户端）且主客户端因网络/代理故障请求失败时，
+// 自动尝试通过 fallbackClient 重试，一旦连通即切换主客户端并触发 onFallback 回调。
 type Fetcher struct {
-	client  *http.Client
-	creds   credentials.RequestCredentials
-	userAgt string
-	mu      sync.Mutex
-	keys    map[string][]byte
+	client         *http.Client
+	fallbackClient *http.Client
+	onFallback     func()
+	usedFallback   bool
+	creds          credentials.RequestCredentials
+	userAgt        string
+	mu             sync.Mutex
+	keys           map[string][]byte
 }
 
 // NewFetcher 构造一个属于某次任务的抓取器。creds 是这次请求的上下文（Referer/Cookie 等），
@@ -129,6 +134,86 @@ func NewFetcher(client *http.Client, creds credentials.RequestCredentials) *Fetc
 		userAgt: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 		keys:    make(map[string][]byte),
 	}
+}
+
+// WithFallback 配置主客户端请求失败时的备用客户端（如直连客户端）及切换成功回调。
+func (f *Fetcher) WithFallback(fallback *http.Client, onFallback func()) *Fetcher {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fallbackClient = fallback
+	f.onFallback = onFallback
+	return f
+}
+
+// UsedFallback 报告该抓取器在运行期间是否因主客户端故障切换到了备用直连客户端。
+func (f *Fetcher) UsedFallback() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.usedFallback
+}
+
+func (f *Fetcher) activeClient() *http.Client {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.client
+}
+
+func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Request, error)) (*http.Response, error) {
+	req, err := buildReq()
+	if err != nil {
+		return nil, err
+	}
+	client := f.activeClient()
+	resp, err := client.Do(req)
+	if err == nil && resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusGatewayTimeout {
+		return resp, nil
+	}
+
+	f.mu.Lock()
+	fb := f.fallbackClient
+	onFb := f.onFallback
+	f.mu.Unlock()
+
+	if fb == nil || ctx.Err() != nil {
+		return resp, err
+	}
+
+	// 记录主客户端返回的网关错误（如 502/504），并关闭旧响应体，以便回退失败时不会返回 (nil, nil) 或已关闭的 resp。
+	primaryErr := err
+	if primaryErr == nil && resp != nil {
+		primaryErr = &statusError{code: resp.StatusCode, status: resp.Status}
+	}
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	fbReq, fbReqErr := buildReq()
+	if fbReqErr != nil {
+		return nil, primaryErr
+	}
+	fbResp, fbErr := fb.Do(fbReq)
+	if fbErr != nil {
+		return nil, primaryErr
+	}
+	if fbResp.StatusCode >= 400 {
+		if err != nil {
+			_ = fbResp.Body.Close()
+			return nil, err
+		}
+		return fbResp, nil
+	}
+
+	f.mu.Lock()
+	if f.fallbackClient != nil {
+		f.client = f.fallbackClient
+		f.fallbackClient = nil
+		f.usedFallback = true
+	}
+	f.mu.Unlock()
+	if onFb != nil {
+		onFb()
+	}
+	return fbResp, nil
 }
 
 // GetText 抓取一份文本清单（主清单或媒体清单）。
@@ -380,6 +465,16 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	body := watch.Reader(resp.Body)
 
 	partPath := dest + ".part"
+	// 若上一次尝试已经完整下载并校验通过、仅在最终 Rename 时被外部句柄短暂阻塞，
+	// 且该 .part 文件长度与期望完全一致，可直接尝试完成原子改名，免去重复网络传输。
+	if seg.RangeLength > 0 {
+		if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == seg.RangeLength {
+			if err := atomicfile.Rename(partPath, dest); err == nil {
+				return seg.RangeLength, nil
+			}
+		}
+	}
+
 	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return 0, err
@@ -398,8 +493,8 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 		_ = os.Remove(partPath)
 		return 0, fmt.Errorf("分片长度不符：期望 %d 字节，实际 %d 字节", seg.RangeLength, written)
 	}
-	if err := os.Rename(partPath, dest); err != nil {
-		_ = os.Remove(partPath)
+	if err := atomicfile.Rename(partPath, dest); err != nil {
+		// 数据已完整落盘并通过校验，若重命名仍因极端占用失败，保留 .part 供下次重试直接恢复或覆写，不主动自毁。
 		return 0, err
 	}
 	return written, nil
@@ -464,15 +559,16 @@ func (f *Fetcher) fetchKey(ctx context.Context, uri string) ([]byte, error) {
 
 // do 发起一次带任务请求上下文的 GET；length 大于 0 时按范围取。
 func (f *Fetcher) do(ctx context.Context, rawURL string, start, length int64) (*http.Response, error) {
-	req, err := f.newRequest(ctx, http.MethodGet, rawURL)
-	if err != nil {
-		return nil, err
-	}
-	if length > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, start+length-1))
-	}
-
-	resp, err := f.client.Do(req)
+	resp, err := f.doWithFallback(ctx, func() (*http.Request, error) {
+		req, rErr := f.newRequest(ctx, http.MethodGet, rawURL)
+		if rErr != nil {
+			return nil, rErr
+		}
+		if length > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, start+length-1))
+		}
+		return req, nil
+	})
 	if err != nil {
 		// 请求错误里嵌着完整地址（含令牌类查询参数），脱敏后再往外传：它会进日志，也会写进任务错误信息。
 		return nil, logging.SafeError(err)

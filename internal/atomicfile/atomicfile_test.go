@@ -104,3 +104,28 @@ func entryNames(entries []os.DirEntry) []string {
 	}
 	return names
 }
+
+func TestRenameReplacesTargetAndFailsFastOnDirectory(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.part")
+	dst := filepath.Join(dir, "dst.bin")
+	if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to write src: %v", err)
+	}
+	if err := atomicfile.Rename(src, dst); err != nil {
+		t.Fatalf("Rename failed: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("unexpected dst content: %q, err=%v", string(got), err)
+	}
+
+	// Target is a directory: should fail immediately
+	src2 := filepath.Join(dir, "src2.part")
+	dirTarget := filepath.Join(dir, "subdir")
+	_ = os.WriteFile(src2, []byte("data"), 0644)
+	_ = os.Mkdir(dirTarget, 0755)
+	if err := atomicfile.Rename(src2, dirTarget); err == nil {
+		t.Fatalf("expected error when renaming onto a directory")
+	}
+}

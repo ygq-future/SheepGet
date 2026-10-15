@@ -54,17 +54,37 @@ type HLSProbe struct {
 	Options []hls.VariantOption `json:"options,omitempty"`
 	// Media 是登记前已经选定的来源。为空表示清晰度还没选——多清晰度时界面先选再进来
 	// （Ticket 07：多清晰度在进入信息对话框前选择）。有它时建任务直接采用，不再重新探测。
-	Media *hls.Source `json:"media,omitempty"`
+	Media          *hls.Source `json:"media,omitempty"`
+	DirectTransfer bool        `json:"directTransfer,omitempty"`
 }
 
-// newHLSFetcher 构造一个属于某次探测或某次任务的 HLS 抓取器。它复用下载器的 HTTP 客户端，
-// 因此代理设置对清单与分片同样生效。
+// newHLSFetcher 构造一个属于某次探测的 HLS 抓取器。它复用下载器的 HTTP 客户端，
+// 当下载器配置了代理时同时挂载直连备用客户端，代理不通时自动切换直连。
 func (m *Manager) newHLSFetcher(creds credentials.RequestCredentials) *hls.Fetcher {
+	return m.newHLSFetcherForTask(nil, creds)
+}
+
+// newHLSFetcherForTask 构造属于指定任务（或探测）的 HLS 抓取器：
+// 若任务已标记 DirectTransfer，直接使用直连客户端；否则使用当前配置的客户端并挂载直连回退。
+func (m *Manager) newHLSFetcherForTask(t *task.Task, creds credentials.RequestCredentials) *hls.Fetcher {
 	client := http.DefaultClient
+	var fallback *http.Client
 	if m.downloader != nil {
-		client = m.downloader.GetClientForDownload()
+		client = m.downloader.GetClientForTask(t)
+		if t == nil || !t.DirectTransfer {
+			fallback = m.downloader.NewDirectFallbackClient()
+		}
 	}
-	return hls.NewFetcher(client, creds)
+	f := hls.NewFetcher(client, creds)
+	if fallback != nil {
+		f.WithFallback(fallback, func() {
+			if t != nil {
+				t.DirectTransfer = true
+			}
+			m.log().Info("hls fetcher switched to direct connection fallback")
+		})
+	}
+	return f
 }
 
 // looksLikePlaylist 判断这次探测拿到的响应是不是 HLS 清单。
@@ -88,15 +108,17 @@ func looksLikePlaylist(rawURL, contentType string) bool {
 // inspectPlaylist 在探测阶段读一次清单，给出可选清晰度。它只读清单本身：
 // 分片长度要逐个问服务器，那要等清晰度选定之后才算得起（见 ResolveHLS）。
 func (m *Manager) inspectPlaylist(ctx context.Context, playlistURL string, creds credentials.RequestCredentials) (*HLSProbe, error) {
-	res, err := hls.Inspect(ctx, m.newHLSFetcher(creds), playlistURL)
+	f := m.newHLSFetcher(creds)
+	res, err := hls.Inspect(ctx, f, playlistURL)
 	if err != nil {
 		return nil, err
 	}
 	return &HLSProbe{
-		IsHLS:       true,
-		PlaylistURL: playlistURL,
-		Variants:    res.Variants,
-		Options:     hls.VariantOptions(res.Variants),
+		IsHLS:          true,
+		PlaylistURL:    playlistURL,
+		Variants:       res.Variants,
+		Options:        hls.VariantOptions(res.Variants),
+		DirectTransfer: f.UsedFallback(),
 	}, nil
 }
 
@@ -148,6 +170,9 @@ func (m *Manager) resolveHLS(ctx context.Context, playlistURL, variantURI string
 	if size := m.probeSelectionSize(ctx, f, sel); size > 0 {
 		sel.Source.TotalBytes = size
 	}
+	if f.UsedFallback() {
+		sel.Source.DirectTransfer = true
+	}
 	return sel.Source, nil
 }
 
@@ -164,6 +189,9 @@ func ApplyHLSSelection(probe *ProbeResult, src *hls.Source) {
 	}
 	probe.HLS.Media = src
 	probe.TotalBytes = src.TotalBytes
+	if src.DirectTransfer || probe.HLS.DirectTransfer {
+		probe.DirectTransfer = true
+	}
 }
 
 // pickVariant 按地址在候选里定位清晰度。没有指定地址时只接受「没有选择可做」的情形：
@@ -277,7 +305,7 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, sink Transfe
 		return nil, errors.New("任务缺少 HLS 来源")
 	}
 	dir := m.segmentDir(t)
-	f := m.newHLSFetcher(t.RequestHeaders.Clone())
+	f := m.newHLSFetcherForTask(t, t.RequestHeaders.Clone())
 
 	sel, err := hls.Resolve(ctx, f, t.Media.PlaylistURL, t.Media.Variant, t.Media.AudioURI)
 	if err != nil {

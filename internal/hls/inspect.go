@@ -31,7 +31,8 @@ type Source struct {
 	Segments int     `json:"segments,omitempty"`
 	// TotalBytes 是这次下载的总大小；-1 表示还没确定，界面按未知显示。
 	// 分片长度通常不在清单里（除非用了 BYTERANGE），因此它多半要靠逐分片询问才能得到。
-	TotalBytes int64 `json:"totalBytes,omitempty"`
+	TotalBytes     int64 `json:"totalBytes,omitempty"`
+	DirectTransfer bool  `json:"directTransfer,omitempty"`
 }
 
 // Selection 是选定一个清晰度之后的完整事实：要落进任务的部分，加上本次探测顺手取回的
@@ -215,11 +216,9 @@ func (f *Fetcher) headContentLength(ctx context.Context, seg Segment) (int64, er
 	// ProbeSize 拿不到全部分片的长度时整体按未知大小显示（宁可未知，不挂死）。
 	ctx, cancel := withRequestTimeout(ctx)
 	defer cancel()
-	req, err := f.newRequest(ctx, http.MethodHead, seg.URI)
-	if err != nil {
-		return 0, err
-	}
-	resp, err := f.client.Do(req)
+	resp, err := f.doWithFallback(ctx, func() (*http.Request, error) {
+		return f.newRequest(ctx, http.MethodHead, seg.URI)
+	})
 	if err != nil {
 		return 0, err
 	}

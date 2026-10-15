@@ -273,15 +273,31 @@ func (d *HTTPDownloader) GetClientForDownload() *http.Client {
 // If the task is marked for direct transfer (e.g. fallback when proxy failed during probe), it uses a direct connection.
 func (d *HTTPDownloader) GetClientForTask(t *task.Task) *http.Client {
 	if t != nil && t.DirectTransfer {
-		tr, err := createHTTPTransport("direct", "")
-		if err == nil {
-			return &http.Client{
-				Transport: tr,
-				Timeout:   0,
-			}
+		if directClient := d.newDirectClient(); directClient != nil {
+			return directClient
 		}
 	}
 	return d.GetClientForDownload()
+}
+
+// NewDirectFallbackClient 当下载器当前配置了代理且未使用测试注入的固定 customClient 时，
+// 返回一个绕过代理的直连 *http.Client，供传输中途或 HLS 代理故障逃生使用。
+func (d *HTTPDownloader) NewDirectFallbackClient() *http.Client {
+	if d == nil || d.customClient || !d.isProxyConfigured() {
+		return nil
+	}
+	return d.newDirectClient()
+}
+
+func (d *HTTPDownloader) newDirectClient() *http.Client {
+	tr, err := createHTTPTransport("direct", "")
+	if err != nil {
+		return nil
+	}
+	return &http.Client{
+		Transport: tr,
+		Timeout:   0,
+	}
 }
 
 func (d *HTTPDownloader) isProxyConfigured() bool {
@@ -294,6 +310,43 @@ func (d *HTTPDownloader) isProxyConfigured() bool {
 		return isSystemProxyActive()
 	}
 	return false
+}
+
+// RefreshFinalURL 使用任务的原始入口 t.URL 重新探测并刷新过期的重定向地址 FinalURL。
+// 仅当新探测结果与原任务属于同一份文件（大小、断点支持及 ETag/Last-Modified 校验一致）时才采纳新地址，
+// 避免把错误页面或变更后的文件拼进已有分片。
+func (d *HTTPDownloader) RefreshFinalURL(ctx context.Context, client *http.Client, t *task.Task) (string, bool) {
+	if t == nil || t.URL == "" {
+		return "", false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	info, err := d.probeWithClient(probeCtx, client, t.URL, t.RequestHeaders)
+	if err != nil && !t.DirectTransfer {
+		if directClient := d.NewDirectFallbackClient(); directClient != nil {
+			if directInfo, directErr := d.probeWithClient(probeCtx, directClient, t.URL, t.RequestHeaders); directErr == nil {
+				info = directInfo
+				err = nil
+			}
+		}
+	}
+	if err != nil || info == nil || info.FinalURL == "" {
+		return "", false
+	}
+	if t.TotalBytes > 0 && info.TotalBytes > 0 && t.TotalBytes != info.TotalBytes {
+		return "", false
+	}
+	if t.Downloaded > 0 && !info.Resumable {
+		return "", false
+	}
+	if t.ETag != "" && info.ETag != "" && t.ETag != info.ETag {
+		return "", false
+	}
+	if t.ETag == "" && t.LastModified != "" && info.LastModified != "" && t.LastModified != info.LastModified {
+		return "", false
+	}
+	return info.FinalURL, true
 }
 
 func createHTTPTransport(proxyMode, customAddr string) (*http.Transport, error) {
@@ -596,98 +649,168 @@ func publishProgress(t *task.Task, downloaded int64, sink TransferSink) {
 }
 
 func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, sink TransferSink, client *http.Client) error {
-
-	reqCtx, watch := stallwatch.New(ctx, d.stallTimeoutOrDefault())
-	defer watch.Stop()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.EffectiveURL(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", UserAgentChrome)
-	req.Header.Set("Accept", "*/*")
-	applyRequestHeaders(req, t.RequestHeaders)
-	req.Close = true
-
-	// Single stream non-resumable: always start fresh
-	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open part file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
 	logger := d.log()
 	started := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		return watch.Err(ctx, logging.SafeError(err))
-	}
-	defer func() { _ = resp.Body.Close() }()
-	watch.Touch()
 
-	if resp.Request != nil && resp.Request.URL != nil {
-		if final := resp.Request.URL.String(); final != "" && t.FinalURL == "" {
-			t.FinalURL = final
-		}
-	}
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("server returned error status: %s", resp.Status)
-	}
-	var downloaded int64
-	// 动态回填响应头大小与续传支持：如果任务之前未探出大小（totalBytes <= 0），从真实响应头中提取
-	if t.TotalBytes <= 0 {
-		cl := resp.ContentLength
-		if cl <= 0 && resp.Header.Get("Content-Length") != "" {
-			if parsed, pErr := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64); pErr == nil && parsed > 0 {
-				cl = parsed
-			}
-		}
-		if cl > 0 {
-			t.TotalBytes = cl
-			if resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == http.StatusPartialContent {
-				t.Resumable = true
-			}
-			logger.Info("resolved total size from single stream response header", "task", t.ID, "totalBytes", t.TotalBytes, "resumable", t.Resumable)
-			publishProgress(t, downloaded, sink)
-		}
-	}
+	for attempt := range 2 {
+		reqCtx, watch := stallwatch.New(ctx, d.stallTimeoutOrDefault())
 
-	body := watch.Reader(resp.Body)
-	buf := make([]byte, 64*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		doSingleReq := func(hc *http.Client, targetURL string) (*http.Response, error) {
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("User-Agent", UserAgentChrome)
+			req.Header.Set("Accept", "*/*")
+			applyRequestHeaders(req, t.RequestHeaders)
+			req.Close = true
+			return hc.Do(req)
 		}
 
-		n, rErr := body.Read(buf)
-		if n > 0 {
-			if _, wErr := file.Write(buf[:n]); wErr != nil {
-				return wErr
-			}
-			downloaded += int64(n)
-			publishProgress(t, downloaded, sink)
+		// Single stream non-resumable: always start fresh
+		file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			watch.Stop()
+			return fmt.Errorf("failed to open part file: %w", err)
 		}
-		if rErr != nil {
-			if errors.Is(rErr, io.EOF) {
+
+		resp, err := doSingleReq(client, t.EffectiveURL())
+		if (err != nil || (resp != nil && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout))) && !t.DirectTransfer && ctx.Err() == nil {
+			if directClient := d.NewDirectFallbackClient(); directClient != nil {
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				if directResp, directErr := doSingleReq(directClient, t.EffectiveURL()); directErr == nil && directResp.StatusCode < 400 {
+					t.DirectTransfer = true
+					client = directClient
+					resp = directResp
+					err = nil
+					logger.Info("single stream switched to direct connection fallback", "task", t.ID)
+				}
+			}
+		}
+		if err == nil && resp != nil &&
+			(resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone) &&
+			t.FinalURL != "" && t.FinalURL != t.URL && ctx.Err() == nil {
+			if refreshedURL, ok := d.RefreshFinalURL(ctx, client, t); ok && refreshedURL != t.FinalURL {
+				_ = resp.Body.Close()
+				t.FinalURL = refreshedURL
+				logger.Info("single stream refreshed expired FinalURL from origin", "task", t.ID)
+				resp, err = doSingleReq(client, t.EffectiveURL())
+			}
+		}
+		if err != nil {
+			_ = file.Close()
+			mappedErr := watch.Err(ctx, logging.SafeError(err))
+			watch.Stop()
+			return mappedErr
+		}
+		watch.Touch()
+
+		if resp.Request != nil && resp.Request.URL != nil {
+			if final := resp.Request.URL.String(); final != "" && t.FinalURL == "" {
+				t.FinalURL = final
+			}
+		}
+		if resp.StatusCode >= 400 {
+			_ = resp.Body.Close()
+			_ = file.Close()
+			watch.Stop()
+			return fmt.Errorf("server returned error status: %s", resp.Status)
+		}
+		var downloaded int64
+		// 动态回填响应头大小与续传支持：如果任务之前未探出大小（totalBytes <= 0），从真实响应头中提取
+		if t.TotalBytes <= 0 {
+			cl := resp.ContentLength
+			if cl <= 0 && resp.Header.Get("Content-Length") != "" {
+				if parsed, pErr := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64); pErr == nil && parsed > 0 {
+					cl = parsed
+				}
+			}
+			if cl > 0 {
+				t.TotalBytes = cl
+				if resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == http.StatusPartialContent {
+					t.Resumable = true
+				}
+				logger.Info("resolved total size from single stream response header", "task", t.ID, "totalBytes", t.TotalBytes, "resumable", t.Resumable)
+				publishProgress(t, downloaded, sink)
+			}
+		}
+
+		body := watch.Reader(resp.Body)
+		buf := make([]byte, 64*1024)
+		var readErr error
+		for {
+			select {
+			case <-ctx.Done():
+				_ = resp.Body.Close()
+				_ = file.Close()
+				watch.Stop()
+				return ctx.Err()
+			default:
+			}
+
+			n, rErr := body.Read(buf)
+			if n > 0 {
+				if _, wErr := file.Write(buf[:n]); wErr != nil {
+					_ = resp.Body.Close()
+					_ = file.Close()
+					watch.Stop()
+					return wErr
+				}
+				downloaded += int64(n)
+				publishProgress(t, downloaded, sink)
+			}
+			if rErr != nil {
+				if !errors.Is(rErr, io.EOF) {
+					readErr = watch.Err(ctx, rErr)
+				}
 				break
 			}
-			// 单流没有断点可续，停摆只归类不重试：交给任务层按失败处理。
-			return fmt.Errorf("single stream aborted at %d bytes: %w", downloaded, watch.Err(ctx, rErr))
 		}
-	}
 
-	_ = file.Close()
-	if t.TotalBytes <= 0 && downloaded > 0 {
-		t.TotalBytes = downloaded
+		_ = resp.Body.Close()
+		_ = file.Close()
+		watch.Stop()
+
+		if readErr != nil {
+			// 若单流在传输中途因代理断流中断，且存在可用的直连通道，切换为直连恢复传输
+			if attempt == 0 && !t.DirectTransfer && ctx.Err() == nil {
+				if directClient := d.NewDirectFallbackClient(); directClient != nil {
+					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					_, pErr := d.probeWithClient(probeCtx, directClient, t.EffectiveURL(), t.RequestHeaders)
+					cancel()
+					if pErr == nil {
+						t.DirectTransfer = true
+						client = directClient
+						logger.Info("single stream mid-transfer proxy failed, retrying via direct connection", "task", t.ID)
+						if t.Resumable && t.TotalBytes > 0 && downloaded > 0 {
+							t.Chunks = []task.Chunk{{
+								Index:      0,
+								Start:      0,
+								End:        t.TotalBytes - 1,
+								Downloaded: downloaded,
+							}}
+							return d.downloadChunks(ctx, t, partPath, destPath, sink, directClient)
+						}
+						continue
+					}
+				}
+			}
+			return fmt.Errorf("single stream aborted at %d bytes: %w", downloaded, readErr)
+		}
+
+		if t.TotalBytes <= 0 && downloaded > 0 {
+			t.TotalBytes = downloaded
+		}
+		if t.LastModified == "" && resp.Header.Get("Last-Modified") != "" {
+			t.LastModified = resp.Header.Get("Last-Modified")
+		}
+		logger.Info("single stream transfer done",
+			"task", t.ID, "url", logging.SafeURL(t.URL), "bytes", downloaded, "ms", time.Since(started).Milliseconds())
+		return d.commitCompletedFile(partPath, destPath, t)
 	}
-	if t.LastModified == "" && resp.Header.Get("Last-Modified") != "" {
-		t.LastModified = resp.Header.Get("Last-Modified")
-	}
-	logger.Info("single stream transfer done",
-		"task", t.ID, "url", logging.SafeURL(t.URL), "bytes", downloaded, "ms", time.Since(started).Milliseconds())
-	return d.commitCompletedFile(partPath, destPath, t)
+	return errors.New("single stream exhausted attempts")
 }
 
 func (d *HTTPDownloader) commitCompletedFile(partPath, destPath string, t *task.Task) error {
@@ -723,16 +846,20 @@ type chunkTracker struct {
 }
 
 type chunkCoordinator struct {
-	mu         sync.Mutex
-	t          *task.Task
-	file       *os.File
-	fileMu     sync.Mutex
-	totalDown  int64
-	trackers   map[int]*chunkTracker
-	sink       TransferSink
-	downloader *HTTPDownloader
-	client     *http.Client
-	adaptive   *AdaptiveConcurrency
+	mu                  sync.Mutex
+	t                   *task.Task
+	file                *os.File
+	fileMu              sync.Mutex
+	totalDown           int64
+	trackers            map[int]*chunkTracker
+	sink                TransferSink
+	downloader          *HTTPDownloader
+	client              *http.Client
+	adaptive            *AdaptiveConcurrency
+	hasSucceededOnce    atomic.Bool
+	consecutiveConnFail atomic.Int32
+	refreshMu           sync.Mutex
+	lastURLRefresh      time.Time
 	// requests 统计这次传输真正发出去的 HTTP 请求数（含重试与拆分出来的子块）。
 	// 它是「慢」与「碎」的度量：同样的字节数下请求数暴涨，说明是在跟一个不配合的服务器死磕。
 	requests atomic.Int64
@@ -743,6 +870,98 @@ type chunkCoordinator struct {
 // 取自同一时刻，否则交出去的就是一份内部互相矛盾的分片列表。
 func (coord *chunkCoordinator) publishLocked(downloaded int64) {
 	publishProgress(coord.t, downloaded, coord.sink)
+}
+func (coord *chunkCoordinator) resetTrackersLocked() {
+	for _, trk := range coord.trackers {
+		if trk != nil {
+			trk.retries = 0
+			trk.backoffUntil = time.Time{}
+		}
+	}
+}
+
+// trySwitchToDirect 在传输中途代理失效（连续连接失败或网关 502/504）时，
+// 用直连探针验证目标服务器是否可达；若直连可达，则将当前任务平滑切换为直连传输，保留全部已下载分片。
+func (coord *chunkCoordinator) trySwitchToDirect(ctx context.Context) bool {
+	if coord.downloader == nil || ctx.Err() != nil {
+		return false
+	}
+	coord.mu.Lock()
+	alreadyDirect := coord.t.DirectTransfer
+	targetURL := coord.t.EffectiveURL()
+	creds := coord.t.RequestHeaders
+	coord.mu.Unlock()
+
+	if alreadyDirect {
+		return false
+	}
+	directClient := coord.downloader.NewDirectFallbackClient()
+	if directClient == nil {
+		return false
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if _, err := coord.downloader.probeWithClient(probeCtx, directClient, targetURL, creds); err != nil {
+		return false
+	}
+
+	coord.mu.Lock()
+	if !coord.t.DirectTransfer {
+		coord.t.DirectTransfer = true
+		coord.client = directClient
+		coord.consecutiveConnFail.Store(0)
+		coord.resetTrackersLocked()
+		coord.downloader.log().Info("chunked transfer switched to direct connection fallback mid-transfer",
+			"task", coord.t.ID, "url", logging.SafeURL(coord.t.URL))
+	}
+	coord.mu.Unlock()
+	return true
+}
+
+// tryRefreshExpiredFinalURL 当任务使用的是 302 重定向后的临时签名地址（FinalURL != URL），
+// 且传输或续传中遭遇 401/403/410 等鉴权过期状态码时，尝试回源请求原始 URL 获取新签名。
+func (coord *chunkCoordinator) tryRefreshExpiredFinalURL(ctx context.Context, failedURL string) bool {
+	if coord.downloader == nil || ctx.Err() != nil {
+		return false
+	}
+	coord.mu.Lock()
+	origURL := coord.t.URL
+	currFinal := coord.t.FinalURL
+	client := coord.client
+	coord.mu.Unlock()
+
+	if origURL == "" || currFinal == "" || origURL == currFinal {
+		return false
+	}
+
+	coord.refreshMu.Lock()
+	defer coord.refreshMu.Unlock()
+
+	// 若另一个并发协程刚刚已经完成了刷新，直接复用新地址重试即可。
+	coord.mu.Lock()
+	latestFinal := coord.t.FinalURL
+	coord.mu.Unlock()
+	if latestFinal != "" && latestFinal != failedURL {
+		return true
+	}
+	if time.Since(coord.lastURLRefresh) < 2*time.Second {
+		return false
+	}
+	coord.lastURLRefresh = time.Now()
+
+	newFinal, ok := coord.downloader.RefreshFinalURL(ctx, client, coord.t)
+	if !ok || newFinal == "" || newFinal == failedURL {
+		return false
+	}
+
+	coord.mu.Lock()
+	coord.t.FinalURL = newFinal
+	coord.resetTrackersLocked()
+	coord.mu.Unlock()
+	coord.downloader.log().Info("refreshed expired FinalURL from origin URL",
+		"task", coord.t.ID, "url", logging.SafeURL(origURL))
+	return true
 }
 
 func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, client *http.Client, sink TransferSink) *chunkCoordinator {
@@ -1066,6 +1285,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		requestStart := time.Now()
 		chunkErr := coord.downloadChunkStream(ctx, chunkIdx, chunkStart, chunkEnd)
 		if chunkErr == nil {
+			coord.consecutiveConnFail.Store(0)
 			coord.adaptive.OnSuccess()
 			coord.mu.Lock()
 			if trk := coord.trackers[chunkIdx]; trk != nil {
@@ -1088,7 +1308,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			return chunkErr
 		}
 
-		// 服务端限流（503 或 429）：触发自适应并发收缩
+		// 服务端限流（503/429 或并发超限引起的 403）：触发自适应并发收缩
 		if IsRateLimitError(chunkErr) {
 			newLimit := coord.adaptive.OnRateLimit()
 			logger.Warn("chunk rate limited, scaling down concurrency",
@@ -1144,9 +1364,9 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			continue
 		}
 
-		// 瞬态网络故障、看门狗停摆（Stall）或连接断开：
-		// 1. 冻结当前并发窗口，防止继续向上扩容
-		coord.adaptive.FreezeOnFailure()
+		// 瞬态网络故障、看门狗停摆（Stall）或连接被重置（RST/EOF）：
+		// 1. 触发自适应并发故障回退（首次冻结窗口，冷却期内持续发生连接风暴则逐步下调并发上限）
+		newLimit := coord.adaptive.OnRateLimit()
 
 		coord.mu.Lock()
 		trk := coord.trackers[chunkIdx]
@@ -1162,15 +1382,30 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		activeWorkers := coord.countActiveWorkersLocked()
 		coord.mu.Unlock()
 
+		// 2. 若本轮请求 0 字节推进且连续出现连接故障，检查是否为代理中途失效并尝试切换直连逃生
+		if gained == 0 {
+			if coord.consecutiveConnFail.Add(1) >= 2 {
+				if coord.trySwitchToDirect(ctx) {
+					continue
+				}
+			}
+		} else {
+			coord.consecutiveConnFail.Store(0)
+		}
+
 		logger.Warn("chunk request failed, isolating or retrying",
 			"chunk", chunkIdx,
 			"retries", retries,
 			"activeWorkers", activeWorkers,
+			"newLimit", newLimit,
 			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
 			"ms", time.Since(requestStart).Milliseconds(),
 			"error", logging.SafeError(chunkErr).Error())
 
 		if retries >= maxChunkRetries {
+			if coord.trySwitchToDirect(ctx) {
+				continue
+			}
 			coord.mu.Lock()
 			coord.lastErr = fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, retries, chunkErr)
 			coord.mu.Unlock()
@@ -1179,9 +1414,9 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			}
 		}
 
-		// 若还有其他活跃 worker 在全速下载，触发单线故障隔离：
-		// 释放当前分片，其余健康线程保持全速拉流，被隔离分块在退避结束后由空闲线程替补
-		if activeWorkers > 1 {
+		// 若还有其他活跃 worker 在下载（或当前活跃数已超出自适应缩容后的上限），
+		// 释放当前分片退出协程：既实现单线故障隔离，又配合并发缩容让多余线程及时让位
+		if activeWorkers > 1 || activeWorkers > newLimit {
 			coord.mu.Lock()
 			if trk != nil {
 				trk.claimed = false
@@ -1211,23 +1446,31 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	reqCtx, watch := stallwatch.New(ctx, coord.downloader.stallTimeoutOrDefault())
 	defer watch.Stop()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, coord.t.EffectiveURL(), nil)
+	coord.mu.Lock()
+	targetURL := coord.t.EffectiveURL()
+	etag := coord.t.ETag
+	lastMod := coord.t.LastModified
+	creds := coord.t.RequestHeaders
+	client := coord.client
+	coord.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 	req.Header.Set("User-Agent", UserAgentChrome)
 	req.Header.Set("Accept", "*/*")
-	applyRequestHeaders(req, coord.t.RequestHeaders)
+	applyRequestHeaders(req, creds)
 	req.Close = true
 
-	if coord.t.ETag != "" {
-		req.Header.Set("If-Match", coord.t.ETag)
-	} else if coord.t.LastModified != "" {
-		req.Header.Set("If-Unmodified-Since", coord.t.LastModified)
+	if etag != "" {
+		req.Header.Set("If-Match", etag)
+	} else if lastMod != "" {
+		req.Header.Set("If-Unmodified-Since", lastMod)
 	}
 
-	resp, err := coord.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		// *url.Error 会带上完整地址（含查询串里的令牌）；这里统一脱敏，日志与任务错误信息都不落明文。
 		return watch.Err(ctx, logging.SafeError(err))
@@ -1236,7 +1479,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	watch.Touch()
 
 	if resp.Request != nil && resp.Request.URL != nil {
-		if final := resp.Request.URL.String(); final != "" && coord.t.FinalURL == "" {
+		if final := resp.Request.URL.String(); final != "" {
 			coord.mu.Lock()
 			if coord.t.FinalURL == "" {
 				coord.t.FinalURL = final
@@ -1260,16 +1503,33 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 		if resp.StatusCode == http.StatusOK {
 			return fmt.Errorf("%w: server returned 200 OK instead of partial content", ErrRangeNotSupported)
 		}
+		// P0-3: 若使用的是 302 重定向后的临时地址（FinalURL != URL），当遭遇 401/403/410 等签名过期状态码时，
+		// 先尝试回源原始 URL 刷新签名地址；若刷新成功，返回普通可重试错误以立即用新 FinalURL 续传。
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone) &&
+			coord.tryRefreshExpiredFinalURL(ctx, targetURL) {
+			return fmt.Errorf("redirected URL expired (%s), refreshed from origin", resp.Status)
+		}
+		// P0-2: 若已有其他分片成功拉流（证明链接与鉴权本身有效），而后续并发连接收到 403 Forbidden，
+		// 这是典型的 CDN/防火墙按并发连接数拦截（如 Nginx limit_conn 返回 403），按并发限流降级处理而非判死整个任务。
+		if resp.StatusCode == http.StatusForbidden && coord.hasSucceededOnce.Load() {
+			coord.mu.Lock()
+			active := coord.countActiveWorkersLocked()
+			coord.mu.Unlock()
+			if active > 1 {
+				return &RateLimitError{Status: resp.Status}
+			}
+		}
 		if isFatalStatusCode(resp.StatusCode) {
 			return &FatalError{Err: fmt.Errorf("download failed: server returned status %s", resp.Status)}
 		}
 		return fmt.Errorf("download failed: server returned status %s", resp.Status)
 	}
 
-	if coord.t.ETag != "" && resp.Header.Get("ETag") != "" && resp.Header.Get("ETag") != coord.t.ETag {
+	if etag != "" && resp.Header.Get("ETag") != "" && resp.Header.Get("ETag") != etag {
 		return ErrVersionMismatch
 	}
 
+	coord.hasSucceededOnce.Store(true)
 	body := watch.Reader(resp.Body)
 	buf := make([]byte, 64*1024)
 	offset := start
