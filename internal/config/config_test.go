@@ -33,11 +33,11 @@ func TestDefaultSettings(t *testing.T) {
 	if s.General.EnableLogging {
 		t.Errorf("expected EnableLogging false by default, got true")
 	}
-	if s.Download.MaxConcurrentDownloads != 3 {
-		t.Errorf("expected MaxConcurrentDownloads 3, got %d", s.Download.MaxConcurrentDownloads)
+	if s.Download.MaxConcurrentDownloads != 32 {
+		t.Errorf("expected MaxConcurrentDownloads 32, got %d", s.Download.MaxConcurrentDownloads)
 	}
-	if s.Download.DefaultConnectionsPerTask != 8 {
-		t.Errorf("expected DefaultConnectionsPerTask 8, got %d", s.Download.DefaultConnectionsPerTask)
+	if s.Download.DefaultConnectionsPerTask != 32 {
+		t.Errorf("expected DefaultConnectionsPerTask 32, got %d", s.Download.DefaultConnectionsPerTask)
 	}
 	if s.Download.DefaultDirectory != "/downloads" {
 		t.Errorf("expected /downloads, got %s", s.Download.DefaultDirectory)
@@ -143,11 +143,11 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	if validated.Download.DuplicateURLPolicy != DuplicatePolicyAsk {
 		t.Errorf("expected fallback to DuplicatePolicyAsk, got %s", validated.Download.DuplicateURLPolicy)
 	}
-	if validated.Download.MaxConcurrentDownloads != 3 {
-		t.Errorf("expected fallback to 3, got %d", validated.Download.MaxConcurrentDownloads)
+	if validated.Download.MaxConcurrentDownloads != 32 {
+		t.Errorf("expected fallback to 32, got %d", validated.Download.MaxConcurrentDownloads)
 	}
-	if validated.Download.DefaultConnectionsPerTask != 8 {
-		t.Errorf("expected fallback to 8, got %d", validated.Download.DefaultConnectionsPerTask)
+	if validated.Download.DefaultConnectionsPerTask != 32 {
+		t.Errorf("expected fallback to 32, got %d", validated.Download.DefaultConnectionsPerTask)
 	}
 	if validated.Download.DefaultDirectory != "/fallback/dir" {
 		t.Errorf("expected fallback dir, got %s", validated.Download.DefaultDirectory)

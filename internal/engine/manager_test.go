@@ -97,8 +97,12 @@ func TestManager_QueueAndConcurrency(t *testing.T) {
 	// Wait for all 3 tasks to complete
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		task3, err := store.Get(ctx, t3.ID)
-		if err == nil && task3.Status == task.StatusCompleted {
+		t1Task, _ := store.Get(ctx, t1.ID)
+		t2Task, _ := store.Get(ctx, t2.ID)
+		t3Task, _ := store.Get(ctx, t3.ID)
+		if t1Task != nil && t1Task.Status == task.StatusCompleted &&
+			t2Task != nil && t2Task.Status == task.StatusCompleted &&
+			t3Task != nil && t3Task.Status == task.StatusCompleted {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

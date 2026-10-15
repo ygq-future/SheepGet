@@ -1659,7 +1659,7 @@ export function SettingsPanel() {
                       <Slider
                         min={1}
                         max={32}
-                        value={download.maxConcurrentDownloads || 3}
+                        value={download.maxConcurrentDownloads || 32}
                         onChange={(val) => void handleMaxConcurrentChange(val)}
                       />
                     </div>
@@ -1678,7 +1678,7 @@ export function SettingsPanel() {
                       <Slider
                         min={1}
                         max={32}
-                        value={download.defaultConnectionsPerTask || 8}
+                        value={download.defaultConnectionsPerTask || 32}
                         onChange={(val) => void handleDefaultConnChange(val)}
                       />
                     </div>

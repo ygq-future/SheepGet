@@ -43,7 +43,7 @@ export function emptyFileInfoDraft(): FileInfoDraft {
     url: '',
     filename: '',
     directory: '',
-    maxConn: 8,
+    maxConn: 32,
     preDownload: false,
     duplicateDecision: new duplicateModels.Decision(),
     selectedAction: undefined,
@@ -82,7 +82,7 @@ export function draftFromItem(
     url: item.url || '',
     filename: initialName,
     directory,
-    maxConn: item.maxConn || settings?.download?.defaultConnectionsPerTask || 8,
+    maxConn: item.maxConn || settings?.download?.defaultConnectionsPerTask || 32,
     // 提前下载在登记请求时就按「设置默认值或请求覆盖」定好并随项下发，窗口只展示它。
     preDownload: item.preDownload,
     duplicateDecision: decision,

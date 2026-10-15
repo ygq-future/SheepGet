@@ -57,7 +57,10 @@ const (
 	// HTTP chunk connections a download task uses when the user has not set a
 	// per-task override. worker count == chunk count == connection count, so this
 	// one value feeds every layer; no other package should redefine it.
-	DefaultConnectionsPerTask = 8
+	DefaultConnectionsPerTask = 32
+
+	// DefaultMaxConcurrentDownloads is the default maximum number of tasks running concurrently.
+	DefaultMaxConcurrentDownloads = 32
 )
 
 var hexColorRegex = regexp.MustCompile(`^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$`)
@@ -370,7 +373,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			DuplicateURLPolicy:        DuplicatePolicyAsk,
 			PreDownload:               false,
 			SkipFileInfoConfirm:       false,
-			MaxConcurrentDownloads:    3,
+			MaxConcurrentDownloads:    DefaultMaxConcurrentDownloads,
 			DefaultConnectionsPerTask: DefaultConnectionsPerTask,
 			DefaultDirectory:          defaultDownloadDir,
 			TempDirectory:             defaultTempDir,

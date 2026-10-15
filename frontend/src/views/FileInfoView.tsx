@@ -567,7 +567,7 @@ export function FileInfoView() {
       // 提交期间禁用按钮：提交会让后端把这一项移出队列并推进到下一项，
       // 连点两次会让第二次带着这一项的落点作用到下一项上。
       setLoading(true);
-      const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 8));
+      const parsedConn = Math.min(32, Math.max(1, Number(maxConn) || 32));
 
       try {
         await SubmitFileInfo({
