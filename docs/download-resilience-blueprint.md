@@ -40,13 +40,13 @@
 
 ---
 
-### 🛡️ P1 梯队：协议降级与 HLS 引擎加固（后续阶段）
+### 🛡️ P1 梯队：协议降级与 HLS 引擎加固（已完成）
 
-| 编号     | 兜底措施                                                | 涉及模块                           |   状态    | 核心目标                                                                                                                          |
-| :------- | :------------------------------------------------------ | :--------------------------------- | :-------: | :-------------------------------------------------------------------------------------------------------------------------------- |
-| **P1-1** | **“假 Range（200 OK）”自动降级单流与单流断点续传升级**  | `internal/engine/downloader.go`    | 📋 待启动 | 分片请求遭遇服务端忽略 Range 返回 `200 OK` 时自动回退为单流下载；单流下载中途识别出 `Accept-Ranges: bytes` 后断线可转为断点续传。 |
-| **P1-2** | **HLS 分片指数退避重试与自适应并发流控**                | `internal/hls/download.go`         | 📋 待启动 | 消除 HLS 分片重试的 0 延迟紧循环，引入退避等待与并发动态降级。                                                                    |
-| **P1-3** | **磁盘可用空间前置预检（Pre-flight Disk Space Check）** | `internal/sys` / `internal/engine` | 📋 待启动 | 在探测、分配大文件及 HLS 合并前检查目标卷与临时卷可用空间，提前拦截空间不足。                                                     |
+| 编号     | 兜底措施                                                | 涉及模块                                                                                                                  |   状态    | 核心验收标准与落盘验证                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| :------- | :------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------ | :-------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P1-1** | **“假 Range（200 OK）”自动降级单流与单流断点续传升级**  | `internal/engine/downloader.go`                                                                                           | ✅ 已完成 | 1. 分片请求遭遇服务端忽略 `Range` 返回 `200 OK`（`ErrRangeNotSupported`）时，自动重置分块并无缝降级为单流下载，不直接判任务失败；<br/>2. 单流下载中途从响应头识别出 `Content-Length` 与 `Accept-Ranges: bytes` 后若发生断流或暂停，保留已落盘进度并升级为 Range 分块断点续传。<br/>3. 测试验证：`TestHTTPDownloader_IgnoreRange`、`TestHTTPDownloader_SingleStreamUpgradesToResumableChunksOnMidDrop`。                                 |
+| **P1-2** | **HLS 分片指数退避重试与自适应并发流控**                | `internal/hls/download.go`                                                                                                | ✅ 已完成 | 1. 消除 HLS 分片重试的 0 延迟紧循环，对瞬态故障（5xx / 429 / 408 / 网络停摆）引入指数退避等待，确定性 4xx（如 404/403）快速失败；<br/>2. 引入 `segmentFlowGate` 自适应并发窗口，遭遇 429/503 或连续失败时动态下调并发，平稳传输后逐步恢复。<br/>3. 测试验证：`TestDownload_SegmentExponentialBackoffAndFatalFastFail`、`TestDownload_AdaptiveConcurrencyUnderRateLimit`。                                                               |
+| **P1-3** | **磁盘可用空间前置预检（Pre-flight Disk Space Check）** | `internal/sys/disk*.go`<br/>`internal/engine/fileops.go`<br/>`internal/engine/downloader.go`<br/>`internal/engine/hls.go` | ✅ 已完成 | 1. 新增跨平台磁盘可用空间查询与同卷判定（Windows `GetDiskFreeSpaceEx` / Unix `Statfs`），支持未创建子目录向上回溯及续传差额抵扣；<br/>2. 在 HTTP 预分配/单流解析出大小、跨盘复制、HLS 分片拉取及媒体合并前校验临时卷与目标卷可用空间，空间不足时提前拦截并保留已有分片。<br/>3. 测试验证：`TestAvailableDiskSpaceAndPreFlightCheck`、`TestHTTPDownloader_PreFlightDiskSpaceCheck`、`TestManager_HLSProcessingPreFlightDiskSpaceCheck`。 |
 
 ---
 

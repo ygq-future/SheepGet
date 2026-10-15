@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"sheep-get/internal/atomicfile"
+	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
 )
 
@@ -158,6 +159,51 @@ func URLFilename(rawURL string) string {
 	return base
 }
 
+// checkPathsDiskSpace 校验临时目录与目标目录所在卷是否有足够的可用空间。
+// 当 existingPath（文件或分片目录）已在临时卷上占用了部分字节时，
+// 仅对尚未落盘的差额部分检查临时卷可用空间，避免续传时将已占用空间重复计算；
+// 若目标目录位于另一磁盘卷，再独立校验目标卷是否具备完整成品空间。
+func checkPathsDiskSpace(tempDir, destDir, existingPath string, totalRequired int64) error {
+	if totalRequired <= 0 {
+		return nil
+	}
+	existingBytes := pathOccupiedBytes(existingPath)
+	neededOnTemp := totalRequired - existingBytes
+	if neededOnTemp > 0 {
+		if err := sys.CheckDiskSpace(tempDir, neededOnTemp); err != nil {
+			return err
+		}
+	}
+	if !sys.SameVolume(tempDir, destDir) {
+		if err := sys.CheckDiskSpace(destDir, totalRequired); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pathOccupiedBytes(targetPath string) int64 {
+	if targetPath == "" {
+		return 0
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		return 0
+	}
+	if !info.IsDir() {
+		return info.Size()
+	}
+	var sum int64
+	if entries, readErr := os.ReadDir(targetPath); readErr == nil {
+		for _, entry := range entries {
+			if fi, iErr := entry.Info(); iErr == nil && !fi.IsDir() {
+				sum += fi.Size()
+			}
+		}
+	}
+	return sum
+}
+
 // moveFile 把 srcPath 移动到 dstPath：同一文件系统内用 rename，rename 失败时退化为跨设备复制。
 // 失败时保留 srcPath，由调用方决定是报告错误还是丢弃已有数据；成功时 srcPath 不再存在。
 func moveFile(srcPath, dstPath string) error {
@@ -177,10 +223,15 @@ func safeTransferCrossDevice(srcPath, dstPath string) error {
 	}
 	defer func() { _ = srcFile.Close() }()
 
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+	dstDir := filepath.Dir(dstPath)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
-
+	if info, statErr := srcFile.Stat(); statErr == nil && info.Size() > 0 {
+		if err := sys.CheckDiskSpace(dstDir, info.Size()); err != nil {
+			return err
+		}
+	}
 	transferPath := dstPath + ".transferring"
 	dstFile, err := os.OpenFile(transferPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {

@@ -12,13 +12,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-
 	"sheep-get/internal/credentials"
 	"sheep-get/internal/hls"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 func mustParse(t *testing.T, base, body string) *hls.ParseResult {
@@ -893,5 +893,107 @@ func TestFetcher_WithFallbackWhenBothFailReturnsError(t *testing.T) {
 	notFoundTarget.Close()
 	if _, err := hls.Inspect(context.Background(), f, notFoundTarget.URL+"/missing.m3u8"); err == nil {
 		t.Fatalf("expected error when proxy returns 502 and fallback fails to connect")
+	}
+}
+
+// TestDownload_SegmentExponentialBackoffAndFatalFastFail 验证 P1-2：
+// 1. 瞬态故障（500/429/503）重试之间具备指数退避等待，消除 0 延迟紧循环；
+// 2. 确定性客户端错误（如 404 Not Found）立即失败，不白白消耗退避重试次数。
+func TestDownload_SegmentExponentialBackoffAndFatalFastFail(t *testing.T) {
+	restore := hls.SetRetryBaseDelayForTest(25 * time.Millisecond)
+	defer restore()
+
+	var transientHits atomic.Int32
+	var fatalHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/transient.ts":
+			n := transientHits.Add(1)
+			if n <= 2 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = w.Write([]byte("recovered-segment"))
+		case "/missing.ts":
+			fatalHits.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// 1. 瞬态 503 失败两次后第三次成功：总耗时应体现至少 25ms + 50ms = 75ms 的指数退避
+	plTransient := parseBody(t, server.URL+"/media.m3u8", "#EXTM3U\n#EXTINF:6.000,\ntransient.ts\n#EXT-X-ENDLIST\n")
+	start := time.Now()
+	if _, err := newTestFetcher().Download(context.Background(), plTransient, t.TempDir(), 1, nil); err != nil {
+		t.Fatalf("expected transient segment to succeed after backoff retries, got: %v", err)
+	}
+	elapsed := time.Since(start)
+	if transientHits.Load() != 3 {
+		t.Fatalf("expected 3 attempts for transient segment, got %d", transientHits.Load())
+	}
+	if elapsed < 65*time.Millisecond {
+		t.Fatalf("expected exponential backoff delay (>= 65ms), got %v", elapsed)
+	}
+
+	// 2. 404 Not Found 属于确定性客户端错误，应 1 次请求立即失败，不重试
+	plFatal := parseBody(t, server.URL+"/media.m3u8", "#EXTM3U\n#EXTINF:6.000,\nmissing.ts\n#EXT-X-ENDLIST\n")
+	if _, err := newTestFetcher().Download(context.Background(), plFatal, t.TempDir(), 1, nil); err == nil {
+		t.Fatal("expected 404 segment to fail")
+	}
+	if fatalHits.Load() != 1 {
+		t.Fatalf("expected fast fail on 404 with 1 request, got %d", fatalHits.Load())
+	}
+}
+
+// TestDownload_AdaptiveConcurrencyUnderRateLimit 验证 P1-2：
+// 当源站限制并发连接数（例如活跃并发超过 2 时返回 429 Too Many Requests）时，
+// HLS 下载器即使以高并发（如 6）启动，也能通过退避与自适应流控将并发降至源站允许水位并顺利完成全部分片。
+func TestDownload_AdaptiveConcurrencyUnderRateLimit(t *testing.T) {
+	restore := hls.SetRetryBaseDelayForTest(15 * time.Millisecond)
+	defer restore()
+
+	const maxAllowedActive = 2
+	var activeReqs atomic.Int32
+	var rateLimitedCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := activeReqs.Add(1)
+		defer activeReqs.Add(-1)
+
+		if cur > maxAllowedActive {
+			rateLimitedCount.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+		_, _ = fmt.Fprintf(w, "data-%s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	var sb strings.Builder
+	sb.WriteString("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-VERSION:3\n")
+	for i := range 12 {
+		_, _ = fmt.Fprintf(&sb, "#EXTINF:6.000,\nseg%d.ts\n", i)
+	}
+	sb.WriteString("#EXT-X-ENDLIST\n")
+
+	pl := parseBody(t, server.URL+"/media.m3u8", sb.String())
+	dir := t.TempDir()
+	inputs, err := newTestFetcher().Download(context.Background(), pl, dir, 6, nil)
+	if err != nil {
+		t.Fatalf("expected adaptive concurrency to survive 429 rate limiting, got: %v", err)
+	}
+	if len(inputs.Segments) != 12 {
+		t.Fatalf("expected 12 segments, got %d", len(inputs.Segments))
+	}
+	if rateLimitedCount.Load() == 0 {
+		t.Fatalf("expected initial high concurrency (6 > %d) to trigger at least one 429", maxAllowedActive)
+	}
+	for _, name := range inputs.Segments {
+		if _, statErr := os.Stat(filepath.Join(dir, name)); statErr != nil {
+			t.Fatalf("missing segment %s: %v", name, statErr)
+		}
 	}
 }

@@ -312,6 +312,15 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, sink Transfe
 		return nil, err
 	}
 
+	requiredBytes := t.TotalBytes
+	if requiredBytes <= 0 && sel.Source != nil && sel.Source.TotalBytes > 0 {
+		requiredBytes = sel.Source.TotalBytes
+	}
+	if requiredBytes > 0 {
+		if err := checkPathsDiskSpace(dir, t.Directory, dir, requiredBytes); err != nil {
+			return nil, err
+		}
+	}
 	concurrency := t.MaxConcurrency
 	if concurrency <= 0 {
 		concurrency = m.config.DefaultConnectionsPerTask
@@ -408,6 +417,23 @@ func (m *Manager) runMediaProcessing(ctx context.Context, t *task.Task) error {
 	}
 	dir := m.segmentDir(t)
 	initPaths, segmentPaths := t.MediaInputs.Paths(dir)
+
+	var totalInputBytes int64
+	for _, p := range initPaths {
+		if info, statErr := os.Stat(p); statErr == nil {
+			totalInputBytes += info.Size()
+		}
+	}
+	for _, p := range segmentPaths {
+		if info, statErr := os.Stat(p); statErr == nil {
+			totalInputBytes += info.Size()
+		}
+	}
+	if totalInputBytes > 0 {
+		if err := checkPathsDiskSpace(dir, t.Directory, "", totalInputBytes); err != nil {
+			return err
+		}
+	}
 
 	err := media.Process(ctx, media.Input{
 		Init:    initPaths,

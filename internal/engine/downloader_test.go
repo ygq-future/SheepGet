@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"sheep-get/internal/engine"
+	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
 )
 
@@ -636,5 +638,63 @@ func TestHTTPDownloader_ProbeDirectFallbackWhenProxyFails(t *testing.T) {
 	client := downloader.GetClientForTask(dlTask)
 	if client == nil {
 		t.Fatal("expected non-nil client")
+	}
+}
+
+// TestHTTPDownloader_PreFlightDiskSpaceCheck 验证 P1-3：
+// 1. 已知大小任务启动前，若目标卷或临时卷空间不足，在预分配 .sheepget 文件和发网络请求前直接拦截；
+// 2. 未知大小任务进入单流传输后，一旦从响应头 Content-Length 获知真实大小，立即执行空间校验并拦截超限任务。
+func TestHTTPDownloader_PreFlightDiskSpaceCheck(t *testing.T) {
+	var serverRequests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverRequests.Add(1)
+		w.Header().Set("Content-Length", "1048576") // 1MB
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("head-bytes"))
+	}))
+	defer ts.Close()
+
+	// 模拟磁盘仅剩 100KB 可用空间
+	restore := sys.SetAvailableDiskSpaceForTest(func(dir string) (uint64, error) {
+		return 100 * 1024, nil
+	})
+	defer restore()
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+
+	// 场景 1：已知大小（1MB > 100KB），在发起网络请求和 Truncate 临时文件前即拦截
+	knownTask := &task.Task{
+		ID:             "task-disk-full-known",
+		URL:            ts.URL + "/large.bin",
+		Filename:       "large.bin",
+		Directory:      tmpDir,
+		TotalBytes:     1024 * 1024,
+		MaxConcurrency: 2,
+		Resumable:      true,
+	}
+	err := downloader.Download(context.Background(), knownTask, nil)
+	if !errors.Is(err, sys.ErrInsufficientDiskSpace) {
+		t.Fatalf("expected ErrInsufficientDiskSpace for known-size task, got: %v", err)
+	}
+	if serverRequests.Load() != 0 {
+		t.Fatalf("expected 0 HTTP requests when pre-flight disk check fails, got %d", serverRequests.Load())
+	}
+	if _, statErr := os.Stat(downloader.GetPartPath(knownTask)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no .sheepget file to be allocated when pre-flight check fails")
+	}
+
+	// 场景 2：未知大小（TotalBytes = -1），单流拿到响应头 Content-Length=1MB 后立即拦截，不继续写爆磁盘
+	unknownTask := &task.Task{
+		ID:         "task-disk-full-unknown",
+		URL:        ts.URL + "/stream.bin",
+		Filename:   "stream.bin",
+		Directory:  tmpDir,
+		TotalBytes: -1,
+		Resumable:  false,
+	}
+	err = downloader.Download(context.Background(), unknownTask, nil)
+	if !errors.Is(err, sys.ErrInsufficientDiskSpace) {
+		t.Fatalf("expected ErrInsufficientDiskSpace after resolving single-stream Content-Length, got: %v", err)
 	}
 }

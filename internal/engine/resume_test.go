@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -8,13 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
-	"testing"
-	"time"
-
 	"sheep-get/internal/engine"
 	"sheep-get/internal/task"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 func TestHTTPDownloader_Resume(t *testing.T) {
@@ -113,9 +114,11 @@ func TestHTTPDownloader_Resume(t *testing.T) {
 }
 
 func TestHTTPDownloader_IgnoreRange(t *testing.T) {
-	// If server ignores Range and returns 200 OK instead of 206 Partial Content, return ErrRangeNotSupported
-	payload := []byte("hello world ignore range")
+	// P1-1: If server ignores Range and returns 200 OK instead of 206 Partial Content during chunked download,
+	// automatically downgrade to single-stream download and complete the file cleanly.
+	payload := bytes.Repeat([]byte("hello world ignore range! "), 25000) // ~650KB (> 2 * MinChunkSize)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(payload)
 	}))
@@ -134,7 +137,100 @@ func TestHTTPDownloader_IgnoreRange(t *testing.T) {
 	}
 
 	err := downloader.Download(context.Background(), dlTask, nil)
-	if err == nil || !strings.Contains(err.Error(), "range not supported") {
-		t.Fatalf("expected range not supported error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected fake-range download to auto-downgrade to single-stream and succeed, got %v", err)
+	}
+	if dlTask.Resumable {
+		t.Fatalf("expected Resumable to be downgraded to false after server returned 200 OK without Accept-Ranges")
+	}
+	if len(dlTask.Chunks) != 0 {
+		t.Fatalf("expected Chunks to be cleared after downgrading to single-stream, got %d chunks", len(dlTask.Chunks))
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, "ignore.bin"))
+	if err != nil {
+		t.Fatalf("failed to read downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("downloaded file content mismatch: got %d bytes, want %d bytes", len(got), len(payload))
+	}
+}
+
+func TestHTTPDownloader_SingleStreamUpgradesToResumableChunksOnMidDrop(t *testing.T) {
+	// P1-1: A task starts as single-stream (TotalBytes = -1, Resumable = false, e.g. probe timed out).
+	// During single-stream transfer, response headers reveal Content-Length and Accept-Ranges: bytes.
+	// When the connection drops halfway, the downloader preserves the already downloaded bytes and seamlessly
+	// upgrades to a Range request from the exact interruption offset instead of restarting from 0.
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 16384) // 256KB
+	cutOffset := len(payload) / 2
+
+	var reqCount atomic.Int32
+	var sawRangeResume atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := reqCount.Add(1)
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", `"upgrade-etag-v1"`)
+
+		rangeHeader := r.Header.Get("Range")
+		if call == 1 && rangeHeader == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload[:cutOffset])
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, hErr := hj.Hijack(); hErr == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			return
+		}
+
+		if rangeHeader != "" {
+			var start, end int64
+			_, _ = fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+			if start == int64(cutOffset) {
+				sawRangeResume.Store(true)
+			}
+			if end >= int64(len(payload)) {
+				end = int64(len(payload)) - 1
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(payload[start : end+1])
+			return
+		}
+
+		t.Errorf("unexpected non-Range request on call %d", call)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+	dlTask := &task.Task{
+		ID:             "task-single-to-chunk-upgrade",
+		URL:            ts.URL + "/archive.zip",
+		Filename:       "archive.zip",
+		Directory:      tmpDir,
+		TotalBytes:     -1,
+		MaxConcurrency: 2,
+		Resumable:      false,
+	}
+
+	if err := downloader.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("expected single-stream to upgrade to resumable chunk download and succeed, got: %v", err)
+	}
+	if !sawRangeResume.Load() {
+		t.Fatalf("expected second request to resume via Range from offset %d", cutOffset)
+	}
+	if !dlTask.Resumable || dlTask.TotalBytes != int64(len(payload)) {
+		t.Fatalf("expected task metadata to be upgraded (Resumable=%v, TotalBytes=%d)", dlTask.Resumable, dlTask.TotalBytes)
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, "archive.zip"))
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("output file content mismatch after single-stream upgrade")
 	}
 }

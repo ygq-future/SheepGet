@@ -20,11 +20,15 @@ import (
 )
 
 const (
-	// segmentFetchAttempts 是单个分片的下载尝试次数（含首次）。分片是独立小文件，
-	// 一次失败重来即可，不必像大文件那样长退避。
-	segmentFetchAttempts = 3
-	// defaultSegmentConcurrency 是分片下载的默认并发数；调用方给的值更小时以调用方为准。
+	// segmentFetchAttempts 是单个分片的下载尝试次数（含首次）。分片重试之间通过指数退避等待，
+	// 给瞬态网络抖动或服务端 429/503 限流留出恢复窗口，消除 0 延迟紧循环。
+	segmentFetchAttempts      = 3
 	defaultSegmentConcurrency = 8
+
+	segmentRetryMaxDelay = 5 * time.Second
+	segmentRetryMaxShift = 5
+	flowControlCooldown  = 1 * time.Second
+	successesPerScaleUp  = 4
 )
 
 // requestTimeout 是单次 HLS 请求（清单、密钥、分片、大小探测）愿意等一个响应的上限。
@@ -44,6 +48,28 @@ var idleTimeout = 15 * time.Second
 // 判定本身在 internal/stallwatch：引擎的 HTTP 传输与这里的每个请求用同一套看门狗，
 // 语义（停摆 ≠ 取消）因此只有一处定义。
 var ErrStalled = stallwatch.ErrStalled
+var segmentRetryBaseDelay = 200 * time.Millisecond
+
+// SetRetryBaseDelayForTest 供测试把分片重试的基础退避调小，避免等待真实数百毫秒耗时。
+func SetRetryBaseDelayForTest(d time.Duration) (restore func()) {
+	old := segmentRetryBaseDelay
+	segmentRetryBaseDelay = d
+	return func() { segmentRetryBaseDelay = old }
+}
+
+func segmentRetryBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt > segmentRetryMaxShift {
+		attempt = segmentRetryMaxShift
+	}
+	delay := segmentRetryBaseDelay << attempt
+	if delay > segmentRetryMaxDelay {
+		return segmentRetryMaxDelay
+	}
+	return delay
+}
 
 // statusError 是服务器返回 4xx/5xx 的错误。4xx 大多是防盗链令牌失效或地址过期，
 // 重试三次也不会变；fetchSegment 对它们不再重试，尽快把真实原因亮给用户。
@@ -53,6 +79,112 @@ type statusError struct {
 }
 
 func (e *statusError) Error() string { return "服务器返回 " + e.status }
+
+// isFatalSegmentError 判断分片下载错误是否属于重试也不会改变结果的致命错误（如 404/403/401 等确定性客户端错误）。
+// 408 请求超时与 429 限流属于瞬态/流控异常，允许退避重试。
+func isFatalSegmentError(err error) bool {
+	var se *statusError
+	if errors.As(err, &se) {
+		if se.code == http.StatusRequestTimeout || se.code == http.StatusTooManyRequests {
+			return false
+		}
+		return se.code >= 400 && se.code < 500
+	}
+	return false
+}
+
+// segmentFlowGate 管理 HLS 分片下载的自适应并发窗口。
+// 当遇到 429/503 或连接异常时自动收缩并发上限，平稳完成分片后逐步恢复至任务配置的上限。
+type segmentFlowGate struct {
+	mu           sync.Mutex
+	cond         *sync.Cond
+	maxLimit     int
+	currentLimit int
+	active       int
+	successCount int
+	failStreak   int
+	lastBackoff  time.Time
+	closed       bool
+}
+
+func newSegmentFlowGate(maxLimit int) *segmentFlowGate {
+	if maxLimit < 1 {
+		maxLimit = 1
+	}
+	g := &segmentFlowGate{
+		maxLimit:     maxLimit,
+		currentLimit: maxLimit,
+	}
+	g.cond = sync.NewCond(&g.mu)
+	return g
+}
+
+func (g *segmentFlowGate) acquire(ctx context.Context) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for !g.closed && ctx.Err() == nil && g.active >= g.currentLimit {
+		g.cond.Wait()
+	}
+	if g.closed || ctx.Err() != nil {
+		return false
+	}
+	g.active++
+	return true
+}
+
+func (g *segmentFlowGate) release() {
+	g.mu.Lock()
+	g.active--
+	g.cond.Broadcast()
+	g.mu.Unlock()
+}
+
+func (g *segmentFlowGate) close() {
+	g.mu.Lock()
+	g.closed = true
+	g.cond.Broadcast()
+	g.mu.Unlock()
+}
+
+func (g *segmentFlowGate) onFailure(err error) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	g.failStreak++
+	var se *statusError
+	isRateLimit := errors.As(err, &se) && (se.code == http.StatusTooManyRequests || se.code == http.StatusServiceUnavailable)
+	if isRateLimit || g.failStreak >= 2 || (!g.lastBackoff.IsZero() && now.Sub(g.lastBackoff) < flowControlCooldown) {
+		if g.currentLimit > 1 {
+			g.currentLimit--
+		}
+	}
+	g.lastBackoff = now
+	g.successCount = 0
+}
+
+func (g *segmentFlowGate) onSuccess() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.failStreak = 0
+	if g.currentLimit >= g.maxLimit {
+		return
+	}
+	if !g.lastBackoff.IsZero() && time.Since(g.lastBackoff) < flowControlCooldown {
+		return
+	}
+	g.successCount++
+	if g.successCount >= successesPerScaleUp {
+		g.successCount = 0
+		g.currentLimit++
+		if g.currentLimit > g.maxLimit {
+			g.currentLimit = g.maxLimit
+		}
+		g.cond.Broadcast()
+	}
+}
 
 // withRequestTimeout 给一次 HLS 请求套上单次超时。调用方负责在函数体里用它返回的 ctx
 // 发起请求并读完全部响应体——超时一旦到期，ctx 取消会同时打断读取中的 body。
@@ -276,39 +408,84 @@ func (f *Fetcher) DownloadWithPrefix(ctx context.Context, pl *MediaPlaylist, dir
 	}
 	report()
 
-	var firstErr error
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-
+	type pendingSeg struct {
+		index int
+		seg   Segment
+		dest  string
+	}
+	var pending []pendingSeg
 	for i, seg := range pl.Segments {
-		dest := filepath.Join(dir, inputs.Segments[i])
-		if _, statErr := os.Stat(dest); statErr == nil {
+		if doneFlags[i] {
 			continue
 		}
+		pending = append(pending, pendingSeg{
+			index: i,
+			seg:   seg,
+			dest:  filepath.Join(dir, inputs.Segments[i]),
+		})
+	}
+	if len(pending) == 0 {
+		return inputs, nil
+	}
+	if concurrency > len(pending) {
+		concurrency = len(pending)
+	}
+
+	gate := newSegmentFlowGate(concurrency)
+	stopWatchCancel := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			gate.close()
+		case <-stopWatchCancel:
+		}
+	}()
+	defer func() {
+		close(stopWatchCancel)
+		gate.close()
+	}()
+
+	var nextIdx int
+	var firstErr error
+	var wg sync.WaitGroup
+
+	for range concurrency {
 		wg.Add(1)
-		go func(seg Segment, dest string, index int) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			if ctx.Err() != nil {
-				return
-			}
-			written, fetchErr := f.fetchSegment(ctx, seg, dest)
-
-			mu.Lock()
-			defer mu.Unlock()
-			if fetchErr != nil {
-				if firstErr == nil && !errors.Is(fetchErr, context.Canceled) {
-					firstErr = fetchErr
+			for {
+				if !gate.acquire(ctx) {
+					return
 				}
-				return
+				mu.Lock()
+				if firstErr != nil || nextIdx >= len(pending) {
+					mu.Unlock()
+					gate.release()
+					return
+				}
+				item := pending[nextIdx]
+				nextIdx++
+				mu.Unlock()
+
+				written, fetchErr := f.fetchSegmentWithFlow(ctx, item.seg, item.dest, gate)
+				gate.release()
+
+				mu.Lock()
+				if fetchErr != nil {
+					if firstErr == nil && !errors.Is(fetchErr, context.Canceled) {
+						firstErr = fetchErr
+						gate.close()
+					}
+					mu.Unlock()
+					return
+				}
+				downloaded += written
+				doneFlags[item.index] = true
+				completed++
+				report()
+				mu.Unlock()
 			}
-			downloaded += written
-			doneFlags[index] = true
-			completed++
-			report()
-		}(seg, dest, i)
+		}()
 	}
 	wg.Wait()
 
@@ -396,6 +573,10 @@ func segmentExt(rawURL string) string {
 
 // fetchSegment 抓取并解密一个分片，成功时文件已经原子改名到 dest；返回落盘字节数。
 func (f *Fetcher) fetchSegment(ctx context.Context, seg Segment, dest string) (int64, error) {
+	return f.fetchSegmentWithFlow(ctx, seg, dest, nil)
+}
+
+func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest string, gate *segmentFlowGate) (int64, error) {
 	var lastErr error
 	for attempt := 0; attempt < segmentFetchAttempts; attempt++ {
 		if ctx.Err() != nil {
@@ -403,11 +584,25 @@ func (f *Fetcher) fetchSegment(ctx context.Context, seg Segment, dest string) (i
 		}
 		written, err := f.downloadOnce(ctx, seg, dest)
 		if err == nil {
+			if gate != nil {
+				gate.onSuccess()
+			}
 			return written, nil
 		}
 		lastErr = err
-		if errors.Is(err, context.Canceled) {
-			return 0, err
+		if errors.Is(err, context.Canceled) || isFatalSegmentError(err) {
+			return 0, fmt.Errorf("分片 %s 下载失败: %w", seg.URI, err)
+		}
+		if gate != nil {
+			gate.onFailure(err)
+		}
+		if attempt+1 < segmentFetchAttempts {
+			delay := segmentRetryBackoff(attempt)
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(delay):
+			}
 		}
 	}
 	return 0, fmt.Errorf("分片 %s 下载失败: %w", seg.URI, lastErr)

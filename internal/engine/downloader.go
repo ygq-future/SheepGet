@@ -617,22 +617,35 @@ type TransferSink interface {
 func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, sink TransferSink) error {
 	destPath := filepath.Join(t.Directory, t.Filename)
 	partPath := d.GetPartPath(t)
-
 	if err := os.MkdirAll(t.Directory, 0755); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(partPath), 0755); err != nil {
+	tempDir := filepath.Dir(partPath)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("failed to create temporary directory: %w", err)
+	}
+	if err := checkPathsDiskSpace(tempDir, t.Directory, partPath, t.TotalBytes); err != nil {
+		return err
 	}
 
 	client := d.GetClientForTask(t)
 
 	// If the resource is not resumable or total size is unknown, fallback to single-stream download
 	if !t.Resumable || t.TotalBytes <= 0 {
-		return d.downloadSingleStream(ctx, t, partPath, destPath, sink, client)
+		return d.downloadSingleStream(ctx, t, partPath, destPath, sink, client, true)
 	}
 
-	return d.downloadChunks(ctx, t, partPath, destPath, sink, client)
+	err := d.downloadChunks(ctx, t, partPath, destPath, sink, client)
+	if errors.Is(err, ErrRangeNotSupported) && ctx.Err() == nil {
+		d.log().Warn("server ignored Range header and returned 200 OK, downgrading to single-stream download",
+			"task", t.ID, "url", logging.SafeURL(t.URL))
+		t.Resumable = false
+		t.Chunks = nil
+		t.Downloaded = 0
+		publishProgress(t, 0, sink)
+		return d.downloadSingleStream(ctx, t, partPath, destPath, sink, client, false)
+	}
+	return err
 }
 
 // publishProgress 把当前进度作为一份自有副本交给调用方。它只在传输侧独占任务对象时调用：
@@ -647,8 +660,21 @@ func publishProgress(t *task.Task, downloaded int64, sink TransferSink) {
 	}
 	sink.PublishSnapshot(t.Clone())
 }
+func initSingleResumeChunk(t *task.Task, downloaded int64) bool {
+	if !t.Resumable || t.TotalBytes <= 0 || downloaded <= 0 || downloaded >= t.TotalBytes {
+		return false
+	}
+	t.Chunks = []task.Chunk{{
+		Index:      0,
+		Start:      0,
+		End:        t.TotalBytes - 1,
+		Downloaded: downloaded,
+	}}
+	t.Downloaded = downloaded
+	return true
+}
 
-func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, sink TransferSink, client *http.Client) error {
+func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task, partPath, destPath string, sink TransferSink, client *http.Client, allowRangeUpgrade bool) error {
 	logger := d.log()
 	started := time.Now()
 
@@ -719,6 +745,15 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 			return fmt.Errorf("server returned error status: %s", resp.Status)
 		}
 		var downloaded int64
+		if t.ETag == "" && resp.Header.Get("ETag") != "" {
+			t.ETag = resp.Header.Get("ETag")
+		}
+		if t.LastModified == "" && resp.Header.Get("Last-Modified") != "" {
+			t.LastModified = resp.Header.Get("Last-Modified")
+		}
+		if allowRangeUpgrade && (resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == http.StatusPartialContent) {
+			t.Resumable = true
+		}
 		// 动态回填响应头大小与续传支持：如果任务之前未探出大小（totalBytes <= 0），从真实响应头中提取
 		if t.TotalBytes <= 0 {
 			cl := resp.ContentLength
@@ -729,14 +764,16 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 			}
 			if cl > 0 {
 				t.TotalBytes = cl
-				if resp.Header.Get("Accept-Ranges") == "bytes" || resp.StatusCode == http.StatusPartialContent {
-					t.Resumable = true
-				}
 				logger.Info("resolved total size from single stream response header", "task", t.ID, "totalBytes", t.TotalBytes, "resumable", t.Resumable)
 				publishProgress(t, downloaded, sink)
+				if err := checkPathsDiskSpace(filepath.Dir(partPath), t.Directory, partPath, t.TotalBytes); err != nil {
+					_ = resp.Body.Close()
+					_ = file.Close()
+					watch.Stop()
+					return err
+				}
 			}
 		}
-
 		body := watch.Reader(resp.Body)
 		buf := make([]byte, 64*1024)
 		var readErr error
@@ -746,6 +783,9 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 				_ = resp.Body.Close()
 				_ = file.Close()
 				watch.Stop()
+				if allowRangeUpgrade {
+					initSingleResumeChunk(t, downloaded)
+				}
 				return ctx.Err()
 			default:
 			}
@@ -768,6 +808,9 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 				break
 			}
 		}
+		if readErr == nil && t.TotalBytes > 0 && downloaded < t.TotalBytes {
+			readErr = io.ErrUnexpectedEOF
+		}
 
 		_ = resp.Body.Close()
 		_ = file.Close()
@@ -784,22 +827,24 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 						t.DirectTransfer = true
 						client = directClient
 						logger.Info("single stream mid-transfer proxy failed, retrying via direct connection", "task", t.ID)
-						if t.Resumable && t.TotalBytes > 0 && downloaded > 0 {
-							t.Chunks = []task.Chunk{{
-								Index:      0,
-								Start:      0,
-								End:        t.TotalBytes - 1,
-								Downloaded: downloaded,
-							}}
+						if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
 							return d.downloadChunks(ctx, t, partPath, destPath, sink, directClient)
 						}
 						continue
 					}
 				}
 			}
+			// P1-1: 单流下载中途已识别出服务端支持断点续传（Accept-Ranges: bytes）且文件总大小已知：
+			// 断流或取消时保留已下载进度，若非主动取消则直接无缝升级为分块断点续传完成剩余字节。
+			if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
+				if ctx.Err() == nil {
+					logger.Info("single stream interrupted mid-transfer, upgrading to resumable chunked download",
+						"task", t.ID, "downloaded", downloaded, "totalBytes", t.TotalBytes)
+					return d.downloadChunks(ctx, t, partPath, destPath, sink, client)
+				}
+			}
 			return fmt.Errorf("single stream aborted at %d bytes: %w", downloaded, readErr)
 		}
-
 		if t.TotalBytes <= 0 && downloaded > 0 {
 			t.TotalBytes = downloaded
 		}
