@@ -96,39 +96,53 @@ func systemProxyFunc() func(*http.Request) (*url.URL, error) {
 			}
 		}
 
-		var rawProxy string
-		if strings.Contains(serverStr, "=") {
-			pairs := strings.Split(serverStr, ";")
+		rawProxy := parseRegistryProxyServer(serverStr, req.URL.Scheme)
+		if rawProxy == "" {
+			return nil, nil
+		}
+		return url.Parse(rawProxy)
+	}
+}
+
+func parseRegistryProxyServer(serverStr, scheme string) string {
+	var rawProxy string
+	if strings.Contains(serverStr, "=") {
+		pairs := strings.Split(serverStr, ";")
+		if scheme != "" {
 			for _, pair := range pairs {
 				parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-				if len(parts) == 2 && strings.EqualFold(parts[0], req.URL.Scheme) {
+				if len(parts) == 2 && strings.EqualFold(parts[0], scheme) {
 					rawProxy = parts[1]
 					break
 				}
 			}
-			if rawProxy == "" {
-				for _, pair := range pairs {
-					parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-					if len(parts) == 2 && strings.EqualFold(parts[0], "http") {
-						rawProxy = parts[1]
-						break
-					}
+		}
+		if rawProxy == "" {
+			for _, pair := range pairs {
+				parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+				if len(parts) == 2 && strings.EqualFold(parts[0], "http") {
+					rawProxy = parts[1]
+					break
 				}
 			}
-		} else {
-			rawProxy = serverStr
 		}
-
-		if rawProxy == "" {
-			return nil, nil
+		if rawProxy == "" && len(pairs) > 0 {
+			parts := strings.SplitN(strings.TrimSpace(pairs[0]), "=", 2)
+			if len(parts) == 2 {
+				rawProxy = parts[1]
+			}
 		}
-
-		if !strings.HasPrefix(rawProxy, "http://") && !strings.HasPrefix(rawProxy, "https://") && !strings.HasPrefix(rawProxy, "socks5://") {
-			rawProxy = "http://" + rawProxy
-		}
-
-		return url.Parse(rawProxy)
+	} else {
+		rawProxy = serverStr
 	}
+	rawProxy = strings.TrimSpace(rawProxy)
+	if rawProxy == "" {
+		return ""
+	}
+	if !strings.HasPrefix(rawProxy, "http://") && !strings.HasPrefix(rawProxy, "https://") && !strings.HasPrefix(rawProxy, "socks5://") {
+		rawProxy = "http://" + rawProxy
+	}
+	return rawProxy
 }
 
 func isSystemProxyActive() bool {
@@ -137,4 +151,16 @@ func isSystemProxyActive() bool {
 	}
 	enabled, server, _ := readWindowsRegistryProxy()
 	return enabled && server != ""
+}
+
+// candidateSystemProxyAddr 返回系统环境中已登记的代理地址（即使注册表 ProxyEnable 当前为 0），
+// 供直连遭遇源站封禁或连接重置时作为备用代理探测通道。
+func candidateSystemProxyAddr() string {
+	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			return val
+		}
+	}
+	_, serverStr, _ := readWindowsRegistryProxy()
+	return parseRegistryProxyServer(serverStr, "http")
 }

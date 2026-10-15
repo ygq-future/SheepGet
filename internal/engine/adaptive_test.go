@@ -139,6 +139,15 @@ func TestHTTPDownloader_AdaptiveConcurrency_ProbeInitialLimit(t *testing.T) {
 	if ac.CurrentLimit() != 1 {
 		t.Fatalf("expected limit to remain 1 during cooldown, got %d", ac.CurrentLimit())
 	}
+
+	// 验证 CapMaxLimit 并发软封顶
+	ac2 := engine.NewAdaptiveConcurrency(32, 8)
+	if capped := ac2.CapMaxLimit(4); capped != 4 {
+		t.Fatalf("expected capped max limit 4, got %d", capped)
+	}
+	if ac2.CurrentLimit() != 4 {
+		t.Fatalf("expected current limit clamped to 4, got %d", ac2.CurrentLimit())
+	}
 }
 
 // TestHTTPDownloader_AdaptiveConcurrency_StreamRampUp 验证连接成功开始拉流时逐个快速步进扩容，
@@ -380,8 +389,22 @@ func TestHTTPDownloader_ExpiredFinalURLRefreshFromOrigin(t *testing.T) {
 			return
 		case "/cdn/expired_token/release.zip":
 			expiredHits.Add(1)
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte("403 token expired"))
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("400 token expired"))
+			return
+		case "/signed/game.apk":
+			if r.URL.Query().Get("tk") == "expired_tk" {
+				expiredHits.Add(1)
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte("400 tk expired"))
+				return
+			}
+			if r.URL.RawQuery == "" {
+				originRedirects.Add(1)
+				http.Redirect(w, r, serverURL+"/cdn/fresh_token/release.zip", http.StatusFound)
+				return
+			}
+			http.NotFound(w, r)
 			return
 		case "/cdn/fresh_token/release.zip":
 			w.Header().Set("Accept-Ranges", "bytes")
@@ -443,6 +466,111 @@ func TestHTTPDownloader_ExpiredFinalURLRefreshFromOrigin(t *testing.T) {
 	}
 
 	content, err := os.ReadFile(filepath.Join(tmpDir, "release.zip"))
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+	if !bytes.Equal(content, payload) {
+		t.Fatalf("downloaded file content mismatch")
+	}
+
+	// 验证历史任务（URL == FinalURL 且自带过期 ?tk= 参数）遭遇 400 Bad Request 时，剥离查询串回源刷新成功
+	legacyTask := &task.Task{
+		ID:             "task-legacy-expired-tk-400",
+		URL:            ts.URL + "/signed/game.apk?tk=expired_tk",
+		FinalURL:       ts.URL + "/signed/game.apk?tk=expired_tk",
+		Filename:       "game.apk",
+		Directory:      tmpDir,
+		TotalBytes:     int64(fileSize),
+		ETag:           `"release-v1"`,
+		MaxConcurrency: 2,
+		Resumable:      true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if err := downloader.Download(context.Background(), legacyTask, nil); err != nil {
+		t.Fatalf("expected legacy task with expired query token to recover via query-stripped origin refresh, got: %v", err)
+	}
+	if legacyTask.FinalURL != ts.URL+"/cdn/fresh_token/release.zip" {
+		t.Fatalf("expected legacyTask FinalURL to be updated to fresh token URL, got %q", legacyTask.FinalURL)
+	}
+}
+
+// TestHTTPDownloader_GlobalBackoffPreventsChunkHammering 验证当服务端在并发建连超限时掐断连接（EOF）并开启临时封禁窗口，
+// 协调器的全局退避（globalBackoffUntil）能阻止空闲 worker 在几毫秒内换其它未认领分片连环撞击防火墙，
+// 并在封禁窗口过后平滑完成剩余分片。
+func TestHTTPDownloader_GlobalBackoffPreventsChunkHammering(t *testing.T) {
+	fileSize := 2 * 1024 * 1024 // 2MB (8 chunks of 256KB)
+	payload := make([]byte, fileSize)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("failed to generate payload: %v", err)
+	}
+
+	var reqCount atomic.Int64
+	var banUntilNano atomic.Int64
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now().UnixNano()
+		if until := banUntilNano.Load(); until > 0 && now < until {
+			// 若客户端在封禁冷却期内继续发请求撞墙，直接延长封禁时间并断开连接（模拟真实防 CC 防火墙）
+			banUntilNano.Store(time.Now().Add(200 * time.Millisecond).UnixNano())
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				if conn != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			return
+		}
+
+		n := reqCount.Add(1)
+		// 第 3 个请求触发一次 150ms 的源站短时封禁并断开连接（EOF）
+		if n == 3 {
+			banUntilNano.Store(time.Now().Add(150 * time.Millisecond).UnixNano())
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, _ := hj.Hijack()
+				if conn != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			return
+		}
+
+		w.Header().Set("Accept-Ranges", "bytes")
+		rangeHdr := r.Header.Get("Range")
+		var start, end int64
+		_, _ = fmt.Sscanf(rangeHdr, "bytes=%d-%d", &start, &end)
+		if end >= int64(len(payload)) {
+			end = int64(len(payload)) - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[start : end+1])
+	}))
+	defer ts.Close()
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+
+	dlTask := &task.Task{
+		ID:             "task-global-backoff-anti-hammer",
+		URL:            ts.URL,
+		Filename:       "anti_hammer.bin",
+		Directory:      tmpDir,
+		TotalBytes:     int64(fileSize),
+		MaxConcurrency: 8,
+		Resumable:      true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := downloader.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("expected download to succeed with global backoff protection, got: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "anti_hammer.bin"))
 	if err != nil {
 		t.Fatalf("failed to read output file: %v", err)
 	}

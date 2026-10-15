@@ -1099,11 +1099,16 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
 
   // Only intercept HTTP/HTTPS downloads
   const url = item.finalUrl || item.url;
+  const originUrl =
+    item.url && (item.url.startsWith('http://') || item.url.startsWith('https://'))
+      ? item.url
+      : url;
   if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
     return;
   }
   // 若该 URL 在 5 秒内已被网页端直接超前拦截交接，无需二次创建任务，直接取消原生下载
-  const lastDirectTime = recentDirectHandoverUrls.get(url);
+  const lastDirectTime =
+    recentDirectHandoverUrls.get(url) || recentDirectHandoverUrls.get(originUrl);
   if (lastDirectTime && Date.now() - lastDirectTime < 5000) {
     await cancelDownload(item.id);
     return;
@@ -1174,7 +1179,7 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
       activePageUrl || (isValidWebPageUrl(item.referrer) ? item.referrer : undefined);
     const handoverReq: HandoverRequest = {
       sourceType: 'browser_takeover',
-      url,
+      url: originUrl,
       // 交给桌面端的也是真名：桌面端据此命中分类，不能让它再按 URL 猜一次。
       filenameSuggestion: filename,
       totalBytes: item.totalBytes && item.totalBytes > 0 ? item.totalBytes : undefined,

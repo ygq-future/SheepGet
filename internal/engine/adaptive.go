@@ -27,6 +27,7 @@ const (
 	DefaultProbeInitialLimit = 1
 	DefaultAdaptiveCooldown  = 2 * time.Second
 	SuccessesPerScaleUp      = 2
+	ConservativeMaxCap       = 4
 )
 
 // AdaptiveConcurrency 控制多连接分块下载的动态并发窗口。
@@ -119,10 +120,28 @@ func (ac *AdaptiveConcurrency) FreezeOnFailure() {
 	ac.successCount = 0
 }
 
+// CapMaxLimit 将允许的最大并发上限收敛至不超过 capLimit（最低保底为 1）。
+// 用于遭遇连接重置风暴或切换备用传输通道后，防止并发再次无限爬升触发源站封禁。
+func (ac *AdaptiveConcurrency) CapMaxLimit(capLimit int) int {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if capLimit < 1 {
+		capLimit = 1
+	}
+	if ac.maxLimit > capLimit {
+		ac.maxLimit = capLimit
+	}
+	if ac.currentLimit > ac.maxLimit {
+		ac.currentLimit = ac.maxLimit
+	}
+	return ac.maxLimit
+}
+
 // OnRateLimit 在请求遇到服务端限流（如 503 Service Unavailable、429 Too Many Requests）或连接重置风暴时调用。
 // 策略：
-// 1. 首次遇到异常时停止扩容并保持/冻结当前并发数量；
-// 2. 若在时间窗口（冷却期）内持续遇到限流或连接被拒，则逐步回退并发（每次减 1），直到保底单线程（1）。
+//  1. 首次遇到异常时停止扩容并保持/冻结当前并发数量；
+//  2. 若在时间窗口（冷却期）内持续遇到限流或连接被拒，则逐步回退并发（每次减 1），直到保底单线程（1）；
+//     同时将任务的最大并发天花板收敛至安全水位，避免冷却期过后再次冲高并发触发源站封禁。
 func (ac *AdaptiveConcurrency) OnRateLimit() int {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
@@ -132,6 +151,10 @@ func (ac *AdaptiveConcurrency) OnRateLimit() int {
 	if !ac.lastBackoff.IsZero() && now.Sub(ac.lastBackoff) < ac.cooldown {
 		if ac.currentLimit > 1 {
 			ac.currentLimit--
+		}
+		safeCap := max(ac.currentLimit, ConservativeMaxCap)
+		if ac.maxLimit > safeCap {
+			ac.maxLimit = safeCap
 		}
 	}
 

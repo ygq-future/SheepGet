@@ -344,3 +344,120 @@ func TestHTTPDownloader_SingleStreamMidTransferProxyFallbackToDirect(t *testing.
 		t.Fatalf("unexpected file content: %q, err=%v", string(got), err)
 	}
 }
+
+// TestHTTPDownloader_MidTransferDirectBlockedFallbackToProxy 验证双向通道逃生：
+// 当任务当前处于直连状态（如 mode="direct" 或系统代理未开启，但配置有备用 customProxyAddr），
+// 前几个分片高速完成后源站防火墙拉黑直连 IP 并对后续请求返回 EOF 时，
+// 下载器能够探测并平滑切换至备用代理通道完成剩余分片下载。
+func TestHTTPDownloader_MidTransferDirectBlockedFallbackToProxy(t *testing.T) {
+	fileSize := 1024 * 1024 // 1MB (4 chunks of 256KB)
+	payload := make([]byte, fileSize)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	var directReqs atomic.Int64
+	var proxyReqs atomic.Int64
+	var directBanned atomic.Bool
+
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		viaProxy := r.Header.Get("X-Via-Fallback-Proxy") == "1"
+		if viaProxy {
+			proxyReqs.Add(1)
+		} else {
+			hits := directReqs.Add(1)
+			// 模拟：前 2 个直连请求正常放行，从第 3 个直连请求起源站封禁直连 IP（直接关闭连接产生 EOF）
+			if hits > 2 || directBanned.Load() {
+				directBanned.Store(true)
+				if hj, ok := w.(http.Hijacker); ok {
+					conn, _, _ := hj.Hijack()
+					if conn != nil {
+						_ = conn.Close()
+						return
+					}
+				}
+				return
+			}
+		}
+
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", `"direct-ban-etag"`)
+		rangeHdr := r.Header.Get("Range")
+		if rangeHdr == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+			return
+		}
+		var start, end int64
+		_, _ = fmt.Sscanf(rangeHdr, "bytes=%d-%d", &start, &end)
+		if end >= int64(len(payload)) {
+			end = int64(len(payload)) - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[start : end+1])
+	}))
+	defer targetServer.Close()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, r.RequestURI, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for k, v := range r.Header {
+			outReq.Header[k] = v
+		}
+		outReq.Header.Set("X-Via-Fallback-Proxy", "1")
+		resp, err := http.DefaultTransport.RoundTrip(outReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer proxyServer.Close()
+
+	dl := engine.NewHTTPDownloader(nil)
+	// 模拟用户曾配置 customProxyAddr，但当前切换为 direct 模式（或 system 模式未开启系统代理）
+	if err := dl.SetProxy("direct", proxyServer.URL); err != nil {
+		t.Fatalf("failed to configure direct mode with fallback proxy addr: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	dlTask := &task.Task{
+		ID:             "task-direct-banned-fallback-proxy",
+		URL:            targetServer.URL,
+		Directory:      tempDir,
+		Filename:       "direct_banned_recover.apk",
+		TotalBytes:     int64(len(payload)),
+		Resumable:      true,
+		ETag:           `"direct-ban-etag"`,
+		MaxConcurrency: 4,
+	}
+
+	if err := dl.Download(context.Background(), dlTask, nil); err != nil {
+		t.Fatalf("expected download to recover via fallback proxy after direct IP ban, got error: %v", err)
+	}
+	if !directBanned.Load() {
+		t.Errorf("expected direct connection ban to be triggered")
+	}
+	if proxyReqs.Load() == 0 {
+		t.Errorf("expected remaining chunks to be downloaded through fallback proxy")
+	}
+
+	got, err := os.ReadFile(filepath.Join(tempDir, "direct_banned_recover.apk"))
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("downloaded file content mismatch")
+	}
+}

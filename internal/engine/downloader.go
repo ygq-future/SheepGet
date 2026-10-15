@@ -96,6 +96,41 @@ func IsFatalError(err error) bool {
 	return errors.As(err, &fatal)
 }
 
+// isExpiredLinkStatusCode 判断状态码是否可能由临时签名 URL 或重定向地址过期引起（400/401/403/410）。
+func isExpiredLinkStatusCode(code int) bool {
+	return code == http.StatusBadRequest ||
+		code == http.StatusUnauthorized ||
+		code == http.StatusForbidden ||
+		code == http.StatusGone
+}
+
+// deriveRefreshCandidates 生成用于刷新过期 FinalURL 的候选回源地址列表：
+// 1. 优先尝试任务保存的原始入口 t.URL；
+// 2. 若 t.URL 本身已是带过期查询参数（如 ?tk=...）的临时地址，尝试剥离查询参数后的基础路径；
+// 3. 若基础路径位于 pkgdown 边缘签名节点（如 pkgdown.592xiazai.cn），追加其上游签发网关（pkgdown.591down.cn）同路径地址。
+func deriveRefreshCandidates(origURL string) []string {
+	if origURL == "" {
+		return nil
+	}
+	candidates := []string{origURL}
+	u, err := url.Parse(origURL)
+	if err != nil || (u.RawQuery == "" && u.Fragment == "") {
+		return candidates
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	stripped := u.String()
+	if stripped != "" && stripped != origURL {
+		candidates = append(candidates, stripped)
+	}
+	host := strings.ToLower(u.Hostname())
+	if strings.HasPrefix(host, "pkgdown.") && host != "pkgdown.591down.cn" {
+		u.Host = "pkgdown.591down.cn"
+		candidates = append(candidates, u.String())
+	}
+	return candidates
+}
+
 // isFatalStatusCode 检查 HTTP 状态码是否属于不可恢复的致命状态。
 // 4xx 客户端错误（除 408 请求超时和 429 限流外）如 400, 401, 403, 404, 410 等，
 // 以及 6xx 鉴权/过期状态（如 Azure/CDN 私有错误 618 jwt:expired 等），均代表链接失效、无权访问或资源丢失，
@@ -257,6 +292,8 @@ type HTTPProbeInfo struct {
 type HTTPDownloader struct {
 	client             *http.Client
 	directClient       *http.Client
+	fallbackProxy      *http.Client
+	fallbackProxyAddr  string
 	customClient       bool
 	mu                 sync.RWMutex
 	tempDirectory      string
@@ -366,7 +403,9 @@ func (d *HTTPDownloader) SetProxy(mode, customAddr string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.proxyMode = mode
-	d.customProxyAddr = customAddr
+	if trimmed := strings.TrimSpace(customAddr); trimmed != "" || mode == "custom" {
+		d.customProxyAddr = customAddr
+	}
 	if !d.customClient {
 		d.client = &http.Client{
 			Transport: transport,
@@ -450,7 +489,51 @@ func (d *HTTPDownloader) isProxyConfigured() bool {
 	return false
 }
 
-// RefreshFinalURL 使用任务的原始入口 t.URL 重新探测并刷新过期的重定向地址 FinalURL。
+// NewProxyFallbackClient 当下载器当前实际走的是直连（例如 mode="direct"，或 mode="system" 但系统代理未开启）
+// 且存在已配置的自定义代理地址或系统登记的代理地址时，返回一个通过该代理转发的共享 *http.Client，
+// 供直连遭遇源站 IP 封禁或连接重置时反向逃生使用。
+func (d *HTTPDownloader) NewProxyFallbackClient() *http.Client {
+	if d == nil || d.customClient || d.isProxyConfigured() {
+		return nil
+	}
+	d.mu.RLock()
+	addr := strings.TrimSpace(d.customProxyAddr)
+	d.mu.RUnlock()
+	if addr == "" {
+		addr = strings.TrimSpace(candidateSystemProxyAddr())
+	}
+	if addr == "" {
+		return nil
+	}
+
+	d.mu.RLock()
+	if d.fallbackProxy != nil && d.fallbackProxyAddr == addr {
+		c := d.fallbackProxy
+		d.mu.RUnlock()
+		return c
+	}
+	d.mu.RUnlock()
+
+	tr, err := createHTTPTransport("custom", addr)
+	if err != nil {
+		return nil
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   0,
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.fallbackProxy == nil || d.fallbackProxyAddr != addr {
+		d.fallbackProxy = client
+		d.fallbackProxyAddr = addr
+	}
+	return d.fallbackProxy
+}
+
+// RefreshFinalURL 使用任务的原始入口 t.URL（若原始入口本身已含过期查询串则回退尝试剥离查询串的基础路径）
+// 重新探测并刷新过期的重定向地址 FinalURL。
 // 仅当新探测结果与原任务属于同一份文件（大小、断点支持及 ETag/Last-Modified 校验一致）时才采纳新地址，
 // 避免把错误页面或变更后的文件拼进已有分片。
 func (d *HTTPDownloader) RefreshFinalURL(ctx context.Context, client *http.Client, t *task.Task) (string, bool) {
@@ -460,13 +543,24 @@ func (d *HTTPDownloader) RefreshFinalURL(ctx context.Context, client *http.Clien
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	info, err := d.probeWithClient(probeCtx, client, t.URL, t.RequestHeaders)
-	if err != nil && !t.DirectTransfer {
-		if directClient := d.NewDirectFallbackClient(); directClient != nil {
-			if directInfo, directErr := d.probeWithClient(probeCtx, directClient, t.URL, t.RequestHeaders); directErr == nil {
-				info = directInfo
-				err = nil
+	candidates := deriveRefreshCandidates(t.URL)
+	var info *HTTPProbeInfo
+	var err error
+	for _, candidateURL := range candidates {
+		if candidateURL == t.FinalURL && len(candidates) > 1 {
+			continue
+		}
+		info, err = d.probeWithClient(probeCtx, client, candidateURL, t.RequestHeaders)
+		if err != nil && !t.DirectTransfer {
+			if directClient := d.NewDirectFallbackClient(); directClient != nil {
+				if directInfo, directErr := d.probeWithClient(probeCtx, directClient, candidateURL, t.RequestHeaders); directErr == nil {
+					info = directInfo
+					err = nil
+				}
 			}
+		}
+		if err == nil && info != nil && info.FinalURL != "" && info.FinalURL != t.FinalURL {
+			break
 		}
 	}
 	if err != nil || info == nil || info.FinalURL == "" {
@@ -592,6 +686,20 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 				d.log().Info("probe succeeded via direct connection fallback, task will use direct transfer", "url", logging.SafeURL(urlStr))
 				directInfo.DirectTransfer = true
 				return directInfo, nil
+			}
+		}
+	}
+	if !d.customClient && !d.isProxyConfigured() {
+		if proxyClient := d.NewProxyFallbackClient(); proxyClient != nil {
+			proxyCtx := ctx
+			if ctx.Err() != nil {
+				var cancel context.CancelFunc
+				proxyCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+			}
+			if proxyInfo, proxyErr := d.probeWithClient(proxyCtx, proxyClient, urlStr, creds); proxyErr == nil {
+				d.log().Info("probe succeeded via fallback proxy connection", "url", logging.SafeURL(urlStr))
+				return proxyInfo, nil
 			}
 		}
 	}
@@ -872,10 +980,24 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 				}
 			}
 		}
+		if (err != nil || (resp != nil && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout))) && ctx.Err() == nil {
+			if proxyClient := d.NewProxyFallbackClient(); proxyClient != nil && client != proxyClient {
+				if resp != nil && resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				if proxyResp, proxyErr := doSingleReq(proxyClient, t.EffectiveURL()); proxyErr == nil && proxyResp.StatusCode < 400 {
+					t.DirectTransfer = false
+					client = proxyClient
+					resp = proxyResp
+					err = nil
+					logger.Info("single stream switched to fallback proxy connection", "task", t.ID)
+				}
+			}
+		}
 		if err == nil && resp != nil &&
-			(resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone) &&
-			t.FinalURL != "" && t.FinalURL != t.URL && ctx.Err() == nil {
-			if refreshedURL, ok := d.RefreshFinalURL(ctx, client, t); ok && refreshedURL != t.FinalURL {
+			isExpiredLinkStatusCode(resp.StatusCode) &&
+			(t.FinalURL != "" && t.FinalURL != t.URL || len(deriveRefreshCandidates(t.URL)) > 1) && ctx.Err() == nil {
+			if refreshedURL, ok := d.RefreshFinalURL(ctx, client, t); ok && refreshedURL != t.EffectiveURL() {
 				_ = resp.Body.Close()
 				t.FinalURL = refreshedURL
 				logger.Info("single stream refreshed expired FinalURL from origin", "task", t.ID)
@@ -1013,6 +1135,22 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 					}
 				}
 			}
+			if attempt == 0 && ctx.Err() == nil {
+				if proxyClient := d.NewProxyFallbackClient(); proxyClient != nil && client != proxyClient {
+					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					_, pErr := d.probeWithClient(probeCtx, proxyClient, t.EffectiveURL(), t.RequestHeaders)
+					cancel()
+					if pErr == nil {
+						t.DirectTransfer = false
+						client = proxyClient
+						logger.Info("single stream mid-transfer direct connection failed, retrying via fallback proxy", "task", t.ID)
+						if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
+							return d.downloadChunks(ctx, t, partPath, destPath, sink, proxyClient)
+						}
+						continue
+					}
+				}
+			}
 			// P1-1: 单流下载中途已识别出服务端支持断点续传（Accept-Ranges: bytes）且文件总大小已知：
 			// 断流或取消时保留已下载进度，若非主动取消则直接无缝升级为分块断点续传完成剩余字节。
 			if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
@@ -1082,6 +1220,7 @@ type chunkCoordinator struct {
 	adaptive            *AdaptiveConcurrency
 	hasSucceededOnce    atomic.Bool
 	consecutiveConnFail atomic.Int32
+	globalBackoffUntil  time.Time
 	refreshMu           sync.Mutex
 	lastURLRefresh      time.Time
 	// requests 统计这次传输真正发出去的 HTTP 请求数（含重试与拆分出来的子块）。
@@ -1096,6 +1235,7 @@ func (coord *chunkCoordinator) publishLocked(downloaded int64) {
 	publishProgress(coord.t, downloaded, coord.sink)
 }
 func (coord *chunkCoordinator) resetTrackersLocked() {
+	coord.globalBackoffUntil = time.Time{}
 	for _, trk := range coord.trackers {
 		if trk != nil {
 			trk.retries = 0
@@ -1104,47 +1244,75 @@ func (coord *chunkCoordinator) resetTrackersLocked() {
 	}
 }
 
-// trySwitchToDirect 在传输中途代理失效（连续连接失败或网关 502/504）时，
-// 用直连探针验证目标服务器是否可达；若直连可达，则将当前任务平滑切换为直连传输，保留全部已下载分片。
-func (coord *chunkCoordinator) trySwitchToDirect(ctx context.Context) bool {
+func (coord *chunkCoordinator) recordGlobalBackoffLocked(delay time.Duration) {
+	until := time.Now().Add(delay)
+	if until.After(coord.globalBackoffUntil) {
+		coord.globalBackoffUntil = until
+	}
+}
+
+// trySwitchTransportFallback 在传输中途当前通道失效（连续连接失败、EOF 重置或网关 502/504）时，
+// 双向探测备用通道：
+// 1. 若当前走的是代理，用直连探针验证目标服务器是否可达，可达则切换为直连；
+// 2. 若当前走的是直连且配置/系统登记了备用代理，用代理探针验证是否可达，可达则切换至备用代理。
+func (coord *chunkCoordinator) trySwitchTransportFallback(ctx context.Context) bool {
 	if coord.downloader == nil || ctx.Err() != nil {
 		return false
 	}
 	coord.mu.Lock()
 	alreadyDirect := coord.t.DirectTransfer
+	currClient := coord.client
 	targetURL := coord.t.EffectiveURL()
 	creds := coord.t.RequestHeaders
 	coord.mu.Unlock()
 
-	if alreadyDirect {
-		return false
-	}
-	directClient := coord.downloader.NewDirectFallbackClient()
-	if directClient == nil {
-		return false
+	if !alreadyDirect {
+		if directClient := coord.downloader.NewDirectFallbackClient(); directClient != nil && currClient != directClient {
+			probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			_, err := coord.downloader.probeWithClient(probeCtx, directClient, targetURL, creds)
+			cancel()
+			if err == nil {
+				coord.mu.Lock()
+				if !coord.t.DirectTransfer {
+					coord.t.DirectTransfer = true
+					coord.client = directClient
+					coord.consecutiveConnFail.Store(0)
+					coord.adaptive.CapMaxLimit(ConservativeMaxCap)
+					coord.resetTrackersLocked()
+					coord.downloader.log().Info("chunked transfer switched to direct connection fallback mid-transfer",
+						"task", coord.t.ID, "url", logging.SafeURL(coord.t.URL))
+				}
+				coord.mu.Unlock()
+				return true
+			}
+		}
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	if _, err := coord.downloader.probeWithClient(probeCtx, directClient, targetURL, creds); err != nil {
-		return false
+	if proxyClient := coord.downloader.NewProxyFallbackClient(); proxyClient != nil && currClient != proxyClient {
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		_, err := coord.downloader.probeWithClient(probeCtx, proxyClient, targetURL, creds)
+		cancel()
+		if err == nil {
+			coord.mu.Lock()
+			if coord.client != proxyClient {
+				coord.t.DirectTransfer = false
+				coord.client = proxyClient
+				coord.consecutiveConnFail.Store(0)
+				coord.adaptive.CapMaxLimit(ConservativeMaxCap)
+				coord.resetTrackersLocked()
+				coord.downloader.log().Info("chunked transfer switched to fallback proxy connection mid-transfer",
+					"task", coord.t.ID, "url", logging.SafeURL(coord.t.URL))
+			}
+			coord.mu.Unlock()
+			return true
+		}
 	}
 
-	coord.mu.Lock()
-	if !coord.t.DirectTransfer {
-		coord.t.DirectTransfer = true
-		coord.client = directClient
-		coord.consecutiveConnFail.Store(0)
-		coord.resetTrackersLocked()
-		coord.downloader.log().Info("chunked transfer switched to direct connection fallback mid-transfer",
-			"task", coord.t.ID, "url", logging.SafeURL(coord.t.URL))
-	}
-	coord.mu.Unlock()
-	return true
+	return false
 }
 
-// tryRefreshExpiredFinalURL 当任务使用的是 302 重定向后的临时签名地址（FinalURL != URL），
-// 且传输或续传中遭遇 401/403/410 等鉴权过期状态码时，尝试回源请求原始 URL 获取新签名。
+// tryRefreshExpiredFinalURL 当任务使用的是 302 重定向后的临时签名地址（FinalURL != URL，或 URL 含过期签名参数），
+// 且传输或续传中遭遇 400/401/403/410 等鉴权过期状态码时，尝试回源请求原始 URL 获取新签名。
 func (coord *chunkCoordinator) tryRefreshExpiredFinalURL(ctx context.Context, failedURL string) bool {
 	if coord.downloader == nil || ctx.Err() != nil {
 		return false
@@ -1155,10 +1323,12 @@ func (coord *chunkCoordinator) tryRefreshExpiredFinalURL(ctx context.Context, fa
 	client := coord.client
 	coord.mu.Unlock()
 
-	if origURL == "" || currFinal == "" || origURL == currFinal {
+	if origURL == "" {
 		return false
 	}
-
+	if (currFinal == "" || origURL == currFinal) && len(deriveRefreshCandidates(origURL)) <= 1 {
+		return false
+	}
 	coord.refreshMu.Lock()
 	defer coord.refreshMu.Unlock()
 
@@ -1258,15 +1428,24 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 			}
 			continue
 		}
-		// 3. Claim next available unclaimed chunk (excluding chunks in backoff cooldown)
+		// 3. 若处于全局故障退避冷却窗（刚刚有分片发生 EOF/连接重置或限流），暂停认领新分片或拆分慢块，
+		// 防止空闲 worker 在冷却期内换其它分片继续撞击服务端防火墙。
 		now := time.Now()
 		var earliestBackoff time.Time
+		if !coord.globalBackoffUntil.IsZero() && now.Before(coord.globalBackoffUntil) {
+			earliestBackoff = coord.globalBackoffUntil
+		}
+
+		// 4. Claim next available unclaimed chunk (excluding chunks in backoff cooldown)
 		hasPendingChunks := false
 		for i := range coord.t.Chunks {
 			c := &coord.t.Chunks[i]
 			trk := coord.trackers[c.Index]
 			if !c.Completed && trk != nil && !trk.claimed {
 				hasPendingChunks = true
+				if !earliestBackoff.IsZero() && now.Before(earliestBackoff) {
+					continue
+				}
 				if !trk.backoffUntil.IsZero() && now.Before(trk.backoffUntil) {
 					if earliestBackoff.IsZero() || trk.backoffUntil.Before(earliestBackoff) {
 						earliestBackoff = trk.backoffUntil
@@ -1283,18 +1462,19 @@ func (coord *chunkCoordinator) getNextChunk(ctx context.Context) int {
 			}
 		}
 
-		// 4. Try to assist a slow chunk by dynamically splitting its remaining range
-		split := coord.trySplitSlowChunkLocked()
-		if split.newIdx != -1 {
-			coord.mu.Unlock()
-			// 日志是文件 I/O，放在锁外：拆分很频繁，锁内写日志会让所有工作协程一起等它。
-			coord.downloader.log().Info("split slow chunk",
-				"chunk", split.fromIdx, "remaining", split.remaining,
-				"speedBps", split.speedBps, "newChunk", split.newIdx)
-			return split.newIdx
+		// 5. Try to assist a slow chunk by dynamically splitting its remaining range (only when not in global backoff)
+		if earliestBackoff.IsZero() || !now.Before(earliestBackoff) {
+			split := coord.trySplitSlowChunkLocked()
+			if split.newIdx != -1 {
+				coord.mu.Unlock()
+				// 日志是文件 I/O，放在锁外：拆分很频繁，锁内写日志会让所有工作协程一起等它。
+				coord.downloader.log().Info("split slow chunk",
+					"chunk", split.fromIdx, "remaining", split.remaining,
+					"speedBps", split.speedBps, "newChunk", split.newIdx)
+				return split.newIdx
+			}
 		}
-
-		// 5. Check if any workers are still active
+		// 6. Check if any workers are still active
 		activeWorkers = coord.countActiveWorkersLocked()
 		if activeWorkers == 0 {
 			// 若没有活跃 worker，但有分块处于退避隔离中，等待最早的退避到期进行自愈替补
@@ -1541,15 +1721,23 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 
 			coord.mu.Lock()
 			trk := coord.trackers[chunkIdx]
+			activeWorkers := coord.countActiveWorkersLocked()
 			var currentRetries int
 			if trk != nil {
 				currentRetries = trk.retries
-				trk.retries++
+				// 仅当未因并发超额而被动让位时才累计该分片的致命重试次数
+				if activeWorkers <= newLimit && activeWorkers <= 1 {
+					trk.retries++
+				}
 			}
-			activeWorkers := coord.countActiveWorkersLocked()
+			delay := retryBackoff(currentRetries)
+			coord.recordGlobalBackoffLocked(delay)
 			coord.mu.Unlock()
 
 			if currentRetries >= maxChunkRetries {
+				if coord.trySwitchTransportFallback(ctx) {
+					continue
+				}
 				coord.mu.Lock()
 				coord.lastErr = fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, currentRetries, chunkErr)
 				coord.mu.Unlock()
@@ -1560,26 +1748,25 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 				if trk != nil {
 					trk.claimed = false
 					trk.active = false
-					trk.backoffUntil = time.Now().Add(retryBackoff(currentRetries))
+					trk.backoffUntil = time.Now().Add(delay)
 				}
 				coord.mu.Unlock()
 				return nil
 			}
 
-			// 若当前并发允许数小于已激活 worker，且还有其他 worker 在运行，说明当前槽位已超标，主动释放分片让位退出
-			if activeWorkers > newLimit {
+			// 若当前并发允许数小于已激活 worker，或仍有其他活跃 worker，主动释放分片让位退出
+			if activeWorkers > newLimit || activeWorkers > 1 {
 				coord.mu.Lock()
 				targetChunk := &coord.t.Chunks[chunkIdx]
 				if !targetChunk.Completed && trk != nil {
 					trk.claimed = false
 					trk.active = false
-					trk.backoffUntil = time.Now().Add(retryBackoff(currentRetries))
+					trk.backoffUntil = time.Now().Add(delay)
 				}
 				coord.mu.Unlock()
 				return nil
 			}
 
-			delay := retryBackoff(currentRetries)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -1598,18 +1785,24 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		if gained > 0 && trk != nil {
 			trk.retries = 0
 		}
+		activeWorkers := coord.countActiveWorkersLocked()
 		var retries int
 		if trk != nil {
 			retries = trk.retries
-			trk.retries++
+			// 当有多个并发 worker 同时运行且因超额并发缩容让位时，不惩罚该分片的独立重试额度，
+			// 保证收敛至单线程后拥有完整的退避自愈机会。
+			if activeWorkers <= 1 {
+				trk.retries++
+			}
 		}
-		activeWorkers := coord.countActiveWorkersLocked()
+		delay := retryBackoff(retries)
+		coord.recordGlobalBackoffLocked(delay)
 		coord.mu.Unlock()
 
-		// 2. 若本轮请求 0 字节推进且连续出现连接故障，检查是否为代理中途失效并尝试切换直连逃生
+		// 2. 若本轮请求 0 字节推进且连续出现连接故障，检查是否为当前通道失效（代理断流或直连被源站封禁）并尝试双向切换逃生
 		if gained == 0 {
 			if coord.consecutiveConnFail.Add(1) >= 2 {
-				if coord.trySwitchToDirect(ctx) {
+				if coord.trySwitchTransportFallback(ctx) {
 					continue
 				}
 			}
@@ -1627,7 +1820,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			"error", logging.SafeError(chunkErr).Error())
 
 		if retries >= maxChunkRetries {
-			if coord.trySwitchToDirect(ctx) {
+			if coord.trySwitchTransportFallback(ctx) {
 				continue
 			}
 			coord.mu.Lock()
@@ -1645,14 +1838,13 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			if trk != nil {
 				trk.claimed = false
 				trk.active = false
-				trk.backoffUntil = time.Now().Add(retryBackoff(retries))
+				trk.backoffUntil = time.Now().Add(delay)
 			}
 			coord.mu.Unlock()
 			return nil
 		}
 
 		// 唯一存活的 worker，在原地退避重试
-		delay := retryBackoff(retries)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -1739,9 +1931,9 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 			}
 			return fmt.Errorf("%w: server returned 200 OK instead of partial content", ErrRangeNotSupported)
 		}
-		// P0-3: 若使用的是 302 重定向后的临时地址（FinalURL != URL），当遭遇 401/403/410 等签名过期状态码时，
+		// P0-3: 若使用的是 302 重定向后的临时地址（FinalURL != URL 或含过期签名参数），当遭遇 400/401/403/410 等签名过期状态码时，
 		// 先尝试回源原始 URL 刷新签名地址；若刷新成功，返回普通可重试错误以立即用新 FinalURL 续传。
-		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone) &&
+		if isExpiredLinkStatusCode(resp.StatusCode) &&
 			coord.tryRefreshExpiredFinalURL(ctx, targetURL) {
 			return fmt.Errorf("redirected URL expired (%s), refreshed from origin", resp.Status)
 		}
