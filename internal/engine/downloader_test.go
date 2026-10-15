@@ -698,3 +698,179 @@ func TestHTTPDownloader_PreFlightDiskSpaceCheck(t *testing.T) {
 		t.Fatalf("expected ErrInsufficientDiskSpace after resolving single-stream Content-Length, got: %v", err)
 	}
 }
+
+// TestHTTPDownloader_HTMLSoftErrorDisguiseInterception 验证 P2-1：
+//  1. 当下载二进制/安装包（如 .exe / .zip）遇到服务端会话过期返回 200 OK + text/html 登录页时，
+//     无论是分块下载还是单流下载均立即拦截并上报 ErrHTMLDisguisedAsBin 致命错误，绝不将网页存为损坏的安装包；
+//  2. 若任务使用的是 302 跳转后的过期 FinalURL 返回了 200 OK 登录页，优先尝试从原始 URL 回源刷新并恢复真实二进制下载；
+//  3. 若用户本来就是要下载 .html 网页文件，正常放行并完成保存。
+func TestHTTPDownloader_HTMLSoftErrorDisguiseInterception(t *testing.T) {
+	loginPageHTML := []byte("<!DOCTYPE html><html><head><title>Login Required</title></head><body>Please sign in</body></html>")
+	realZipPayload := append([]byte("PK\x03\x04"), bytes.Repeat([]byte("binary-zip-content-"), 20000)...)
+
+	var originRefreshHits atomic.Int32
+	var serverURL string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/expired-session/installer.exe":
+			// 模拟鉴权过期后服务端不返回 401/403，而是直接 200 OK 返回 HTML 登录页
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(loginPageHTML)
+		case "/origin/package.zip":
+			originRefreshHits.Add(1)
+			http.Redirect(w, r, serverURL+"/cdn/fresh/package.zip", http.StatusFound)
+		case "/cdn/expired/package.zip":
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(loginPageHTML)
+		case "/cdn/fresh/package.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"zip-v1"`)
+			rangeHdr := r.Header.Get("Range")
+			if rangeHdr == "" {
+				w.Header().Set("Content-Length", strconv.Itoa(len(realZipPayload)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(realZipPayload)
+				return
+			}
+			var start, end int64
+			_, _ = fmt.Sscanf(rangeHdr, "bytes=%d-%d", &start, &end)
+			if end >= int64(len(realZipPayload)) {
+				end = int64(len(realZipPayload)) - 1
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(realZipPayload)))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(realZipPayload[start : end+1])
+		case "/docs/manual.html":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(loginPageHTML)
+		case "/portal/download.html":
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`<div class="login-box">Session expired, please login</div>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	serverURL = ts.URL
+
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	tmpDir := t.TempDir()
+
+	// 1. 探测阶段：对 .exe 链接返回 200 OK + text/html 登录页时直接拦截
+	if _, probeErr := downloader.Probe(context.Background(), ts.URL+"/expired-session/installer.exe", nil); !errors.Is(probeErr, engine.ErrHTMLDisguisedAsBin) {
+		t.Fatalf("expected Probe to intercept disguised HTML with ErrHTMLDisguisedAsBin, got: %v", probeErr)
+	}
+
+	// 2. 分块传输阶段：遭遇 200 OK + text/html 登录页时立即报错中止，绝不降级单流保存损坏文件
+	chunkTask := &task.Task{
+		ID:             "task-html-disguise-chunk",
+		URL:            ts.URL + "/expired-session/installer.exe",
+		Filename:       "installer.exe",
+		Directory:      tmpDir,
+		TotalBytes:     512 * 1024,
+		MaxConcurrency: 2,
+		Resumable:      true,
+	}
+	err := downloader.Download(context.Background(), chunkTask, nil)
+	if !errors.Is(err, engine.ErrHTMLDisguisedAsBin) {
+		t.Fatalf("expected chunked download to fail with ErrHTMLDisguisedAsBin, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "installer.exe")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no corrupted installer.exe to be saved on disk")
+	}
+
+	// 3. 单流传输阶段：未知大小任务遭遇 200 OK + text/html 登录页时同样拦截并清理临时文件
+	singleTask := &task.Task{
+		ID:         "task-html-disguise-single",
+		URL:        ts.URL + "/expired-session/installer.exe",
+		Filename:   "installer_single.exe",
+		Directory:  tmpDir,
+		TotalBytes: -1,
+		Resumable:  false,
+	}
+	err = downloader.Download(context.Background(), singleTask, nil)
+	if !errors.Is(err, engine.ErrHTMLDisguisedAsBin) {
+		t.Fatalf("expected single-stream download to fail with ErrHTMLDisguisedAsBin, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "installer_single.exe")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no corrupted installer_single.exe to be saved on disk")
+	}
+
+	// 4. 过期 FinalURL 返回 200 OK HTML 登录页时，自动回源刷新 FinalURL 并完成真实 ZIP 下载
+	refreshTask := &task.Task{
+		ID:             "task-html-disguise-refresh",
+		URL:            ts.URL + "/origin/package.zip",
+		FinalURL:       ts.URL + "/cdn/expired/package.zip",
+		Filename:       "package.zip",
+		Directory:      tmpDir,
+		TotalBytes:     int64(len(realZipPayload)),
+		ETag:           `"zip-v1"`,
+		MaxConcurrency: 2,
+		Resumable:      true,
+	}
+	if err := downloader.Download(context.Background(), refreshTask, nil); err != nil {
+		t.Fatalf("expected expired FinalURL returning HTML to recover via origin refresh, got: %v", err)
+	}
+	if originRefreshHits.Load() == 0 {
+		t.Fatalf("expected origin URL to be queried for refreshing FinalURL")
+	}
+	gotZip, err := os.ReadFile(filepath.Join(tmpDir, "package.zip"))
+	if err != nil || !bytes.Equal(gotZip, realZipPayload) {
+		t.Fatalf("downloaded zip payload mismatch after origin refresh")
+	}
+
+	// 4b. URL 网关为 /portal/download.html?file=archive.tar 但任务目标文件名为 archive.tar，且返回 <div... 片段 HTML 时仍准确拦截
+	gatewayTask := &task.Task{
+		ID:         "task-html-gateway-tar",
+		URL:        ts.URL + "/portal/download.html?file=archive.tar",
+		Filename:   "archive.tar",
+		Directory:  tmpDir,
+		TotalBytes: -1,
+		Resumable:  false,
+	}
+	if err := downloader.Download(context.Background(), gatewayTask, nil); !errors.Is(err, engine.ErrHTMLDisguisedAsBin) {
+		t.Fatalf("expected gateway URL with binary target filename to intercept HTML fragment, got: %v", err)
+	}
+
+	// 5. 合法下载 .html 文件本身时正常放行
+	htmlTask := &task.Task{
+		ID:         "task-legit-html",
+		URL:        ts.URL + "/docs/manual.html",
+		Filename:   "manual.html",
+		Directory:  tmpDir,
+		TotalBytes: -1,
+		Resumable:  false,
+	}
+	if err := downloader.Download(context.Background(), htmlTask, nil); err != nil {
+		t.Fatalf("expected legitimate .html download to succeed, got: %v", err)
+	}
+	gotHTML, err := os.ReadFile(filepath.Join(tmpDir, "manual.html"))
+	if err != nil || !bytes.Equal(gotHTML, loginPageHTML) {
+		t.Fatalf("legitimate html content mismatch")
+	}
+}
+
+// TestHTTPDownloader_SharedClientConnectionPoolReuse 验证 P2-2：
+// GetClientForDownload 与 GetClientForTask 复用同一个底层 Transport 连接池，避免每次请求重建 Transport 导致 TLS/TCP 连接池失效。
+func TestHTTPDownloader_SharedClientConnectionPoolReuse(t *testing.T) {
+	dl := engine.NewHTTPDownloader(nil)
+	c1 := dl.GetClientForDownload()
+	c2 := dl.GetClientForDownload()
+	if c1 == nil || c1 != c2 {
+		t.Fatalf("expected GetClientForDownload to reuse shared *http.Client instance")
+	}
+
+	directTask1 := &task.Task{ID: "t1", DirectTransfer: true}
+	directTask2 := &task.Task{ID: "t2", DirectTransfer: true}
+	dc1 := dl.GetClientForTask(directTask1)
+	dc2 := dl.GetClientForTask(directTask2)
+	if dc1 == nil || dc1 != dc2 {
+		t.Fatalf("expected direct transfer tasks to reuse shared direct *http.Client pool")
+	}
+}

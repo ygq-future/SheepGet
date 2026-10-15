@@ -2,6 +2,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -70,8 +71,9 @@ func retryBackoff(attempt int) time.Duration {
 }
 
 var (
-	ErrRangeNotSupported = errors.New("range not supported")
-	ErrVersionMismatch   = errors.New("file version changed during download")
+	ErrRangeNotSupported  = errors.New("range not supported")
+	ErrVersionMismatch    = errors.New("file version changed during download")
+	ErrHTMLDisguisedAsBin = errors.New("server returned HTML page instead of expected binary file (possible expired session or login page)")
 )
 
 // FatalError 表示传输期间遭遇的不可恢复错误（如 401/403/404/618 等致命状态码）。
@@ -111,6 +113,134 @@ func isFatalStatusCode(code int) bool {
 	return false
 }
 
+// isHTMLContentType 判断 Content-Type 是否为 HTML 页面（text/html 或 application/xhtml+xml）。
+func isHTMLContentType(contentType string) bool {
+	mime := strings.ToLower(strings.TrimSpace(contentType))
+	if idx := strings.IndexByte(mime, ';'); idx >= 0 {
+		mime = strings.TrimSpace(mime[:idx])
+	}
+	return mime == "text/html" || mime == "application/xhtml+xml"
+}
+
+// hasExplicitHTMLFilename 判断文件名是否本身就是用户意图下载的网页文档（.html/.htm/.xhtml 等）。
+// 注意：仅根据目标文件名或原始 URL 提取出的文件名判定，不信任 302 跳转后的 FinalURL（如跳转至 /login.html）。
+func hasExplicitHTMLFilename(filename string) bool {
+	clean := filename
+	if idx := strings.IndexAny(clean, "?#"); idx >= 0 {
+		clean = clean[:idx]
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(clean))) {
+	case ".html", ".htm", ".xhtml", ".shtml", ".mhtml":
+		return true
+	default:
+		return false
+	}
+}
+
+// hasExplicitHTMLTarget 判断任务文件名（若为空则回退原始请求 URL 提取的文件名）是否为网页文档。
+func hasExplicitHTMLTarget(filename, rawURL string) bool {
+	if strings.TrimSpace(filename) != "" {
+		return hasExplicitHTMLFilename(filename)
+	}
+	return hasExplicitHTMLFilename(extractFilenameFromURL(rawURL))
+}
+
+// looksLikeHTMLPayload 检查响应体前导字节（最多扫描前 512 字节）是否具有典型 HTML 文档特征，
+// 或是否明显违背已知二进制容器魔数。
+func looksLikeHTMLPayload(prefix []byte, filename string) bool {
+	if len(prefix) > 512 {
+		prefix = prefix[:512]
+	}
+	trimmed := bytes.TrimSpace(prefix)
+	if len(trimmed) == 0 {
+		return false
+	}
+	lower := bytes.ToLower(trimmed)
+	for _, marker := range [][]byte{
+		[]byte("<!doctype html"),
+		[]byte("<html"),
+		[]byte("<head"),
+		[]byte("<body"),
+		[]byte("<meta"),
+		[]byte("<title"),
+		[]byte("<script"),
+		[]byte("<div"),
+		[]byte("<!--"),
+	} {
+		if bytes.HasPrefix(lower, marker) || bytes.Contains(lower, marker) {
+			return true
+		}
+	}
+	// 当响应头已声明为 text/html 且前导字节以 '<' 开头（且非已验证匹配的二进制魔数）时，判定为 HTML 页面
+	if lower[0] == '<' && (len(lower) > 1 && ((lower[1] >= 'a' && lower[1] <= 'z') || lower[1] == '!' || lower[1] == '?')) {
+		return true
+	}
+	if lower[0] == '<' && mismatchesKnownBinaryMagic(filename, prefix) {
+		return true
+	}
+	return false
+}
+
+// mismatchesKnownBinaryMagic 检查文件名是否对应具有固定魔数的二进制格式，且当前字节头与该格式魔数不符。
+func mismatchesKnownBinaryMagic(filename string, prefix []byte) bool {
+	if len(prefix) < 4 {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	switch ext {
+	case ".exe", ".dll", ".msi":
+		return !bytes.HasPrefix(prefix, []byte("MZ")) && !bytes.HasPrefix(prefix, []byte{0xD0, 0xCF})
+	case ".zip", ".apk", ".jar", ".xpi", ".docx", ".xlsx", ".pptx":
+		return !bytes.HasPrefix(prefix, []byte("PK"))
+	case ".pdf":
+		return !bytes.HasPrefix(prefix, []byte("%PDF"))
+	case ".png":
+		return !bytes.HasPrefix(prefix, []byte{0x89, 'P', 'N', 'G'})
+	case ".gz", ".tgz":
+		return !bytes.HasPrefix(prefix, []byte{0x1F, 0x8B})
+	case ".7z":
+		return !bytes.HasPrefix(prefix, []byte("7z"))
+	case ".rar":
+		return !bytes.HasPrefix(prefix, []byte("Rar!"))
+	case ".dmg", ".iso", ".bin", ".mp4", ".mkv", ".mov", ".webm", ".avi", ".mp3", ".flac", ".wav":
+		return true
+	default:
+		return false
+	}
+}
+
+// checkDisguisedHTML 统一判定探测、分块与单流响应是否属于「返回 200 OK + text/html 登录页/错误页」的伪装软错误。
+func checkDisguisedHTML(resp *http.Response, targetFilename, origURL string, firstBytes []byte) bool {
+	if resp == nil {
+		return false
+	}
+	if !isHTMLContentType(resp.Header.Get("Content-Type")) {
+		return false
+	}
+	if hasExplicitHTMLTarget(targetFilename, origURL) {
+		return false
+	}
+	// 若服务端显式给出了非 HTML 的 attachment 文件名（如 Content-Disposition: attachment; filename="app.zip"），
+	// 则仅在已读取的正文确系 HTML 标签时才拦截，避免部分网盘把二进制流误标为 text/html。
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if fn := ParseContentDispositionFilename(cd); fn != "" && !hasExplicitHTMLFilename(fn) {
+			return len(firstBytes) > 0 && looksLikeHTMLPayload(firstBytes, fn)
+		}
+	}
+	if len(firstBytes) > 0 {
+		return looksLikeHTMLPayload(firstBytes, targetFilename)
+	}
+	return true
+}
+
+// isDisguisedHTMLResponse 包装任务级的 HTML 软错误伪装检查。
+func isDisguisedHTMLResponse(resp *http.Response, t *task.Task, firstBytes []byte) bool {
+	if t == nil {
+		return false
+	}
+	return checkDisguisedHTML(resp, t.Filename, t.URL, firstBytes)
+}
+
 // HTTPProbeInfo holds the result of probing an HTTP/HTTPS resource.
 type HTTPProbeInfo struct {
 	TotalBytes     int64  `json:"totalBytes"`
@@ -126,6 +256,7 @@ type HTTPProbeInfo struct {
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
 type HTTPDownloader struct {
 	client             *http.Client
+	directClient       *http.Client
 	customClient       bool
 	mu                 sync.RWMutex
 	tempDirectory      string
@@ -252,28 +383,20 @@ func (d *HTTPDownloader) GetProxy() (string, string) {
 	return d.proxyMode, d.customProxyAddr
 }
 
-// GetClientForDownload returns an *http.Client configured with the current proxy mode for a task run.
+// GetClientForDownload returns the shared *http.Client configured with the current proxy mode.
+// Reusing the shared client preserves the underlying Transport's TCP/TLS Keep-Alive connection pool
+// across HLS segments and multi-request probing/transfers.
 func (d *HTTPDownloader) GetClientForDownload() *http.Client {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if d.customClient {
-		return d.client
-	}
-	transport, err := createHTTPTransport(d.proxyMode, d.customProxyAddr)
-	if err != nil {
-		return d.client
-	}
-	return &http.Client{
-		Transport: transport,
-		Timeout:   0,
-	}
+	return d.client
 }
 
 // GetClientForTask returns an *http.Client configured for the specific task run.
-// If the task is marked for direct transfer (e.g. fallback when proxy failed during probe), it uses a direct connection.
+// If the task is marked for direct transfer (e.g. fallback when proxy failed during probe), it uses a shared direct connection pool.
 func (d *HTTPDownloader) GetClientForTask(t *task.Task) *http.Client {
 	if t != nil && t.DirectTransfer {
-		if directClient := d.newDirectClient(); directClient != nil {
+		if directClient := d.getOrCreateDirectClient(); directClient != nil {
 			return directClient
 		}
 	}
@@ -281,23 +404,38 @@ func (d *HTTPDownloader) GetClientForTask(t *task.Task) *http.Client {
 }
 
 // NewDirectFallbackClient 当下载器当前配置了代理且未使用测试注入的固定 customClient 时，
-// 返回一个绕过代理的直连 *http.Client，供传输中途或 HLS 代理故障逃生使用。
+// 返回一个绕过代理的共享直连 *http.Client，供传输中途或 HLS 代理故障逃生使用。
 func (d *HTTPDownloader) NewDirectFallbackClient() *http.Client {
 	if d == nil || d.customClient || !d.isProxyConfigured() {
 		return nil
 	}
-	return d.newDirectClient()
+	return d.getOrCreateDirectClient()
 }
 
-func (d *HTTPDownloader) newDirectClient() *http.Client {
+func (d *HTTPDownloader) getOrCreateDirectClient() *http.Client {
+	d.mu.RLock()
+	if d.directClient != nil {
+		c := d.directClient
+		d.mu.RUnlock()
+		return c
+	}
+	d.mu.RUnlock()
+
 	tr, err := createHTTPTransport("direct", "")
 	if err != nil {
 		return nil
 	}
-	return &http.Client{
+	client := &http.Client{
 		Transport: tr,
 		Timeout:   0,
 	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.directClient == nil {
+		d.directClient = client
+	}
+	return d.directClient
 }
 
 func (d *HTTPDownloader) isProxyConfigured() bool {
@@ -332,6 +470,9 @@ func (d *HTTPDownloader) RefreshFinalURL(ctx context.Context, client *http.Clien
 		}
 	}
 	if err != nil || info == nil || info.FinalURL == "" {
+		return "", false
+	}
+	if isHTMLContentType(info.ContentType) && !hasExplicitHTMLTarget(t.Filename, t.URL) {
 		return "", false
 	}
 	if t.TotalBytes > 0 && info.TotalBytes > 0 && t.TotalBytes != info.TotalBytes {
@@ -375,9 +516,9 @@ func createHTTPTransport(proxyMode, customAddr string) (*http.Transport, error) 
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:     false,
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   16,
+		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -440,9 +581,7 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 	// 若当前处于代理模式（custom 代理或启用的 system 代理），且探测失败（超时/连接重置等）：
 	// 尝试一次使用直连探测；若直连成功，则本次下载标记为直连下载（DirectTransfer = true）。
 	if !d.customClient && d.isProxyConfigured() {
-		directTr, trErr := createHTTPTransport("direct", "")
-		if trErr == nil {
-			directClient := &http.Client{Transport: directTr, Timeout: 0}
+		if directClient := d.getOrCreateDirectClient(); directClient != nil {
 			directCtx := ctx
 			if ctx.Err() != nil {
 				var cancel context.CancelFunc
@@ -583,7 +722,25 @@ func (d *HTTPDownloader) probeWithClient(ctx context.Context, client *http.Clien
 			info.Filename = extractFilenameFromURL(urlStr)
 		}
 	}
-
+	// P2-1: 若探测到的响应是 text/html，但原始请求 URL 或推断文件名明确指向已知二进制格式（而非网页），
+	// 复用统一的 checkDisguisedHTML 识别登录页/错误页伪装（如 302 跳转至 /login.html 返回 200 OK）。
+	origFilename := extractFilenameFromURL(urlStr)
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if fn := ParseContentDispositionFilename(cd); fn != "" {
+			origFilename = fn
+		}
+	}
+	if mismatchesKnownBinaryMagic(origFilename, []byte("<!DOCTYPE html>")) {
+		var peek []byte
+		if resp.Request != nil && resp.Request.Method != http.MethodHead && resp.Body != nil {
+			buf := make([]byte, 512)
+			n, _ := io.ReadFull(resp.Body, buf)
+			peek = buf[:n]
+		}
+		if checkDisguisedHTML(resp, origFilename, urlStr, peek) {
+			return nil, &FatalError{Err: ErrHTMLDisguisedAsBin}
+		}
+	}
 	return info, nil
 }
 
@@ -777,6 +934,7 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 		body := watch.Reader(resp.Body)
 		buf := make([]byte, 64*1024)
 		var readErr error
+		checkedHTMLDisguise := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -792,6 +950,24 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 
 			n, rErr := body.Read(buf)
 			if n > 0 {
+				if !checkedHTMLDisguise {
+					checkedHTMLDisguise = true
+					if isDisguisedHTMLResponse(resp, t, buf[:n]) {
+						_ = resp.Body.Close()
+						_ = file.Close()
+						_ = os.Remove(partPath)
+						watch.Stop()
+						if attempt == 0 && t.FinalURL != "" && t.FinalURL != t.URL && ctx.Err() == nil {
+							if refreshedURL, ok := d.RefreshFinalURL(ctx, client, t); ok && refreshedURL != t.FinalURL {
+								t.FinalURL = refreshedURL
+								logger.Info("single stream refreshed expired FinalURL after HTML disguise response", "task", t.ID)
+								readErr = ErrHTMLDisguisedAsBin
+								break
+							}
+						}
+						return &FatalError{Err: ErrHTMLDisguisedAsBin}
+					}
+				}
 				if _, wErr := file.Write(buf[:n]); wErr != nil {
 					_ = resp.Body.Close()
 					_ = file.Close()
@@ -817,6 +993,9 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 		watch.Stop()
 
 		if readErr != nil {
+			if errors.Is(readErr, ErrHTMLDisguisedAsBin) && attempt == 0 {
+				continue
+			}
 			// 若单流在传输中途因代理断流中断，且存在可用的直连通道，切换为直连恢复传输
 			if attempt == 0 && !t.DirectTransfer && ctx.Err() == nil {
 				if directClient := d.NewDirectFallbackClient(); directClient != nil {
@@ -1546,6 +1725,18 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 	}
 	if resp.StatusCode != http.StatusPartialContent {
 		if resp.StatusCode == http.StatusOK {
+			// P2-1: 若服务端对 Range 请求返回 200 OK 且伴随 text/html，預读前 512 字节确认是否为登录页/错误页伪装。
+			// 若确系 HTML 软错误页面，先尝试回源刷新过期 FinalURL，否则直接上报致命错误中止，绝不降级单流把网页存为二进制文件。
+			if isHTMLContentType(resp.Header.Get("Content-Type")) {
+				peek := make([]byte, 512)
+				n, _ := io.ReadFull(resp.Body, peek)
+				if isDisguisedHTMLResponse(resp, coord.t, peek[:n]) {
+					if coord.tryRefreshExpiredFinalURL(ctx, targetURL) {
+						return fmt.Errorf("redirected URL returned HTML page, refreshed from origin")
+					}
+					return &FatalError{Err: ErrHTMLDisguisedAsBin}
+				}
+			}
 			return fmt.Errorf("%w: server returned 200 OK instead of partial content", ErrRangeNotSupported)
 		}
 		// P0-3: 若使用的是 302 重定向后的临时地址（FinalURL != URL），当遭遇 401/403/410 等签名过期状态码时，

@@ -997,3 +997,73 @@ func TestDownload_AdaptiveConcurrencyUnderRateLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestDownload_KeepAliveConnectionReuseAndStaleSelfHealing 验证 P2-2：
+//  1. 连续下载多个小分片时复用底层 TCP/TLS Keep-Alive 连接（新建连接数远小于分片请求数）；
+//  2. 当服务端在某个分片响应后主动掐断空闲连接或中途重置连接时，Fetcher 自动驱逐陈旧连接并立即自愈重连，
+//     不消耗分片常规退避重试配额，顺利完成全部分片下载。
+func TestDownload_KeepAliveConnectionReuseAndStaleSelfHealing(t *testing.T) {
+	restore := hls.SetRetryBaseDelayForTest(200 * time.Millisecond)
+	defer restore()
+
+	var totalReqs atomic.Int32
+	var closeDroppedOnce atomic.Bool
+	var uniqueRemoteAddrs sync.Map
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uniqueRemoteAddrs.Store(r.RemoteAddr, struct{}{})
+		reqNum := totalReqs.Add(1)
+
+		// 在第 5 个请求时模拟服务端突然断开连接（Stale Keep-Alive / EOF）
+		if reqNum == 5 && !closeDroppedOnce.Swap(true) {
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, err := hj.Hijack(); err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "video/mp2t")
+		_, _ = fmt.Fprintf(w, "segment-data-%s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	const segCount = 16
+	var sb strings.Builder
+	sb.WriteString("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-VERSION:3\n")
+	for i := range segCount {
+		_, _ = fmt.Fprintf(&sb, "#EXTINF:4.000,\nseg%d.ts\n", i)
+	}
+	sb.WriteString("#EXT-X-ENDLIST\n")
+
+	pl := parseBody(t, server.URL+"/media.m3u8", sb.String())
+	dir := t.TempDir()
+
+	f := hls.NewFetcher(server.Client(), credentials.New(nil))
+	start := time.Now()
+	inputs, err := f.Download(context.Background(), pl, dir, 2, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("expected HLS download to self-heal from closed connection and succeed, got: %v", err)
+	}
+	if len(inputs.Segments) != segCount {
+		t.Fatalf("expected %d segments, got %d", segCount, len(inputs.Segments))
+	}
+	if !closeDroppedOnce.Load() {
+		t.Fatalf("expected simulated connection drop to be triggered")
+	}
+	// 验证自愈重试未触发 200ms 常规退避等待
+	if elapsed >= 180*time.Millisecond {
+		t.Fatalf("expected stale connection self-healing to retry immediately without 200ms backoff, took %v", elapsed)
+	}
+
+	connCount := 0
+	uniqueRemoteAddrs.Range(func(_, _ any) bool {
+		connCount++
+		return true
+	})
+	// 2 并发下载 16 个分片（外加 1 次断开重连），Keep-Alive 复用下总 TCP 连接数应远小于分片数（<= 4）
+	if connCount > 4 {
+		t.Fatalf("expected Keep-Alive connection reuse across %d segments (<= 4 TCP connections), got %d", segCount, connCount)
+	}
+}

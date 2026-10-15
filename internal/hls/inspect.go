@@ -3,7 +3,6 @@ package hls
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -222,8 +221,7 @@ func (f *Fetcher) headContentLength(ctx context.Context, seg Segment) (int64, er
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer drainAndClose(resp.Body)
 	if resp.StatusCode >= 400 {
 		return 0, &statusError{code: resp.StatusCode, status: resp.Status}
 	}

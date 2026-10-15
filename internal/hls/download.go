@@ -93,6 +93,43 @@ func isFatalSegmentError(err error) bool {
 	return false
 }
 
+// drainAndClose 抽干残留的少量响应体字节后关闭，以确保底层 HTTP/1.1 Keep-Alive 连接能安全归还至连接池复用。
+func drainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	_, _ = io.CopyN(io.Discard, body, 64*1024)
+	_ = body.Close()
+}
+
+// isStaleKeepAliveError 识别长周期 HLS 传输中复用空闲 Keep-Alive 连接时对端恰好关闭连接产生的瞬态错误
+// （如 EOF、connection reset by peer、broken pipe、server closed idle connection）。
+// 遇到此类半开连接错误时，驱逐连接池中的陈旧空闲连接并立即自愈重发请求，避免消耗分片重试配额。
+func isStaleKeepAliveError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrStalled) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, token := range []string{
+		"eof",
+		"server closed idle connection",
+		"connection reset by peer",
+		"wsarecv",
+		"wsasend",
+		"forcibly closed",
+		"broken pipe",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, token) {
+			return true
+		}
+	}
+	return false
+}
+
 // segmentFlowGate 管理 HLS 分片下载的自适应并发窗口。
 // 当遇到 429/503 或连接异常时自动收缩并发上限，平稳完成分片后逐步恢复至任务配置的上限。
 type segmentFlowGate struct {
@@ -297,6 +334,14 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 	}
 	client := f.activeClient()
 	resp, err := client.Do(req)
+	// P2-2: 若因复用连接池中的半开/空闲过期连接（对端已关闭 Keep-Alive）导致首次 Do 立即报错，
+	// 立即清理陈旧空闲连接并透明重试一次新建连接，实现长周期连接关闭自愈。
+	if err != nil && ctx.Err() == nil && isStaleKeepAliveError(err) {
+		client.CloseIdleConnections()
+		if retryReq, rErr := buildReq(); rErr == nil {
+			resp, err = client.Do(retryReq)
+		}
+	}
 	if err == nil && resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusGatewayTimeout {
 		return resp, nil
 	}
@@ -316,7 +361,7 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 		primaryErr = &statusError{code: resp.StatusCode, status: resp.Status}
 	}
 	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
+		drainAndClose(resp.Body)
 	}
 
 	fbReq, fbReqErr := buildReq()
@@ -329,7 +374,7 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 	}
 	if fbResp.StatusCode >= 400 {
 		if err != nil {
-			_ = fbResp.Body.Close()
+			drainAndClose(fbResp.Body)
 			return nil, err
 		}
 		return fbResp, nil
@@ -356,7 +401,7 @@ func (f *Fetcher) GetText(ctx context.Context, rawURL string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer drainAndClose(resp.Body)
 	return io.ReadAll(resp.Body)
 }
 
@@ -578,6 +623,7 @@ func (f *Fetcher) fetchSegment(ctx context.Context, seg Segment, dest string) (i
 
 func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest string, gate *segmentFlowGate) (int64, error) {
 	var lastErr error
+	staleRecovered := false
 	for attempt := 0; attempt < segmentFetchAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
@@ -592,6 +638,14 @@ func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest st
 		lastErr = err
 		if errors.Is(err, context.Canceled) || isFatalSegmentError(err) {
 			return 0, fmt.Errorf("分片 %s 下载失败: %w", seg.URI, err)
+		}
+		// P2-2: 若分片在读取途中遭遇长连接被服务端主动关闭/重置，首次触发时主动清理空闲连接池并立即自愈重试，
+		// 不计入分片失败次数、不触发并发缩容也不引入退避等待。
+		if !staleRecovered && ctx.Err() == nil && isStaleKeepAliveError(err) {
+			staleRecovered = true
+			f.activeClient().CloseIdleConnections()
+			attempt--
+			continue
 		}
 		if gate != nil {
 			gate.onFailure(err)
@@ -655,13 +709,13 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	if err != nil {
 		return 0, watch.Err(ctx, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer drainAndClose(resp.Body)
 	watch.Touch()
 	body := watch.Reader(resp.Body)
 
 	partPath := dest + ".part"
 	// 若上一次尝试已经完整下载并校验通过、仅在最终 Rename 时被外部句柄短暂阻塞，
-	// 且该 .part 文件长度与期望完全一致，可直接尝试完成原子改名，免去重复网络传输。
+	// 且该 .part 文件长度与期望完全一致，可直接尝试完成原子改名，免去重复落盘。
 	if seg.RangeLength > 0 {
 		if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == seg.RangeLength {
 			if err := atomicfile.Rename(partPath, dest); err == nil {
@@ -669,7 +723,6 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 			}
 		}
 	}
-
 	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return 0, err
@@ -704,7 +757,7 @@ func (f *Fetcher) readAll(ctx context.Context, seg Segment) ([]byte, error) {
 	if err != nil {
 		return nil, watch.Err(ctx, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer drainAndClose(resp.Body)
 	watch.Touch()
 	data, readErr := io.ReadAll(watch.Reader(resp.Body))
 	if readErr != nil {
@@ -731,7 +784,7 @@ func (f *Fetcher) fetchKey(ctx context.Context, uri string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, err))
 		}
-		defer func() { _ = resp.Body.Close() }()
+		defer drainAndClose(resp.Body)
 		watch.Touch()
 		data, readErr := io.ReadAll(watch.Reader(resp.Body))
 		if readErr != nil {
@@ -769,7 +822,7 @@ func (f *Fetcher) do(ctx context.Context, rawURL string, start, length int64) (*
 		return nil, logging.SafeError(err)
 	}
 	if resp.StatusCode >= 400 {
-		_ = resp.Body.Close()
+		drainAndClose(resp.Body)
 		return nil, &statusError{code: resp.StatusCode, status: resp.Status}
 	}
 	return resp, nil
