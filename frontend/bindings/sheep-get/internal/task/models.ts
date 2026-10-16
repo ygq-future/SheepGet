@@ -132,9 +132,14 @@ export class Task {
     "resumable": boolean;
 
     /**
-     * DirectTransfer 标记本次下载是否强制走直连（当全局配置了代理但探测超时/失败后直连探测成功时置为 true）。
+     * DirectTransfer 标记本次下载是否强制走直连（当全局配置了代理但所有代理探测/传输失败后直连成功时置为 true）。
      */
     "directTransfer"?: boolean;
+
+    /**
+     * ProxyAddr 记录本次下载在多代理轮询回退中锁定的可用自定义代理地址（为空表示使用默认首选或直连）。
+     */
+    "proxyAddr"?: string;
     "etag"?: string;
     "lastModified"?: string;
 
@@ -246,22 +251,22 @@ export class Task {
      * Creates a new Task instance from a string or object.
      */
     static createFrom($$source: any = {}): Task {
-        const $$createField23_0 = $$createType1;
-        const $$createField24_0 = $$createType3;
-        const $$createField27_0 = $$createType4;
-        const $$createField28_0 = $$createType6;
+        const $$createField24_0 = $$createType1;
+        const $$createField25_0 = $$createType3;
+        const $$createField28_0 = $$createType4;
+        const $$createField29_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
-            $$parsedSource["chunks"] = $$createField23_0($$parsedSource["chunks"]);
+            $$parsedSource["chunks"] = $$createField24_0($$parsedSource["chunks"]);
         }
         if ("media" in $$parsedSource) {
-            $$parsedSource["media"] = $$createField24_0($$parsedSource["media"]);
+            $$parsedSource["media"] = $$createField25_0($$parsedSource["media"]);
         }
         if ("segmentDone" in $$parsedSource) {
-            $$parsedSource["segmentDone"] = $$createField27_0($$parsedSource["segmentDone"]);
+            $$parsedSource["segmentDone"] = $$createField28_0($$parsedSource["segmentDone"]);
         }
         if ("mediaInputs" in $$parsedSource) {
-            $$parsedSource["mediaInputs"] = $$createField28_0($$parsedSource["mediaInputs"]);
+            $$parsedSource["mediaInputs"] = $$createField29_0($$parsedSource["mediaInputs"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

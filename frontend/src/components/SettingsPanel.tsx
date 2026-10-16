@@ -416,6 +416,13 @@ export function SettingsPanel() {
   const [isAddingExcludedSite, setIsAddingExcludedSite] = useState(false);
   const [newExcludedSiteVal, setNewExcludedSiteVal] = useState('');
 
+  const customProxyList: string[] =
+    proxy.customAddrs && proxy.customAddrs.length > 0
+      ? proxy.customAddrs
+      : proxy.customAddr && proxy.customAddr.trim() !== ''
+        ? [proxy.customAddr.trim()]
+        : [];
+
   const [selectedProxyMode, setSelectedProxyMode] = useState<configModels.ProxyMode>(
     proxy.mode || configModels.ProxyMode.ProxyModeSystem,
   );
@@ -424,15 +431,8 @@ export function SettingsPanel() {
     setLastSavedProxyMode(proxy.mode);
     setSelectedProxyMode(proxy.mode);
   }
-  const [customProxyDraft, setCustomProxyDraft] = useState(proxy.customAddr || '');
+  const [customProxyDraft, setCustomProxyDraft] = useState('');
   const [proxyError, setProxyError] = useState('');
-
-  const [lastSavedProxyAddr, setLastSavedProxyAddr] = useState(proxy.customAddr || '');
-  if (proxy.customAddr && proxy.customAddr !== lastSavedProxyAddr) {
-    setLastSavedProxyAddr(proxy.customAddr);
-    setCustomProxyDraft(proxy.customAddr);
-  }
-
   const [dirInput, setDirInput] = useState(download.defaultDirectory || '');
   const [lastSavedDir, setLastSavedDir] = useState(download.defaultDirectory || '');
   if (download.defaultDirectory && download.defaultDirectory !== lastSavedDir) {
@@ -599,13 +599,15 @@ export function SettingsPanel() {
     setProxyError('');
 
     if (mode === configModels.ProxyMode.ProxyModeCustom) {
-      if (proxy.customAddr && proxy.customAddr.trim() !== '') {
+      if (customProxyList.length > 0) {
         if (mode === proxy.mode) return;
         try {
           const corrections = await updateSettings({
             proxy: new configModels.ProxyConfig({
               ...proxy,
               mode: configModels.ProxyMode.ProxyModeCustom,
+              customAddrs: customProxyList,
+              customAddr: customProxyList[0] || '',
             }),
           });
           if (!reportCorrections(corrections)) {
@@ -639,7 +641,35 @@ export function SettingsPanel() {
     }
   };
 
-  const handleCustomProxyCommit = async () => {
+  const saveCustomProxies = async (
+    nextAddrs: string[],
+    targetMode: configModels.ProxyMode,
+    successMsg: string,
+  ): Promise<boolean> => {
+    setProxyError('');
+    try {
+      const corrections = await updateSettings({
+        proxy: new configModels.ProxyConfig({
+          ...proxy,
+          mode: targetMode,
+          customAddrs: nextAddrs,
+          customAddr: nextAddrs[0] || '',
+        }),
+      });
+      if (reportCorrections(corrections)) {
+        setSelectedProxyMode(configModels.ProxyMode.ProxyModeSystem);
+        return false;
+      }
+      setSelectedProxyMode(targetMode);
+      showToast(successMsg, 'success');
+      return true;
+    } catch (err) {
+      showToast(`保存代理配置失败: ${String(err)}`, 'error');
+      return false;
+    }
+  };
+
+  const handleAddCustomProxy = async () => {
     const trimmed = customProxyDraft.trim();
     if (trimmed === '') {
       setProxyError('自定义代理地址不能为空');
@@ -661,34 +691,49 @@ export function SettingsPanel() {
       return;
     }
 
-    if (
-      trimmed === (proxy.customAddr || '') &&
-      proxy.mode === configModels.ProxyMode.ProxyModeCustom
-    ) {
-      setProxyError('');
+    if (customProxyList.some((addr) => addr.toLowerCase() === trimmed.toLowerCase())) {
+      setProxyError('该代理地址已在列表中');
       return;
     }
 
-    setProxyError('');
-    try {
-      const corrections = await updateSettings({
-        proxy: new configModels.ProxyConfig({
-          ...proxy,
-          mode: configModels.ProxyMode.ProxyModeCustom,
-          customAddr: trimmed,
-        }),
-      });
-      if (reportCorrections(corrections)) {
-        setCustomProxyDraft('');
-        setSelectedProxyMode(configModels.ProxyMode.ProxyModeSystem);
-        return;
-      }
-      setLastSavedProxyAddr(trimmed);
-      setSelectedProxyMode(configModels.ProxyMode.ProxyModeCustom);
-      showToast('自定义代理已保存并启用', 'success');
-    } catch (err) {
-      showToast(`保存代理地址失败: ${String(err)}`, 'error');
+    const nextAddrs = [...customProxyList, trimmed];
+    const ok = await saveCustomProxies(
+      nextAddrs,
+      configModels.ProxyMode.ProxyModeCustom,
+      proxy.mode === configModels.ProxyMode.ProxyModeCustom
+        ? '已添加自定义代理'
+        : '已添加并启用自定义代理',
+    );
+    if (ok) {
+      setCustomProxyDraft('');
     }
+  };
+
+  const handleRemoveCustomProxy = async (index: number) => {
+    const nextAddrs = customProxyList.filter((_, idx) => idx !== index);
+    const nextMode =
+      nextAddrs.length === 0 && proxy.mode === configModels.ProxyMode.ProxyModeCustom
+        ? configModels.ProxyMode.ProxyModeSystem
+        : proxy.mode || configModels.ProxyMode.ProxyModeSystem;
+    await saveCustomProxies(
+      nextAddrs,
+      nextMode,
+      nextAddrs.length === 0 ? '已清空自定义代理，已回退为系统代理' : '已移除代理节点',
+    );
+  };
+
+  const handleMoveCustomProxy = async (index: number, direction: 'up' | 'down') => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= customProxyList.length) return;
+    const nextAddrs = [...customProxyList];
+    const temp = nextAddrs[index];
+    nextAddrs[index] = nextAddrs[targetIndex];
+    nextAddrs[targetIndex] = temp;
+    await saveCustomProxies(
+      nextAddrs,
+      configModels.ProxyMode.ProxyModeCustom,
+      '已更新代理优先级顺序',
+    );
   };
 
   const handleCommitNewExcludedSite = async () => {
@@ -1809,11 +1854,11 @@ export function SettingsPanel() {
 
                 {selectedProxyMode === configModels.ProxyMode.ProxyModeCustom && (
                   <SettingRow
-                    label="自定义代理地址"
-                    description="支持 HTTP/HTTPS 与 SOCKS5 代理协议"
+                    label="自定义代理列表"
+                    description="默认使用第 1 个代理；下载异常时按顺序轮询尝试后续代理，全部失败后自动回退直连 (direct)"
                     align="top"
                   >
-                    <div className="flex flex-col items-end gap-1.5">
+                    <div className="flex w-80 max-w-lg flex-col items-stretch gap-2.5 sm:w-[360px]">
                       <div className="flex items-center gap-2">
                         <Input
                           value={customProxyDraft}
@@ -1824,24 +1869,88 @@ export function SettingsPanel() {
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                               e.preventDefault();
-                              void handleCustomProxyCommit();
+                              void handleAddCustomProxy();
                             }
                           }}
-                          placeholder="http://127.0.0.1:7890"
-                          className="h-8 w-64 font-mono text-xs"
+                          placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                          className="h-8 flex-1 font-mono text-xs"
                         />
                         <Button
                           size="sm"
-                          onClick={() => void handleCustomProxyCommit()}
-                          className="h-8 shrink-0 text-xs"
+                          onClick={() => void handleAddCustomProxy()}
+                          className="h-8 shrink-0 gap-1 px-2.5 text-xs"
                         >
-                          {proxy.mode === configModels.ProxyMode.ProxyModeCustom
-                            ? '保存'
-                            : '保存并启用'}
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>添加</span>
                         </Button>
                       </div>
                       {proxyError && (
                         <p className="text-[11px] font-medium text-rose-500">{proxyError}</p>
+                      )}
+
+                      {customProxyList.length > 0 ? (
+                        <div className="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-subtle)]/40">
+                          {customProxyList.map((addr, idx) => (
+                            <div
+                              key={addr}
+                              className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs transition-colors hover:bg-[var(--bg-subtle)]"
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span
+                                  className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
+                                    idx === 0
+                                      ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+                                      : 'bg-[var(--bg-subtle)] text-[var(--text-muted)]'
+                                  }`}
+                                >
+                                  {idx === 0 ? '首选 #1' : `备用 #${idx + 1}`}
+                                </span>
+                                <span
+                                  className="truncate font-mono text-[var(--text-primary)]"
+                                  title={addr}
+                                >
+                                  {addr}
+                                </span>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-0.5">
+                                <button
+                                  type="button"
+                                  disabled={idx === 0}
+                                  onClick={() => void handleMoveCustomProxy(idx, 'up')}
+                                  title="上移优先级"
+                                  className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:pointer-events-none disabled:opacity-30"
+                                >
+                                  <ArrowUp className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={idx === customProxyList.length - 1}
+                                  onClick={() => void handleMoveCustomProxy(idx, 'down')}
+                                  title="下移优先级"
+                                  className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:pointer-events-none disabled:opacity-30"
+                                >
+                                  <ArrowDown className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRemoveCustomProxy(idx)}
+                                  title="移除此代理"
+                                  className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-rose-500/10 hover:text-rose-500"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                          <div className="flex items-center justify-between bg-[var(--bg-subtle)]/60 px-2.5 py-1 text-[11px] text-[var(--text-muted)]">
+                            <span>兜底策略</span>
+                            <span className="font-mono">最终回退 → 直连 (direct)</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-dashed border-[var(--border-subtle)] px-3 py-2 text-[11px] text-[var(--text-muted)]">
+                          尚未添加自定义代理，请在上方输入代理地址并点击「添加」以启用。
+                        </div>
                       )}
                     </div>
                   </SettingRow>

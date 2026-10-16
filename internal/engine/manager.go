@@ -61,6 +61,7 @@ type ProbeResult struct {
 	LastModified   string     `json:"lastModified"`
 	ContentType    string     `json:"contentType"`
 	DirectTransfer bool       `json:"directTransfer,omitempty"`
+	ProxyAddr      string     `json:"proxyAddr,omitempty"`
 	DuplicateTask  *task.Task `json:"duplicateTask,omitempty"`
 	// HLS 是这条链接的 HLS 事实；为空表示它不是清单，按普通文件下载。
 	HLS *HLSProbe `json:"hls,omitempty"`
@@ -352,6 +353,7 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		probe.LastModified = info.LastModified
 		probe.ContentType = info.ContentType
 		probe.DirectTransfer = info.DirectTransfer
+		probe.ProxyAddr = info.ProxyAddr
 	}
 
 	if looksLikePlaylist(urlStr, probe.ContentType) {
@@ -370,6 +372,9 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		probe.HLS = hlsProbe
 		if hlsProbe.DirectTransfer {
 			probe.DirectTransfer = true
+			probe.ProxyAddr = ""
+		} else if hlsProbe.ProxyAddr != "" {
+			probe.ProxyAddr = hlsProbe.ProxyAddr
 		}
 		// 清单自己的字节数不是这次下载的大小——真正的分片要等清晰度选定后才知道。
 		probe.TotalBytes = -1
@@ -1232,6 +1237,7 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 		LastModified:   probe.LastModified,
 		RequestHeaders: creds,
 		DirectTransfer: probe.DirectTransfer,
+		ProxyAddr:      probe.ProxyAddr,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -1241,8 +1247,12 @@ func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, 
 		t.TotalBytes = probe.HLS.Media.TotalBytes
 		if probe.HLS.Media.DirectTransfer || probe.HLS.DirectTransfer {
 			t.DirectTransfer = true
+			t.ProxyAddr = ""
+		} else if probe.HLS.Media.ProxyAddr != "" {
+			t.ProxyAddr = probe.HLS.Media.ProxyAddr
+		} else if probe.HLS.ProxyAddr != "" {
+			t.ProxyAddr = probe.HLS.ProxyAddr
 		}
-		// 清单声明的时长是下载前就能拿到的已知信息，界面据此展示；成品出来之后
 		// 不再覆盖它——同一个数值来回变只会让人以为哪里错了。
 		t.Duration = probe.HLS.Media.Duration
 	}
@@ -1294,14 +1304,16 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	if t.Status == task.StatusCompleted || t.Status == task.StatusDownloading {
 		return nil
 	}
-
+	if t.Status == task.StatusError {
+		t.DirectTransfer = false
+		t.ProxyAddr = ""
+	}
 	t.Status = task.StatusQueued
 	t.ErrorMsg = ""
 	t.UpdatedAt = time.Now()
 	if err := m.store.Save(ctx, t); err != nil {
 		return err
 	}
-
 	m.notify(t)
 	m.schedule()
 	return nil
@@ -1317,6 +1329,9 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 	if t.FailurePhase == task.FailurePhaseProcessing {
 		return ErrProcessingRetryRequired
 	}
+	// 用户手动重试时，先清除上一轮失败残留的代理回退/直连标记，保证重新从首选代理开始按序轮询
+	t.DirectTransfer = false
+	t.ProxyAddr = ""
 	// 若任务大小未知或之前失败，重试前重新探测一次元数据
 	if t.TotalBytes <= 0 && t.URL != "" {
 		var headers map[string]string
@@ -1334,11 +1349,14 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 			}
 			if probe.DirectTransfer {
 				t.DirectTransfer = true
+				t.ProxyAddr = ""
+			} else if probe.ProxyAddr != "" {
+				t.ProxyAddr = probe.ProxyAddr
 			}
-			_ = m.store.Save(ctx, t)
 		}
 		cancel()
 	}
+	_ = m.store.Save(ctx, t)
 	return m.Resume(ctx, id)
 }
 
@@ -1431,11 +1449,11 @@ func (m *Manager) SetUseServerFileTime(enabled bool) {
 }
 
 // SetProxy updates the proxy configuration on the downloader.
-func (m *Manager) SetProxy(mode, customAddr string) error {
+func (m *Manager) SetProxy(mode string, customAddrs ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.downloader != nil {
-		return m.downloader.SetProxy(mode, customAddr)
+		return m.downloader.SetProxy(mode, customAddrs...)
 	}
 	return nil
 }

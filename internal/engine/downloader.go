@@ -286,14 +286,21 @@ type HTTPProbeInfo struct {
 	ContentType    string `json:"contentType"`
 	FinalURL       string `json:"finalUrl,omitempty"`
 	DirectTransfer bool   `json:"directTransfer,omitempty"`
+	ProxyAddr      string `json:"proxyAddr,omitempty"`
+}
+
+// FallbackCandidate 表示一个备用传输通道（下一个自定义代理或直连）。
+type FallbackCandidate struct {
+	Client         *http.Client
+	ProxyAddr      string
+	DirectTransfer bool
 }
 
 // HTTPDownloader handles downloading tasks via HTTP/HTTPS.
 type HTTPDownloader struct {
 	client             *http.Client
 	directClient       *http.Client
-	fallbackProxy      *http.Client
-	fallbackProxyAddr  string
+	proxyClients       map[string]*http.Client
 	customClient       bool
 	mu                 sync.RWMutex
 	tempDirectory      string
@@ -301,6 +308,7 @@ type HTTPDownloader struct {
 	defaultConcurrency int
 	proxyMode          string
 	customProxyAddr    string
+	customProxyAddrs   []string
 	minSplitETA        time.Duration
 	stallTimeout       time.Duration
 	logger             atomic.Pointer[slog.Logger]
@@ -394,32 +402,76 @@ func (d *HTTPDownloader) SetDefaultConcurrency(n int) {
 	d.defaultConcurrency = n
 }
 
-// SetProxy configures the proxy mode ("direct", "system", "custom") and custom address.
-func (d *HTTPDownloader) SetProxy(mode, customAddr string) error {
-	transport, err := createHTTPTransport(mode, customAddr)
+// SetProxy configures the proxy mode ("direct", "system", "custom") and one or more custom proxy addresses.
+// In "custom" mode, the first address is used by default and subsequent addresses are tried in order on failure before falling back to direct.
+func (d *HTTPDownloader) SetProxy(mode string, customAddrs ...string) error {
+	cleaned := make([]string, 0, len(customAddrs))
+	seen := make(map[string]bool, len(customAddrs))
+	for _, raw := range customAddrs {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		cleaned = append(cleaned, trimmed)
+	}
+
+	primaryAddr := ""
+	if len(cleaned) > 0 {
+		primaryAddr = cleaned[0]
+	}
+
+	if mode == "custom" {
+		for _, addr := range cleaned {
+			if _, err := createHTTPTransport("custom", addr); err != nil {
+				return err
+			}
+		}
+	}
+	transport, err := createHTTPTransport(mode, primaryAddr)
 	if err != nil {
 		return err
 	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.proxyMode = mode
-	if trimmed := strings.TrimSpace(customAddr); trimmed != "" || mode == "custom" {
-		d.customProxyAddr = customAddr
+	if len(cleaned) > 0 || mode == "custom" {
+		d.customProxyAddrs = cleaned
+		d.customProxyAddr = primaryAddr
+	}
+	if d.proxyClients == nil {
+		d.proxyClients = make(map[string]*http.Client)
 	}
 	if !d.customClient {
-		d.client = &http.Client{
+		primaryClient := &http.Client{
 			Transport: transport,
 			Timeout:   0,
+		}
+		d.client = primaryClient
+		if mode == "custom" && primaryAddr != "" {
+			d.proxyClients[primaryAddr] = primaryClient
 		}
 	}
 	return nil
 }
 
-// GetProxy returns the current proxy mode and custom address.
+// GetProxy returns the current proxy mode and primary custom address.
 func (d *HTTPDownloader) GetProxy() (string, string) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.proxyMode, d.customProxyAddr
+}
+
+// GetProxies returns the current proxy mode and ordered custom proxy addresses.
+func (d *HTTPDownloader) GetProxies() (string, []string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.proxyMode, append([]string(nil), d.customProxyAddrs...)
 }
 
 // GetClientForDownload returns the shared *http.Client configured with the current proxy mode.
@@ -431,26 +483,162 @@ func (d *HTTPDownloader) GetClientForDownload() *http.Client {
 	return d.client
 }
 
+// getOrCreateProxyClient returns a shared *http.Client for a specific custom proxy address.
+func (d *HTTPDownloader) getOrCreateProxyClient(addr string) *http.Client {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil
+	}
+	d.mu.RLock()
+	if d.proxyClients != nil {
+		if c, ok := d.proxyClients[addr]; ok && c != nil {
+			d.mu.RUnlock()
+			return c
+		}
+	}
+	d.mu.RUnlock()
+
+	tr, err := createHTTPTransport("custom", addr)
+	if err != nil {
+		return nil
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   0,
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.proxyClients == nil {
+		d.proxyClients = make(map[string]*http.Client)
+	}
+	if existing, ok := d.proxyClients[addr]; ok && existing != nil {
+		return existing
+	}
+	d.proxyClients[addr] = client
+	return client
+}
+
 // GetClientForTask returns an *http.Client configured for the specific task run.
-// If the task is marked for direct transfer (e.g. fallback when proxy failed during probe), it uses a shared direct connection pool.
+// If the task is marked for direct transfer, it uses a shared direct connection pool;
+// if the task locked onto a specific fallback proxy address, it reuses that proxy's client pool.
 func (d *HTTPDownloader) GetClientForTask(t *task.Task) *http.Client {
-	if t != nil && t.DirectTransfer {
-		if directClient := d.getOrCreateDirectClient(); directClient != nil {
-			return directClient
+	if t != nil {
+		if t.DirectTransfer {
+			if directClient := d.getOrCreateDirectClient(); directClient != nil {
+				return directClient
+			}
+		}
+		if trimmed := strings.TrimSpace(t.ProxyAddr); trimmed != "" && !d.customClient {
+			if proxyClient := d.getOrCreateProxyClient(trimmed); proxyClient != nil {
+				return proxyClient
+			}
 		}
 	}
 	return d.GetClientForDownload()
 }
 
-// NewDirectFallbackClient 当下载器当前配置了代理且未使用测试注入的固定 customClient 时，
-// 返回一个绕过代理的共享直连 *http.Client，供传输中途或 HLS 代理故障逃生使用。
-func (d *HTTPDownloader) NewDirectFallbackClient() *http.Client {
-	if d == nil || d.customClient || !d.isProxyConfigured() {
+// FallbackCandidatesForTask 返回任务（或探测）当前客户端之后的有序备用通道列表：
+// - 当处于 custom 模式且配置了 [P1, P2, ..., Pn] 时，从当前代理之后的下一个代理开始依次排列，最后追加 Direct；
+// - 当处于启用中的 system 代理模式时，返回 Direct；
+// - 当处于 direct 模式（或未启用系统代理的 system 模式）时，依次返回已登记的自定义代理列表或系统代理候选。
+func (d *HTTPDownloader) FallbackCandidatesForTask(t *task.Task) []FallbackCandidate {
+	if d == nil || d.customClient {
 		return nil
 	}
-	return d.getOrCreateDirectClient()
+	d.mu.RLock()
+	mode := d.proxyMode
+	addrs := append([]string(nil), d.customProxyAddrs...)
+	if len(addrs) == 0 && strings.TrimSpace(d.customProxyAddr) != "" {
+		addrs = []string{strings.TrimSpace(d.customProxyAddr)}
+	}
+	d.mu.RUnlock()
+
+	if t != nil && t.DirectTransfer {
+		return d.proxyCandidatesForDirectEscape(addrs, true)
+	}
+
+	if mode == "custom" && len(addrs) > 0 {
+		// 构造环形候选链 [P_{k+1}, ..., P_n, Direct, P_1, ..., P_{k-1}]：
+		// 优先尝试排在当前代理之后的备用代理与直连；若任务已在后面的代理上运行，
+		// 也把前面的代理放在队尾供冷却恢复后环形轮询。
+		currIdx := 0
+		if t != nil && strings.TrimSpace(t.ProxyAddr) != "" {
+			curr := strings.TrimSpace(t.ProxyAddr)
+			found := false
+			for i, a := range addrs {
+				if strings.EqualFold(a, curr) {
+					currIdx = i
+					found = true
+					break
+				}
+			}
+			if !found {
+				currIdx = -1
+			}
+		}
+		var out []FallbackCandidate
+		for i := currIdx + 1; i < len(addrs); i++ {
+			if c := d.getOrCreateProxyClient(addrs[i]); c != nil {
+				out = append(out, FallbackCandidate{
+					Client:    c,
+					ProxyAddr: addrs[i],
+				})
+			}
+		}
+		if direct := d.getOrCreateDirectClient(); direct != nil {
+			out = append(out, FallbackCandidate{
+				Client:         direct,
+				DirectTransfer: true,
+			})
+		}
+		if t != nil && currIdx > 0 {
+			for i := 0; i < currIdx; i++ {
+				if c := d.getOrCreateProxyClient(addrs[i]); c != nil {
+					out = append(out, FallbackCandidate{
+						Client:    c,
+						ProxyAddr: addrs[i],
+					})
+				}
+			}
+		}
+		return out
+	}
+
+	if mode == "system" && isSystemProxyActive() {
+		if direct := d.getOrCreateDirectClient(); direct != nil {
+			return []FallbackCandidate{{
+				Client:         direct,
+				DirectTransfer: true,
+			}}
+		}
+		return nil
+	}
+	return d.proxyCandidatesForDirectEscape(addrs, t != nil)
 }
 
+func (d *HTTPDownloader) proxyCandidatesForDirectEscape(addrs []string, allowSystemCandidate bool) []FallbackCandidate {
+	var out []FallbackCandidate
+	for _, addr := range addrs {
+		if c := d.getOrCreateProxyClient(addr); c != nil {
+			out = append(out, FallbackCandidate{
+				Client:    c,
+				ProxyAddr: addr,
+			})
+		}
+	}
+	if len(out) == 0 && allowSystemCandidate {
+		if sysAddr := strings.TrimSpace(candidateSystemProxyAddr()); sysAddr != "" {
+			if c := d.getOrCreateProxyClient(sysAddr); c != nil {
+				out = append(out, FallbackCandidate{
+					Client:    c,
+					ProxyAddr: sysAddr,
+				})
+			}
+		}
+	}
+	return out
+}
 func (d *HTTPDownloader) getOrCreateDirectClient() *http.Client {
 	d.mu.RLock()
 	if d.directClient != nil {
@@ -477,61 +665,6 @@ func (d *HTTPDownloader) getOrCreateDirectClient() *http.Client {
 	return d.directClient
 }
 
-func (d *HTTPDownloader) isProxyConfigured() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if d.proxyMode == "custom" && strings.TrimSpace(d.customProxyAddr) != "" {
-		return true
-	}
-	if d.proxyMode == "system" {
-		return isSystemProxyActive()
-	}
-	return false
-}
-
-// NewProxyFallbackClient 当下载器当前实际走的是直连（例如 mode="direct"，或 mode="system" 但系统代理未开启）
-// 且存在已配置的自定义代理地址或系统登记的代理地址时，返回一个通过该代理转发的共享 *http.Client，
-// 供直连遭遇源站 IP 封禁或连接重置时反向逃生使用。
-func (d *HTTPDownloader) NewProxyFallbackClient() *http.Client {
-	if d == nil || d.customClient || d.isProxyConfigured() {
-		return nil
-	}
-	d.mu.RLock()
-	addr := strings.TrimSpace(d.customProxyAddr)
-	d.mu.RUnlock()
-	if addr == "" {
-		addr = strings.TrimSpace(candidateSystemProxyAddr())
-	}
-	if addr == "" {
-		return nil
-	}
-
-	d.mu.RLock()
-	if d.fallbackProxy != nil && d.fallbackProxyAddr == addr {
-		c := d.fallbackProxy
-		d.mu.RUnlock()
-		return c
-	}
-	d.mu.RUnlock()
-
-	tr, err := createHTTPTransport("custom", addr)
-	if err != nil {
-		return nil
-	}
-	client := &http.Client{
-		Transport: tr,
-		Timeout:   0,
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.fallbackProxy == nil || d.fallbackProxyAddr != addr {
-		d.fallbackProxy = client
-		d.fallbackProxyAddr = addr
-	}
-	return d.fallbackProxy
-}
-
 // RefreshFinalURL 使用任务的原始入口 t.URL（若原始入口本身已含过期查询串则回退尝试剥离查询串的基础路径）
 // 重新探测并刷新过期的重定向地址 FinalURL。
 // 仅当新探测结果与原任务属于同一份文件（大小、断点支持及 ETag/Last-Modified 校验一致）时才采纳新地址，
@@ -551,11 +684,15 @@ func (d *HTTPDownloader) RefreshFinalURL(ctx context.Context, client *http.Clien
 			continue
 		}
 		info, err = d.probeWithClient(probeCtx, client, candidateURL, t.RequestHeaders)
-		if err != nil && !t.DirectTransfer {
-			if directClient := d.NewDirectFallbackClient(); directClient != nil {
-				if directInfo, directErr := d.probeWithClient(probeCtx, directClient, candidateURL, t.RequestHeaders); directErr == nil {
-					info = directInfo
+		if err != nil && !d.customClient {
+			for _, cand := range d.FallbackCandidatesForTask(t) {
+				if cand.Client == nil || cand.Client == client {
+					continue
+				}
+				if candInfo, candErr := d.probeWithClient(probeCtx, cand.Client, candidateURL, t.RequestHeaders); candErr == nil {
+					info = candInfo
 					err = nil
+					break
 				}
 			}
 		}
@@ -672,41 +809,38 @@ func (d *HTTPDownloader) Probe(ctx context.Context, urlStr string, creds credent
 		return info, nil
 	}
 
-	// 若当前处于代理模式（custom 代理或启用的 system 代理），且探测失败（超时/连接重置等）：
-	// 尝试一次使用直连探测；若直连成功，则本次下载标记为直连下载（DirectTransfer = true）。
-	if !d.customClient && d.isProxyConfigured() {
-		if directClient := d.getOrCreateDirectClient(); directClient != nil {
-			directCtx := ctx
+	if !d.customClient {
+		candidates := d.FallbackCandidatesForTask(nil)
+		for _, cand := range candidates {
+			if cand.Client == nil || cand.Client == d.client {
+				continue
+			}
+			candCtx := ctx
+			var cancel context.CancelFunc
 			if ctx.Err() != nil {
-				var cancel context.CancelFunc
-				directCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
+				candCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 			}
-			if directInfo, directErr := d.probeWithClient(directCtx, directClient, urlStr, creds); directErr == nil {
-				d.log().Info("probe succeeded via direct connection fallback, task will use direct transfer", "url", logging.SafeURL(urlStr))
-				directInfo.DirectTransfer = true
-				return directInfo, nil
+			candInfo, candErr := d.probeWithClient(candCtx, cand.Client, urlStr, creds)
+			if cancel != nil {
+				cancel()
 			}
-		}
-	}
-	if !d.customClient && !d.isProxyConfigured() {
-		if proxyClient := d.NewProxyFallbackClient(); proxyClient != nil {
-			proxyCtx := ctx
-			if ctx.Err() != nil {
-				var cancel context.CancelFunc
-				proxyCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-			}
-			if proxyInfo, proxyErr := d.probeWithClient(proxyCtx, proxyClient, urlStr, creds); proxyErr == nil {
-				d.log().Info("probe succeeded via fallback proxy connection", "url", logging.SafeURL(urlStr))
-				return proxyInfo, nil
+			if candErr == nil && candInfo != nil {
+				if cand.DirectTransfer {
+					d.log().Info("probe succeeded via direct connection fallback, task will use direct transfer", "url", logging.SafeURL(urlStr))
+					candInfo.DirectTransfer = true
+					candInfo.ProxyAddr = ""
+				} else {
+					d.log().Info("probe succeeded via fallback proxy connection", "proxy", cand.ProxyAddr, "url", logging.SafeURL(urlStr))
+					candInfo.DirectTransfer = false
+					candInfo.ProxyAddr = cand.ProxyAddr
+				}
+				return candInfo, nil
 			}
 		}
 	}
 
 	return nil, err
 }
-
 func (d *HTTPDownloader) probeWithClient(ctx context.Context, client *http.Client, urlStr string, creds credentials.RequestCredentials) (*HTTPProbeInfo, error) {
 	var resp *http.Response
 	var err error
@@ -852,6 +986,65 @@ func (d *HTTPDownloader) probeWithClient(ctx context.Context, client *http.Clien
 	return info, nil
 }
 
+// quickProbeClient 用单次轻量请求（GET Range: bytes=0-0）快速验证备用代理或直连通道是否可达。
+// 相比完整 Probe（含 2 次 GET 重试与 HEAD 兜底），它在传输中途切换代理时把每个失效节点的探测耗时控制在单次往返内，
+// 避免多个故障代理叠加阻塞工作协程。
+func (d *HTTPDownloader) quickProbeClient(ctx context.Context, client *http.Client, urlStr string, creds credentials.RequestCredentials) error {
+	buildReq := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Range", "bytes=0-0")
+		req.Header.Set("User-Agent", UserAgentChrome)
+		req.Header.Set("Accept", "*/*")
+		applyRequestHeaders(req, creds)
+		return req, nil
+	}
+
+	req, err := buildReq()
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil && ctx.Err() == nil && isStaleIdleConnError(err) {
+		client.CloseIdleConnections()
+		if retryReq, rErr := buildReq(); rErr == nil {
+			resp, err = client.Do(retryReq)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if resp.Body != nil {
+			_, _ = io.CopyN(io.Discard, resp.Body, 4096)
+			_ = resp.Body.Close()
+		}
+	}()
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
+		return nil
+	}
+	return fmt.Errorf("server returned %s", resp.Status)
+}
+
+// isStaleIdleConnError 识别复用连接池中空闲 Keep-Alive 连接时对端恰好关闭连接产生的瞬态错误。
+// 遇到此类半开连接错误时，清理空闲连接并透明重发一次新建连接，避免误判为通道故障。
+func isStaleIdleConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "server closed idle connection") ||
+		strings.Contains(msg, "forcibly closed")
+}
+
 // applyRequestHeaders copies task request context onto an outgoing request.
 func applyRequestHeaders(req *http.Request, creds credentials.RequestCredentials) {
 	if creds != nil {
@@ -966,31 +1159,32 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 		}
 
 		resp, err := doSingleReq(client, t.EffectiveURL())
-		if (err != nil || (resp != nil && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout))) && !t.DirectTransfer && ctx.Err() == nil {
-			if directClient := d.NewDirectFallbackClient(); directClient != nil {
+		if (err != nil || (resp != nil && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout))) && !d.customClient && ctx.Err() == nil {
+			candidates := d.FallbackCandidatesForTask(t)
+			for _, cand := range candidates {
+				if cand.Client == nil || cand.Client == client {
+					continue
+				}
 				if resp != nil && resp.Body != nil {
 					_ = resp.Body.Close()
+					resp = nil
 				}
-				if directResp, directErr := doSingleReq(directClient, t.EffectiveURL()); directErr == nil && directResp.StatusCode < 400 {
-					t.DirectTransfer = true
-					client = directClient
-					resp = directResp
+				candResp, candErr := doSingleReq(cand.Client, t.EffectiveURL())
+				if candErr == nil && candResp.StatusCode < 400 {
+					t.DirectTransfer = cand.DirectTransfer
+					t.ProxyAddr = cand.ProxyAddr
+					client = cand.Client
+					resp = candResp
 					err = nil
-					logger.Info("single stream switched to direct connection fallback", "task", t.ID)
+					if cand.DirectTransfer {
+						logger.Info("single stream switched to direct connection fallback", "task", t.ID)
+					} else {
+						logger.Info("single stream switched to fallback proxy connection", "task", t.ID, "proxy", cand.ProxyAddr)
+					}
+					break
 				}
-			}
-		}
-		if (err != nil || (resp != nil && (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout))) && ctx.Err() == nil {
-			if proxyClient := d.NewProxyFallbackClient(); proxyClient != nil && client != proxyClient {
-				if resp != nil && resp.Body != nil {
-					_ = resp.Body.Close()
-				}
-				if proxyResp, proxyErr := doSingleReq(proxyClient, t.EffectiveURL()); proxyErr == nil && proxyResp.StatusCode < 400 {
-					t.DirectTransfer = false
-					client = proxyClient
-					resp = proxyResp
-					err = nil
-					logger.Info("single stream switched to fallback proxy connection", "task", t.ID)
+				if candResp != nil && candResp.Body != nil {
+					_ = candResp.Body.Close()
 				}
 			}
 		}
@@ -1118,40 +1312,37 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 			if errors.Is(readErr, ErrHTMLDisguisedAsBin) && attempt == 0 {
 				continue
 			}
-			// 若单流在传输中途因代理断流中断，且存在可用的直连通道，切换为直连恢复传输
-			if attempt == 0 && !t.DirectTransfer && ctx.Err() == nil {
-				if directClient := d.NewDirectFallbackClient(); directClient != nil {
-					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-					_, pErr := d.probeWithClient(probeCtx, directClient, t.EffectiveURL(), t.RequestHeaders)
-					cancel()
-					if pErr == nil {
-						t.DirectTransfer = true
-						client = directClient
-						logger.Info("single stream mid-transfer proxy failed, retrying via direct connection", "task", t.ID)
-						if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
-							return d.downloadChunks(ctx, t, partPath, destPath, sink, directClient)
-						}
+			// 若单流在传输中途断流中断，按顺序探测备用通道（下一个自定义代理 -> 直连）恢复传输
+			if attempt == 0 && !d.customClient && ctx.Err() == nil {
+				candidates := d.FallbackCandidatesForTask(t)
+				switched := false
+				for _, cand := range candidates {
+					if cand.Client == nil || cand.Client == client {
 						continue
 					}
-				}
-			}
-			if attempt == 0 && ctx.Err() == nil {
-				if proxyClient := d.NewProxyFallbackClient(); proxyClient != nil && client != proxyClient {
 					probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-					_, pErr := d.probeWithClient(probeCtx, proxyClient, t.EffectiveURL(), t.RequestHeaders)
+					_, pErr := d.probeWithClient(probeCtx, cand.Client, t.EffectiveURL(), t.RequestHeaders)
 					cancel()
 					if pErr == nil {
-						t.DirectTransfer = false
-						client = proxyClient
-						logger.Info("single stream mid-transfer direct connection failed, retrying via fallback proxy", "task", t.ID)
-						if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
-							return d.downloadChunks(ctx, t, partPath, destPath, sink, proxyClient)
+						t.DirectTransfer = cand.DirectTransfer
+						t.ProxyAddr = cand.ProxyAddr
+						client = cand.Client
+						if cand.DirectTransfer {
+							logger.Info("single stream mid-transfer proxy failed, retrying via direct connection", "task", t.ID)
+						} else {
+							logger.Info("single stream mid-transfer failed, retrying via fallback proxy", "task", t.ID, "proxy", cand.ProxyAddr)
 						}
-						continue
+						if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
+							return d.downloadChunks(ctx, t, partPath, destPath, sink, cand.Client)
+						}
+						switched = true
+						break
 					}
 				}
+				if switched {
+					continue
+				}
 			}
-			// P1-1: 单流下载中途已识别出服务端支持断点续传（Accept-Ranges: bytes）且文件总大小已知：
 			// 断流或取消时保留已下载进度，若非主动取消则直接无缝升级为分块断点续传完成剩余字节。
 			if allowRangeUpgrade && initSingleResumeChunk(t, downloaded) {
 				if ctx.Err() == nil {
@@ -1221,6 +1412,12 @@ type chunkCoordinator struct {
 	hasSucceededOnce    atomic.Bool
 	consecutiveConnFail atomic.Int32
 	globalBackoffUntil  time.Time
+	fallbackMu          sync.Mutex
+	triedCandidates     map[*http.Client]bool
+	lastFallbackAttempt time.Time
+	allFailedRounds     int
+	transportCtx        context.Context
+	transportCancel     context.CancelFunc
 	refreshMu           sync.Mutex
 	lastURLRefresh      time.Time
 	// requests 统计这次传输真正发出去的 HTTP 请求数（含重试与拆分出来的子块）。
@@ -1252,62 +1449,106 @@ func (coord *chunkCoordinator) recordGlobalBackoffLocked(delay time.Duration) {
 }
 
 // trySwitchTransportFallback 在传输中途当前通道失效（连续连接失败、EOF 重置或网关 502/504）时，
-// 双向探测备用通道：
-// 1. 若当前走的是代理，用直连探针验证目标服务器是否可达，可达则切换为直连；
-// 2. 若当前走的是直连且配置/系统登记了备用代理，用代理探针验证是否可达，可达则切换至备用代理。
+// 按顺序探测备用通道（依次轮询后续自定义代理，最终尝试直连；或直连失败时尝试备用代理）。
+// 切换成功后：
+//  1. 将新通道的并发上限收敛至安全水位 min(throttledAt/2, ConservativeMaxCap)（严格小于上一通道被限制时的线程数）；
+//  2. 立即中断仍挂在旧代理上的僵死请求，让所有分片在新通道上立即重连。
 func (coord *chunkCoordinator) trySwitchTransportFallback(ctx context.Context) bool {
-	if coord.downloader == nil || ctx.Err() != nil {
+	if coord.downloader == nil || coord.downloader.customClient || ctx.Err() != nil {
 		return false
 	}
+
+	coord.fallbackMu.Lock()
+	defer coord.fallbackMu.Unlock()
+
 	coord.mu.Lock()
-	alreadyDirect := coord.t.DirectTransfer
 	currClient := coord.client
 	targetURL := coord.t.EffectiveURL()
 	creds := coord.t.RequestHeaders
+	activeNow := coord.countActiveWorkersLocked()
+	taskSnap := coord.t.Clone()
 	coord.mu.Unlock()
 
-	if !alreadyDirect {
-		if directClient := coord.downloader.NewDirectFallbackClient(); directClient != nil && currClient != directClient {
-			probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			_, err := coord.downloader.probeWithClient(probeCtx, directClient, targetURL, creds)
-			cancel()
-			if err == nil {
-				coord.mu.Lock()
-				if !coord.t.DirectTransfer {
-					coord.t.DirectTransfer = true
-					coord.client = directClient
-					coord.consecutiveConnFail.Store(0)
-					coord.adaptive.CapMaxLimit(ConservativeMaxCap)
-					coord.resetTrackersLocked()
-					coord.downloader.log().Info("chunked transfer switched to direct connection fallback mid-transfer",
-						"task", coord.t.ID, "url", logging.SafeURL(coord.t.URL))
-				}
-				coord.mu.Unlock()
-				return true
-			}
-		}
+	cooldownWindow := 3 * time.Second
+	if coord.allFailedRounds > 0 {
+		cooldownWindow = min(15*time.Second, time.Duration(3<<min(coord.allFailedRounds, 3))*time.Second)
+	}
+	if !coord.lastFallbackAttempt.IsZero() && time.Since(coord.lastFallbackAttempt) < cooldownWindow {
+		return false
 	}
 
-	if proxyClient := coord.downloader.NewProxyFallbackClient(); proxyClient != nil && currClient != proxyClient {
-		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		_, err := coord.downloader.probeWithClient(probeCtx, proxyClient, targetURL, creds)
+	candidates := coord.downloader.FallbackCandidatesForTask(taskSnap)
+	// 依次尝试本轮尚未探测过的候选节点；若所有候选节点均已探测过一轮，则清空记录进入新一轮环形探测。
+	if len(coord.triedCandidates) >= len(candidates) {
+		coord.triedCandidates = make(map[*http.Client]bool)
+	}
+	for _, cand := range candidates {
+		if cand.Client == nil || cand.Client == currClient {
+			continue
+		}
+		if coord.triedCandidates != nil && coord.triedCandidates[cand.Client] {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err := coord.downloader.quickProbeClient(probeCtx, cand.Client, targetURL, creds)
 		cancel()
-		if err == nil {
-			coord.mu.Lock()
-			if coord.client != proxyClient {
-				coord.t.DirectTransfer = false
-				coord.client = proxyClient
-				coord.consecutiveConnFail.Store(0)
-				coord.adaptive.CapMaxLimit(ConservativeMaxCap)
-				coord.resetTrackersLocked()
-				coord.downloader.log().Info("chunked transfer switched to fallback proxy connection mid-transfer",
-					"task", coord.t.ID, "url", logging.SafeURL(coord.t.URL))
+		if err != nil {
+			if coord.triedCandidates == nil {
+				coord.triedCandidates = make(map[*http.Client]bool)
 			}
-			coord.mu.Unlock()
-			return true
+			coord.triedCandidates[cand.Client] = true
+			candLabel := cand.ProxyAddr
+			if cand.DirectTransfer {
+				candLabel = "direct"
+			}
+			coord.downloader.log().Warn("fallback transport candidate probe failed, trying next",
+				"task", taskSnap.ID, "candidate", candLabel, "error", logging.SafeError(err).Error())
+			continue
 		}
+
+		coord.mu.Lock()
+		if coord.triedCandidates == nil {
+			coord.triedCandidates = make(map[*http.Client]bool)
+		}
+		coord.triedCandidates[currClient] = true
+		coord.lastFallbackAttempt = time.Now()
+		coord.allFailedRounds = 0
+		coord.t.DirectTransfer = cand.DirectTransfer
+		coord.t.ProxyAddr = cand.ProxyAddr
+		coord.client = cand.Client
+		coord.consecutiveConnFail.Store(0)
+		throttledAt, newCurr, newMax := coord.adaptive.OnTransportSwitched(activeNow)
+		coord.resetTrackersLocked()
+		oldCancel := coord.transportCancel
+		coord.transportCtx = nil
+		coord.transportCancel = nil
+		if cand.DirectTransfer {
+			coord.downloader.log().Info("chunked transfer switched to direct connection fallback mid-transfer",
+				"task", coord.t.ID, "previousThrottledAt", throttledAt, "newConcurrency", newCurr, "newMaxConcurrency", newMax, "url", logging.SafeURL(coord.t.URL))
+		} else {
+			coord.downloader.log().Info("chunked transfer switched to fallback proxy connection mid-transfer",
+				"task", coord.t.ID, "proxy", cand.ProxyAddr, "previousThrottledAt", throttledAt, "newConcurrency", newCurr, "newMaxConcurrency", newMax, "url", logging.SafeURL(coord.t.URL))
+		}
+		coord.mu.Unlock()
+		if oldCancel != nil {
+			oldCancel()
+		}
+		return true
 	}
 
+	// 所有候选均已尝试且未连通：清理当前客户端的陈旧连接并设置递增全局冷却窗口（3s -> 6s -> 12s -> 15s），
+	// 避免后续每次分块重试都高频发探针续期源站的临时封禁窗口。
+	if currClient != nil {
+		currClient.CloseIdleConnections()
+	}
+	coord.mu.Lock()
+	coord.triedCandidates = nil
+	coord.allFailedRounds++
+	coord.lastFallbackAttempt = time.Now()
+	coord.consecutiveConnFail.Store(0)
+	nextBackoff := min(15*time.Second, time.Duration(3<<min(coord.allFailedRounds-1, 3))*time.Second)
+	coord.recordGlobalBackoffLocked(nextBackoff)
+	coord.mu.Unlock()
 	return false
 }
 
@@ -1360,13 +1601,14 @@ func (coord *chunkCoordinator) tryRefreshExpiredFinalURL(ctx context.Context, fa
 
 func newChunkCoordinator(t *task.Task, file *os.File, downloader *HTTPDownloader, client *http.Client, sink TransferSink) *chunkCoordinator {
 	coord := &chunkCoordinator{
-		t:          t,
-		file:       file,
-		trackers:   make(map[int]*chunkTracker),
-		sink:       sink,
-		downloader: downloader,
-		client:     client,
-		adaptive:   NewAdaptiveConcurrency(t.MaxConcurrency, min(t.MaxConcurrency, 2)),
+		t:               t,
+		file:            file,
+		trackers:        make(map[int]*chunkTracker),
+		sink:            sink,
+		downloader:      downloader,
+		client:          client,
+		adaptive:        NewAdaptiveConcurrency(t.MaxConcurrency, min(t.MaxConcurrency, 2)),
+		triedCandidates: make(map[*http.Client]bool),
 	}
 	now := time.Now()
 	for i := range t.Chunks {
@@ -1542,8 +1784,12 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() splitResult {
 		}
 	}
 
-	// Overall slowdown protection: when no chunk has completed and speeds are uniformly low,
-	// avoid excessive unhelpful splitting
+	// 当该任务已遭遇过源站限流或并发封禁（HasEverThrottled）时，说明源站严禁高并发：
+	// 若当前已有 >= 2 个活跃连接在传输，禁止继续对慢块做对半拆分制造碎片连接风暴；
+	// 仅当收敛到最后 1 个收尾慢块时才允许拆分 1 个协助连接。
+	if coord.adaptive != nil && coord.adaptive.HasEverThrottled() && len(activeSpeeds) >= 2 {
+		return splitResult{newIdx: -1}
+	}
 	if !hasCompletedChunk && len(activeSpeeds) > 1 {
 		allSlowAndUniform := true
 		for _, spd := range activeSpeeds {
@@ -1655,6 +1901,8 @@ func (coord *chunkCoordinator) trySplitSlowChunkLocked() splitResult {
 	return splitResult{newIdx: newIdx, fromIdx: bestIdx, remaining: remaining, speedBps: trk.speed}
 }
 
+var errTransportSwitched = errors.New("transport switched mid-request")
+
 func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx int) error {
 	defer func() {
 		coord.mu.Lock()
@@ -1678,6 +1926,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		chunkStart := c.Start + c.Downloaded
 		chunkEnd := c.End
 		downloadedBefore := c.Downloaded
+		reqClient := coord.client
 		if chunkStart > chunkEnd {
 			c.Completed = true
 			coord.mu.Unlock()
@@ -1687,7 +1936,7 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 
 		coord.requests.Add(1)
 		requestStart := time.Now()
-		chunkErr := coord.downloadChunkStream(ctx, chunkIdx, chunkStart, chunkEnd)
+		chunkErr := coord.downloadChunkStream(ctx, chunkIdx, chunkStart, chunkEnd, reqClient)
 		if chunkErr == nil {
 			coord.consecutiveConnFail.Store(0)
 			coord.adaptive.OnSuccess()
@@ -1712,16 +1961,35 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			return chunkErr
 		}
 
+		coord.mu.Lock()
+		staleTransport := coord.client != reqClient
+		if staleTransport || errors.Is(chunkErr, errTransportSwitched) {
+			// 若该请求使用的是已经被切换淘汰的旧代理客户端，直接释放分片让新通道接管，
+			// 绝不用旧代理的残留失败去扣减新代理的并发或再次触发误切换！
+			if trk := coord.trackers[chunkIdx]; trk != nil && !coord.t.Chunks[chunkIdx].Completed {
+				trk.claimed = false
+				trk.active = false
+				trk.backoffUntil = time.Time{}
+			}
+			coord.mu.Unlock()
+			return nil
+		}
+		coord.mu.Unlock()
+
 		// 服务端限流（503/429 或并发超限引起的 403）：触发自适应并发收缩
 		if IsRateLimitError(chunkErr) {
-			newLimit := coord.adaptive.OnRateLimit()
-			logger.Warn("chunk rate limited, scaling down concurrency",
-				"chunk", chunkIdx, "newLimit", newLimit,
-				"error", chunkErr.Error())
-
 			coord.mu.Lock()
 			trk := coord.trackers[chunkIdx]
 			activeWorkers := coord.countActiveWorkersLocked()
+			coord.mu.Unlock()
+
+			newLimit := coord.adaptive.OnRateLimitWithActive(activeWorkers)
+			logger.Warn("chunk rate limited, scaling down concurrency",
+				"chunk", chunkIdx, "activeWorkers", activeWorkers, "newLimit", newLimit,
+				"error", chunkErr.Error())
+
+			coord.mu.Lock()
+			activeWorkers = coord.countActiveWorkersLocked()
 			var currentRetries int
 			if trk != nil {
 				currentRetries = trk.retries
@@ -1734,10 +2002,13 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			coord.recordGlobalBackoffLocked(delay)
 			coord.mu.Unlock()
 
-			if currentRetries >= maxChunkRetries {
+			if coord.consecutiveConnFail.Add(1) >= 2 || currentRetries >= maxChunkRetries {
 				if coord.trySwitchTransportFallback(ctx) {
 					continue
 				}
+			}
+
+			if currentRetries >= maxChunkRetries {
 				coord.mu.Lock()
 				coord.lastErr = fmt.Errorf("chunk %d download failed after %d retries: %w", chunkIdx, currentRetries, chunkErr)
 				coord.mu.Unlock()
@@ -1776,9 +2047,6 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		}
 
 		// 瞬态网络故障、看门狗停摆（Stall）或连接被重置（RST/EOF）：
-		// 1. 触发自适应并发故障回退（首次冻结窗口，冷却期内持续发生连接风暴则逐步下调并发上限）
-		newLimit := coord.adaptive.OnRateLimit()
-
 		coord.mu.Lock()
 		trk := coord.trackers[chunkIdx]
 		gained := coord.t.Chunks[chunkIdx].Downloaded - downloadedBefore
@@ -1799,16 +2067,8 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 		coord.recordGlobalBackoffLocked(delay)
 		coord.mu.Unlock()
 
-		// 2. 若本轮请求 0 字节推进且连续出现连接故障，检查是否为当前通道失效（代理断流或直连被源站封禁）并尝试双向切换逃生
-		if gained == 0 {
-			if coord.consecutiveConnFail.Add(1) >= 2 {
-				if coord.trySwitchTransportFallback(ctx) {
-					continue
-				}
-			}
-		} else {
-			coord.consecutiveConnFail.Store(0)
-		}
+		// 1. 触发自适应并发故障回退（记录首次异常时的 activeWorkers，冷却期内持续发生连接风暴则逐步下调并发上限）
+		newLimit := coord.adaptive.OnRateLimitWithActive(activeWorkers)
 
 		logger.Warn("chunk request failed, isolating or retrying",
 			"chunk", chunkIdx,
@@ -1818,6 +2078,17 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 			"stalled", errors.Is(chunkErr, stallwatch.ErrStalled),
 			"ms", time.Since(requestStart).Milliseconds(),
 			"error", logging.SafeError(chunkErr).Error())
+
+		// 2. 若本轮请求 0 字节推进且连续出现连接故障，检查是否为当前通道失效（代理 502/断流或直连被封禁）并立刻按序切换下一个代理或直连
+		if gained == 0 {
+			if coord.consecutiveConnFail.Add(1) >= 2 {
+				if coord.trySwitchTransportFallback(ctx) {
+					continue
+				}
+			}
+		} else {
+			coord.consecutiveConnFail.Store(0)
+		}
 
 		if retries >= maxChunkRetries {
 			if coord.trySwitchTransportFallback(ctx) {
@@ -1853,41 +2124,67 @@ func (coord *chunkCoordinator) downloadChunkLoop(ctx context.Context, chunkIdx i
 	}
 }
 
-func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx int, start, end int64) error {
+func (coord *chunkCoordinator) currentTransportContext(parent context.Context) context.Context {
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if coord.transportCtx == nil || coord.transportCtx.Err() != nil {
+		coord.transportCtx, coord.transportCancel = context.WithCancel(parent)
+	}
+	return coord.transportCtx
+}
+
+func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx int, start, end int64, client *http.Client) error {
 	if start > end {
 		return nil
 	}
-
-	// 看门狗只在这次请求上生效：对端静默挂住时主动斩断，调用方据 ErrStalled 从当前偏移重连。
-	reqCtx, watch := stallwatch.New(ctx, coord.downloader.stallTimeoutOrDefault())
-	defer watch.Stop()
 
 	coord.mu.Lock()
 	targetURL := coord.t.EffectiveURL()
 	etag := coord.t.ETag
 	lastMod := coord.t.LastModified
 	creds := coord.t.RequestHeaders
-	client := coord.client
+	if client == nil {
+		client = coord.client
+	}
 	coord.mu.Unlock()
+	tCtx := coord.currentTransportContext(ctx)
+	// 看门狗只在这次请求上生效：对端静默挂住时主动斩断，调用方据 ErrStalled 从当前偏移重连。
+	reqCtx, watch := stallwatch.New(tCtx, coord.downloader.stallTimeoutOrDefault())
+	defer watch.Stop()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+	buildChunkReq := func() (*http.Request, error) {
+		req, rErr := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
+		if rErr != nil {
+			return nil, rErr
+		}
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+		req.Header.Set("User-Agent", UserAgentChrome)
+		req.Header.Set("Accept", "*/*")
+		applyRequestHeaders(req, creds)
+		if etag != "" {
+			req.Header.Set("If-Match", etag)
+		} else if lastMod != "" {
+			req.Header.Set("If-Unmodified-Since", lastMod)
+		}
+		return req, nil
+	}
+
+	req, err := buildChunkReq()
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-	req.Header.Set("User-Agent", UserAgentChrome)
-	req.Header.Set("Accept", "*/*")
-	applyRequestHeaders(req, creds)
-	req.Close = true
-
-	if etag != "" {
-		req.Header.Set("If-Match", etag)
-	} else if lastMod != "" {
-		req.Header.Set("If-Unmodified-Since", lastMod)
-	}
 
 	resp, err := client.Do(req)
+	if err != nil && ctx.Err() == nil && tCtx.Err() == nil && isStaleIdleConnError(err) {
+		client.CloseIdleConnections()
+		if retryReq, rErr := buildChunkReq(); rErr == nil {
+			resp, err = client.Do(retryReq)
+		}
+	}
 	if err != nil {
+		if ctx.Err() == nil && tCtx.Err() != nil {
+			return errTransportSwitched
+		}
 		// *url.Error 会带上完整地址（含查询串里的令牌）；这里统一脱敏，日志与任务错误信息都不落明文。
 		return watch.Err(ctx, logging.SafeError(err))
 	}
@@ -2028,10 +2325,15 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 			coord.mu.Unlock()
 
 			if done {
+				// 若本分片未被中途动态拆分截断（即正好读到了本次 HTTP Range 请求的末尾 end），
+				// 顺手抽干底层流末尾的 EOF 标记，使 Go http.Transport 能够直接将该 TCP 连接归还至 Keep-Alive 连接池，
+				// 下一个分片直接复用同一条 TCP 连接，彻底避免每个分片都重新三次握手触发源站防 CC 封禁（EOF）。
+				if !truncated && offset > end && rErr == nil {
+					_, _ = io.CopyN(io.Discard, resp.Body, 4096)
+				}
 				return nil
 			}
 		}
-
 		if rErr != nil {
 			if errors.Is(rErr, io.EOF) {
 				coord.mu.Lock()
@@ -2041,6 +2343,9 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 				}
 				coord.mu.Unlock()
 				break
+			}
+			if ctx.Err() == nil && tCtx.Err() != nil {
+				return errTransportSwitched
 			}
 			// 停摆归类比原样返回错误更重要：调用方据此知道该从当前偏移重连而不是放弃。
 			return watch.Err(ctx, rErr)

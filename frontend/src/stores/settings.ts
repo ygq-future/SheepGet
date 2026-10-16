@@ -24,9 +24,10 @@ function detectCorrections(
   const wasCustom = submitted.proxy?.mode === configModels.ProxyMode.ProxyModeCustom;
   const isCustom = saved.proxy?.mode === configModels.ProxyMode.ProxyModeCustom;
   if (wasCustom && !isCustom) {
+    const submittedAddr = submitted.proxy?.customAddrs?.[0] || submitted.proxy?.customAddr || '';
     corrections.push({
       field: 'proxy',
-      message: `自定义代理地址「${submitted.proxy?.customAddr || ''}」不可用，已回退为系统代理`,
+      message: `自定义代理地址「${submittedAddr}」不可用，已回退为系统代理`,
     });
   }
   return corrections;

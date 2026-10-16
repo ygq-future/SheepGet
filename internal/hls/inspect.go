@@ -30,8 +30,9 @@ type Source struct {
 	Segments int     `json:"segments,omitempty"`
 	// TotalBytes 是这次下载的总大小；-1 表示还没确定，界面按未知显示。
 	// 分片长度通常不在清单里（除非用了 BYTERANGE），因此它多半要靠逐分片询问才能得到。
-	TotalBytes     int64 `json:"totalBytes,omitempty"`
-	DirectTransfer bool  `json:"directTransfer,omitempty"`
+	TotalBytes     int64  `json:"totalBytes,omitempty"`
+	DirectTransfer bool   `json:"directTransfer,omitempty"`
+	ProxyAddr      string `json:"proxyAddr,omitempty"`
 }
 
 // Selection 是选定一个清晰度之后的完整事实：要落进任务的部分，加上本次探测顺手取回的

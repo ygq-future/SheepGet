@@ -342,6 +342,7 @@ export class HLSProbe {
      */
     "media"?: hls$0.Source | null;
     "directTransfer"?: boolean;
+    "proxyAddr"?: string;
 
     /** Creates a new HLSProbe instance. */
     constructor($$source: Partial<HLSProbe> = {}) {
@@ -386,6 +387,7 @@ export class ProbeResult {
     "lastModified": string;
     "contentType": string;
     "directTransfer"?: boolean;
+    "proxyAddr"?: string;
     "duplicateTask"?: task$0.Task | null;
 
     /**
@@ -424,14 +426,14 @@ export class ProbeResult {
      * Creates a new ProbeResult instance from a string or object.
      */
     static createFrom($$source: any = {}): ProbeResult {
-        const $$createField9_0 = $$createType1;
-        const $$createField10_0 = $$createType15;
+        const $$createField10_0 = $$createType1;
+        const $$createField11_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
-            $$parsedSource["duplicateTask"] = $$createField9_0($$parsedSource["duplicateTask"]);
+            $$parsedSource["duplicateTask"] = $$createField10_0($$parsedSource["duplicateTask"]);
         }
         if ("hls" in $$parsedSource) {
-            $$parsedSource["hls"] = $$createField10_0($$parsedSource["hls"]);
+            $$parsedSource["hls"] = $$createField11_0($$parsedSource["hls"]);
         }
         return new ProbeResult($$parsedSource as Partial<ProbeResult>);
     }

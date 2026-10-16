@@ -151,7 +151,7 @@ func NewApp() *App {
 	downloader.SetUseServerFileTime(activeSettings.Download.UseServerFileTime)
 	// 配置层已保证自定义代理地址可解析；这里失败说明默认值或校验被破坏，
 	// 与上面的初始化失败同等处理，不能让不生效的代理留在运行中的下载器上。
-	if err := downloader.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr); err != nil {
+	if err := downloader.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.EffectiveCustomAddrs()...); err != nil {
 		panic(fmt.Sprintf("failed to apply stored proxy settings: %v", err))
 	}
 
@@ -343,7 +343,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		a.manager.SetMaxActiveTasks(s.Download.MaxConcurrentDownloads)
 		a.manager.SetTempDirectory(s.Download.TempDirectory)
 		a.manager.SetUseServerFileTime(s.Download.UseServerFileTime)
-		if err := a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr); err != nil {
+		if err := a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.EffectiveCustomAddrs()...); err != nil {
 			return err
 		}
 	}

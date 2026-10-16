@@ -66,6 +66,7 @@ export class Source {
      */
     "totalBytes"?: number;
     "directTransfer"?: boolean;
+    "proxyAddr"?: string;
 
     /** Creates a new Source instance. */
     constructor($$source: Partial<Source> = {}) {

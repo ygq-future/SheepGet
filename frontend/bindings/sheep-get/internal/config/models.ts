@@ -260,6 +260,7 @@ export class GeneralConfig {
 export class ProxyConfig {
     "mode": ProxyMode;
     "customAddr": string;
+    "customAddrs": string[];
 
     /** Creates a new ProxyConfig instance. */
     constructor($$source: Partial<ProxyConfig> = {}) {
@@ -269,6 +270,9 @@ export class ProxyConfig {
         if (!("customAddr" in $$source)) {
             this["customAddr"] = "";
         }
+        if (!("customAddrs" in $$source)) {
+            this["customAddrs"] = [];
+        }
 
         Object.assign(this, $$source);
     }
@@ -277,7 +281,11 @@ export class ProxyConfig {
      * Creates a new ProxyConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): ProxyConfig {
+        const $$createField2_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("customAddrs" in $$parsedSource) {
+            $$parsedSource["customAddrs"] = $$createField2_0($$parsedSource["customAddrs"]);
+        }
         return new ProxyConfig($$parsedSource as Partial<ProxyConfig>);
     }
 }

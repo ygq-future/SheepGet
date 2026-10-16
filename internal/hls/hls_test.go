@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -893,6 +894,89 @@ func TestFetcher_WithFallbackWhenBothFailReturnsError(t *testing.T) {
 	notFoundTarget.Close()
 	if _, err := hls.Inspect(context.Background(), f, notFoundTarget.URL+"/missing.m3u8"); err == nil {
 		t.Fatalf("expected error when proxy returns 502 and fallback fails to connect")
+	}
+}
+
+// TestFetcher_WithFallbackChainPollsProxiesBeforeDirect 验证 HLS 多代理轮询回退链：
+// P1 (502) -> P2 (正常) -> Direct，当 P1 失败但 P2 正常时切换到 P2 而非直接走 Direct。
+func TestFetcher_WithFallbackChainPollsProxiesBeforeDirect(t *testing.T) {
+	var directHits, p2Hits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Via-Proxy") == "" {
+			directHits++
+		}
+		switch r.URL.Path {
+		case "/index.m3u8":
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n"))
+		case "/seg0.ts":
+			_, _ = w.Write([]byte("hls-via-second-proxy"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer target.Close()
+
+	brokenP1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer brokenP1.Close()
+
+	workingP2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p2Hits++
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, r.RequestURI, r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		outReq.Header.Set("X-Via-Proxy", "P2")
+		resp, err := http.DefaultTransport.RoundTrip(outReq)
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer workingP2.Close()
+
+	p1URL, _ := url.Parse(brokenP1.URL)
+	p1Client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(p1URL)}}
+
+	p2URL, _ := url.Parse(workingP2.URL)
+	p2Client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(p2URL)}}
+
+	var switchedTo hls.FallbackTarget
+	f := hls.NewFetcher(p1Client, credentials.New(nil)).WithFallbackChain([]hls.FallbackTarget{
+		{Client: p2Client, ProxyAddr: workingP2.URL},
+		{Client: target.Client(), DirectTransfer: true},
+	}, func(chosen hls.FallbackTarget) {
+		switchedTo = chosen
+	})
+
+	inspected, err := hls.Inspect(context.Background(), f, target.URL+"/index.m3u8")
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+	if f.UsedFallback() {
+		t.Fatalf("expected UsedFallback() (direct) to be false when P2 succeeded")
+	}
+	if f.SwitchedProxyAddr() != workingP2.URL || switchedTo.ProxyAddr != workingP2.URL {
+		t.Fatalf("expected fetcher to switch to P2 (%s), got %q", workingP2.URL, f.SwitchedProxyAddr())
+	}
+	sel, err := hls.Resolve(context.Background(), f, target.URL+"/index.m3u8", inspected.Variants[0], "")
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	dir := t.TempDir()
+	if _, err := f.Download(context.Background(), sel.VideoPlaylist, dir, 2, nil); err != nil {
+		t.Fatalf("Download failed: %v", err)
+	}
+	if p2Hits == 0 {
+		t.Fatalf("expected requests to go through P2")
+	}
+	if directHits != 0 {
+		t.Fatalf("expected 0 direct hits when P2 is working, got %d", directHits)
 	}
 }
 

@@ -708,6 +708,44 @@ func TestProxyModeValidation(t *testing.T) {
 	if validated.Proxy.CustomAddr != "http://127.0.0.1:7890" {
 		t.Errorf("expected trimmed customAddr, got %q", validated.Proxy.CustomAddr)
 	}
+	if len(validated.Proxy.CustomAddrs) != 1 || validated.Proxy.CustomAddrs[0] != "http://127.0.0.1:7890" {
+		t.Errorf("expected migrated customAddrs [http://127.0.0.1:7890], got %v", validated.Proxy.CustomAddrs)
+	}
+}
+
+func TestProxyMultipleCustomAddrsValidation(t *testing.T) {
+	s := Settings{
+		Proxy: ProxyConfig{
+			Mode: ProxyModeCustom,
+			CustomAddrs: []string{
+				"  http://127.0.0.1:7890 ",
+				"socks5://127.0.0.1:1080",
+				"HTTP://127.0.0.1:7890", // duplicate case-insensitive
+				"://invalid-addr",       // invalid entry should be filtered out
+				"https://proxy.example.com:8443",
+			},
+		},
+	}
+	validated := s.ValidateAndFallback("/d", "/t")
+	if validated.Proxy.Mode != ProxyModeCustom {
+		t.Fatalf("expected ProxyModeCustom, got %s", validated.Proxy.Mode)
+	}
+	expected := []string{
+		"http://127.0.0.1:7890",
+		"socks5://127.0.0.1:1080",
+		"https://proxy.example.com:8443",
+	}
+	if len(validated.Proxy.CustomAddrs) != len(expected) {
+		t.Fatalf("expected %d customAddrs, got %v", len(expected), validated.Proxy.CustomAddrs)
+	}
+	for i, exp := range expected {
+		if validated.Proxy.CustomAddrs[i] != exp {
+			t.Errorf("customAddrs[%d]: expected %q, got %q", i, exp, validated.Proxy.CustomAddrs[i])
+		}
+	}
+	if validated.Proxy.CustomAddr != expected[0] {
+		t.Errorf("expected primary customAddr %q, got %q", expected[0], validated.Proxy.CustomAddr)
+	}
 }
 
 // TestProxyCustomAddrValidation pins the invariant the transport layer relies on:
@@ -737,6 +775,9 @@ func TestProxyCustomAddrValidation(t *testing.T) {
 			}
 			if validated.Proxy.CustomAddr != "" {
 				t.Fatalf("expected cleared customAddr for %q, got %q", tc.addr, validated.Proxy.CustomAddr)
+			}
+			if len(validated.Proxy.CustomAddrs) != 0 {
+				t.Fatalf("expected empty customAddrs for %q, got %v", tc.addr, validated.Proxy.CustomAddrs)
 			}
 		})
 	}

@@ -68,10 +68,12 @@ type Task struct {
 	ErrorMsg       string       `json:"errorMsg,omitempty"`
 	MaxConcurrency int          `json:"maxConcurrency"`
 	Resumable      bool         `json:"resumable"`
-	// DirectTransfer 标记本次下载是否强制走直连（当全局配置了代理但探测超时/失败后直连探测成功时置为 true）。
-	DirectTransfer bool   `json:"directTransfer,omitempty"`
-	ETag           string `json:"etag,omitempty"`
-	LastModified   string `json:"lastModified,omitempty"`
+	// DirectTransfer 标记本次下载是否强制走直连（当全局配置了代理但所有代理探测/传输失败后直连成功时置为 true）。
+	DirectTransfer bool `json:"directTransfer,omitempty"`
+	// ProxyAddr 记录本次下载在多代理轮询回退中锁定的可用自定义代理地址（为空表示使用默认首选或直连）。
+	ProxyAddr    string `json:"proxyAddr,omitempty"`
+	ETag         string `json:"etag,omitempty"`
+	LastModified string `json:"lastModified,omitempty"`
 	// Duration 是媒体文件的时长（秒），0 表示还没识别出来或不是媒体文件。
 	// 它在下载完成后由本地文件解析写入：那时文件已经落地，读它不需要任何网络请求。
 	Duration  float64   `json:"duration,omitempty"`

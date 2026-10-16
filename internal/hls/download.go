@@ -277,18 +277,25 @@ func (in *Inputs) Paths(dir string) (initPaths, segmentPaths []string) {
 // 续传时一开始就带出磁盘上已有的分片，调用方靠它把「分段并发」画进界面。
 type ProgressFunc func(downloaded, total int64, completed, totalCount int, done []bool)
 
+// FallbackTarget 描述主客户端失效时的一个有序备用传输通道（下一个自定义代理或最终直连）。
+type FallbackTarget struct {
+	Client         *http.Client
+	ProxyAddr      string
+	DirectTransfer bool
+}
+
 // Fetcher 负责抓取清单、密钥与分片，始终带着任务的请求上下文（Referer/Cookie 等）。
-// 当配置了 fallbackClient（例如全局处于代理模式时备用的直连客户端）且主客户端因网络/代理故障请求失败时，
-// 自动尝试通过 fallbackClient 重试，一旦连通即切换主客户端并触发 onFallback 回调。
+// 当配置了 fallbackTargets（例如自定义多代理列表与直连客户端）且主客户端因网络/代理故障请求失败时，
+// 自动按顺序依次尝试备用客户端，一旦连通即切换主客户端并触发回调。
 type Fetcher struct {
-	client         *http.Client
-	fallbackClient *http.Client
-	onFallback     func()
-	usedFallback   bool
-	creds          credentials.RequestCredentials
-	userAgt        string
-	mu             sync.Mutex
-	keys           map[string][]byte
+	client          *http.Client
+	fallbackTargets []FallbackTarget
+	onTargetSwitch  func(FallbackTarget)
+	switchedTarget  *FallbackTarget
+	creds           credentials.RequestCredentials
+	userAgt         string
+	mu              sync.Mutex
+	keys            map[string][]byte
 }
 
 // NewFetcher 构造一个属于某次任务的抓取器。creds 是这次请求的上下文（Referer/Cookie 等），
@@ -305,20 +312,54 @@ func NewFetcher(client *http.Client, creds credentials.RequestCredentials) *Fetc
 	}
 }
 
-// WithFallback 配置主客户端请求失败时的备用客户端（如直连客户端）及切换成功回调。
+// WithFallback 配置主客户端请求失败时的单一备用客户端（如直连客户端）及切换成功回调。
 func (f *Fetcher) WithFallback(fallback *http.Client, onFallback func()) *Fetcher {
+	if fallback == nil {
+		f.mu.Lock()
+		f.fallbackTargets = nil
+		f.onTargetSwitch = nil
+		f.mu.Unlock()
+		return f
+	}
+	return f.WithFallbackChain([]FallbackTarget{
+		{Client: fallback, DirectTransfer: true},
+	}, func(FallbackTarget) {
+		if onFallback != nil {
+			onFallback()
+		}
+	})
+}
+
+// WithFallbackChain 配置主客户端故障时的有序备用通道链（依次尝试后续自定义代理，最终尝试直连）。
+func (f *Fetcher) WithFallbackChain(targets []FallbackTarget, onSwitch func(FallbackTarget)) *Fetcher {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.fallbackClient = fallback
-	f.onFallback = onFallback
+	valid := make([]FallbackTarget, 0, len(targets))
+	for _, t := range targets {
+		if t.Client != nil {
+			valid = append(valid, t)
+		}
+	}
+	f.fallbackTargets = valid
+	f.onTargetSwitch = onSwitch
 	return f
 }
 
-// UsedFallback 报告该抓取器在运行期间是否因主客户端故障切换到了备用直连客户端。
+// UsedFallback 报告该抓取器在运行期间是否因主客户端故障切换到了直连备用通道。
 func (f *Fetcher) UsedFallback() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.usedFallback
+	return f.switchedTarget != nil && f.switchedTarget.DirectTransfer
+}
+
+// SwitchedProxyAddr 返回抓取器在故障回退期间锁定到的备用自定义代理地址（若未切换或已切至直连则返回空）。
+func (f *Fetcher) SwitchedProxyAddr() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.switchedTarget == nil || f.switchedTarget.DirectTransfer {
+		return ""
+	}
+	return f.switchedTarget.ProxyAddr
 }
 
 func (f *Fetcher) activeClient() *http.Client {
@@ -347,11 +388,11 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 	}
 
 	f.mu.Lock()
-	fb := f.fallbackClient
-	onFb := f.onFallback
+	targets := append([]FallbackTarget(nil), f.fallbackTargets...)
+	onSwitch := f.onTargetSwitch
 	f.mu.Unlock()
 
-	if fb == nil || ctx.Err() != nil {
+	if len(targets) == 0 || ctx.Err() != nil {
 		return resp, err
 	}
 
@@ -364,33 +405,61 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 		drainAndClose(resp.Body)
 	}
 
-	fbReq, fbReqErr := buildReq()
-	if fbReqErr != nil {
-		return nil, primaryErr
-	}
-	fbResp, fbErr := fb.Do(fbReq)
-	if fbErr != nil {
-		return nil, primaryErr
-	}
-	if fbResp.StatusCode >= 400 {
-		if err != nil {
+	var last4xxResp *http.Response
+	for idx, target := range targets {
+		if ctx.Err() != nil {
+			break
+		}
+		fbReq, fbReqErr := buildReq()
+		if fbReqErr != nil {
+			if last4xxResp != nil && last4xxResp.Body != nil {
+				drainAndClose(last4xxResp.Body)
+			}
+			return nil, primaryErr
+		}
+		fbResp, fbErr := target.Client.Do(fbReq)
+		if fbErr != nil {
+			continue
+		}
+		if fbResp.StatusCode == http.StatusBadGateway || fbResp.StatusCode == http.StatusGatewayTimeout {
 			drainAndClose(fbResp.Body)
-			return nil, err
+			continue
+		}
+		if fbResp.StatusCode >= 400 {
+			if err != nil {
+				drainAndClose(fbResp.Body)
+				continue
+			}
+			if last4xxResp != nil && last4xxResp.Body != nil {
+				drainAndClose(last4xxResp.Body)
+			}
+			last4xxResp = fbResp
+			continue
+		}
+
+		if last4xxResp != nil && last4xxResp.Body != nil {
+			drainAndClose(last4xxResp.Body)
+		}
+		chosen := target
+		f.mu.Lock()
+		f.client = chosen.Client
+		if idx+1 < len(targets) {
+			f.fallbackTargets = append([]FallbackTarget(nil), targets[idx+1:]...)
+		} else {
+			f.fallbackTargets = nil
+		}
+		f.switchedTarget = &chosen
+		f.mu.Unlock()
+		if onSwitch != nil {
+			onSwitch(chosen)
 		}
 		return fbResp, nil
 	}
 
-	f.mu.Lock()
-	if f.fallbackClient != nil {
-		f.client = f.fallbackClient
-		f.fallbackClient = nil
-		f.usedFallback = true
+	if last4xxResp != nil {
+		return last4xxResp, nil
 	}
-	f.mu.Unlock()
-	if onFb != nil {
-		onFb()
-	}
-	return fbResp, nil
+	return nil, primaryErr
 }
 
 // GetText 抓取一份文本清单（主清单或媒体清单）。

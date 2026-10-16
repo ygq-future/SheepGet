@@ -146,8 +146,21 @@ const (
 
 // ProxyConfig specifies application network proxy settings.
 type ProxyConfig struct {
-	Mode       ProxyMode `json:"mode"`
-	CustomAddr string    `json:"customAddr"`
+	Mode        ProxyMode `json:"mode"`
+	CustomAddr  string    `json:"customAddr"`
+	CustomAddrs []string  `json:"customAddrs"`
+}
+
+// EffectiveCustomAddrs returns the ordered list of custom proxy addresses.
+// When CustomAddrs is empty, it falls back to a non-empty CustomAddr for legacy compatibility.
+func (p ProxyConfig) EffectiveCustomAddrs() []string {
+	if len(p.CustomAddrs) > 0 {
+		return append([]string(nil), p.CustomAddrs...)
+	}
+	if trimmed := strings.TrimSpace(p.CustomAddr); trimmed != "" {
+		return []string{trimmed}
+	}
+	return nil
 }
 
 // proxySchemes lists the protocols the transport layer can apply as a custom proxy.
@@ -161,6 +174,25 @@ func isValidProxyAddr(addr string) bool {
 		return false
 	}
 	return proxySchemes[strings.ToLower(parsed.Scheme)]
+}
+
+// normalizeProxyAddrs trims, validates, and deduplicates proxy addresses while preserving order.
+func normalizeProxyAddrs(addrs []string) []string {
+	seen := make(map[string]bool, len(addrs))
+	valid := make([]string, 0, len(addrs))
+	for _, raw := range addrs {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || !isValidProxyAddr(trimmed) {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		valid = append(valid, trimmed)
+	}
+	return valid
 }
 
 // TakeoverConfig specifies automatic browser takeover rules such as excluded sites and shortcuts.
@@ -385,8 +417,9 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			CustomCategories:          []CategoryConfig{},
 		},
 		Proxy: ProxyConfig{
-			Mode:       ProxyModeSystem,
-			CustomAddr: "",
+			Mode:        ProxyModeSystem,
+			CustomAddr:  "",
+			CustomAddrs: []string{},
 		},
 		Takeover: TakeoverConfig{
 			ExcludedSites: []string{},
@@ -545,13 +578,22 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 	default:
 		s.Proxy.Mode = defaults.Proxy.Mode
 	}
-	s.Proxy.CustomAddr = strings.TrimSpace(s.Proxy.CustomAddr)
+	rawAddrs := s.Proxy.CustomAddrs
+	if len(rawAddrs) == 0 && strings.TrimSpace(s.Proxy.CustomAddr) != "" {
+		rawAddrs = []string{s.Proxy.CustomAddr}
+	}
+	validAddrs := normalizeProxyAddrs(rawAddrs)
+	s.Proxy.CustomAddrs = validAddrs
+	if len(validAddrs) > 0 {
+		s.Proxy.CustomAddr = validAddrs[0]
+	} else {
+		s.Proxy.CustomAddr = ""
+	}
 	// 自定义地址是传输层构造代理的唯一输入，必须是可解析的受支持协议 URL。
-	// 非法地址在这里整组回退默认代理，避免留下"显示已启用、实际直连"的配置。
-	if s.Proxy.Mode == ProxyModeCustom && !isValidProxyAddr(s.Proxy.CustomAddr) {
+	// 若处于自定义代理模式但没有任何合法地址，整组回退默认代理，避免留下"显示已启用、实际直连"的配置。
+	if s.Proxy.Mode == ProxyModeCustom && len(s.Proxy.CustomAddrs) == 0 {
 		s.Proxy = defaults.Proxy
 	}
-
 	// Validate Takeover
 	if s.Takeover.ExcludedSites == nil {
 		s.Takeover.ExcludedSites = []string{}

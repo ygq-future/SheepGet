@@ -56,32 +56,44 @@ type HLSProbe struct {
 	// （Ticket 07：多清晰度在进入信息对话框前选择）。有它时建任务直接采用，不再重新探测。
 	Media          *hls.Source `json:"media,omitempty"`
 	DirectTransfer bool        `json:"directTransfer,omitempty"`
+	ProxyAddr      string      `json:"proxyAddr,omitempty"`
 }
 
 // newHLSFetcher 构造一个属于某次探测的 HLS 抓取器。它复用下载器的 HTTP 客户端，
-// 当下载器配置了代理时同时挂载直连备用客户端，代理不通时自动切换直连。
+// 当下载器配置了代理时同时挂载备用代理链与直连客户端，代理不通时依次切换。
 func (m *Manager) newHLSFetcher(creds credentials.RequestCredentials) *hls.Fetcher {
 	return m.newHLSFetcherForTask(nil, creds)
 }
 
 // newHLSFetcherForTask 构造属于指定任务（或探测）的 HLS 抓取器：
-// 若任务已标记 DirectTransfer，直接使用直连客户端；否则使用当前配置的客户端并挂载直连回退。
+// 若任务已标记 DirectTransfer，直接使用直连客户端；否则使用任务当前代理客户端并挂载后续备用代理与直连回退链。
 func (m *Manager) newHLSFetcherForTask(t *task.Task, creds credentials.RequestCredentials) *hls.Fetcher {
 	client := http.DefaultClient
-	var fallback *http.Client
+	var targets []hls.FallbackTarget
 	if m.downloader != nil {
 		client = m.downloader.GetClientForTask(t)
-		if t == nil || !t.DirectTransfer {
-			fallback = m.downloader.NewDirectFallbackClient()
+		for _, cand := range m.downloader.FallbackCandidatesForTask(t) {
+			if cand.Client != nil && cand.Client != client {
+				targets = append(targets, hls.FallbackTarget{
+					Client:         cand.Client,
+					ProxyAddr:      cand.ProxyAddr,
+					DirectTransfer: cand.DirectTransfer,
+				})
+			}
 		}
 	}
 	f := hls.NewFetcher(client, creds)
-	if fallback != nil {
-		f.WithFallback(fallback, func() {
+	if len(targets) > 0 {
+		f.WithFallbackChain(targets, func(chosen hls.FallbackTarget) {
 			if t != nil {
-				t.DirectTransfer = true
+				t.DirectTransfer = chosen.DirectTransfer
+				t.ProxyAddr = chosen.ProxyAddr
 			}
-			m.log().Info("hls fetcher switched to direct connection fallback")
+			if chosen.DirectTransfer {
+				m.log().Info("hls fetcher switched to direct connection fallback")
+			} else {
+				m.log().Info("hls fetcher switched to fallback proxy connection", "proxy", chosen.ProxyAddr)
+			}
 		})
 	}
 	return f
@@ -119,6 +131,7 @@ func (m *Manager) inspectPlaylist(ctx context.Context, playlistURL string, creds
 		Variants:       res.Variants,
 		Options:        hls.VariantOptions(res.Variants),
 		DirectTransfer: f.UsedFallback(),
+		ProxyAddr:      f.SwitchedProxyAddr(),
 	}, nil
 }
 
@@ -172,6 +185,9 @@ func (m *Manager) resolveHLS(ctx context.Context, playlistURL, variantURI string
 	}
 	if f.UsedFallback() {
 		sel.Source.DirectTransfer = true
+		sel.Source.ProxyAddr = ""
+	} else if addr := f.SwitchedProxyAddr(); addr != "" {
+		sel.Source.ProxyAddr = addr
 	}
 	return sel.Source, nil
 }
@@ -191,6 +207,11 @@ func ApplyHLSSelection(probe *ProbeResult, src *hls.Source) {
 	probe.TotalBytes = src.TotalBytes
 	if src.DirectTransfer || probe.HLS.DirectTransfer {
 		probe.DirectTransfer = true
+		probe.ProxyAddr = ""
+	} else if src.ProxyAddr != "" {
+		probe.ProxyAddr = src.ProxyAddr
+	} else if probe.HLS.ProxyAddr != "" {
+		probe.ProxyAddr = probe.HLS.ProxyAddr
 	}
 }
 

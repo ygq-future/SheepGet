@@ -578,3 +578,76 @@ func TestHTTPDownloader_GlobalBackoffPreventsChunkHammering(t *testing.T) {
 		t.Fatalf("downloaded file content mismatch")
 	}
 }
+
+// TestAdaptiveConcurrency_TransportSwitchCapsBelowThrottledAt 验证：
+//  1. 若某个代理一上来从未建立过连接就直接 502（死代理），切换下一个代理时不误扣并发上限；
+//  2. 若某个代理在正常拉流并扩容到 N 线程后触发限制/故障，切换到下一个代理后，
+//     新的最大并发上限折半收敛至安全水位 min(N/2, 4)（严格 < N），且锁定安全并发不再盲目向上扩容。
+func TestAdaptiveConcurrency_TransportSwitchCapsBelowThrottledAt(t *testing.T) {
+	ac := engine.NewAdaptiveConcurrency(32, 2)
+
+	// 场景 A：第 1 个代理一上来就是坏的（从未调用 OnStreamEstablished），连报 2 次 502 后切换
+	ac.OnRateLimitWithActive(2)
+	ac.OnRateLimitWithActive(1)
+	throttled0, newCurr0, newMax0 := ac.OnTransportSwitched(1)
+	if throttled0 != 0 {
+		t.Fatalf("expected throttledAt=0 for dead proxy that never established stream, got %d", throttled0)
+	}
+	if newMax0 != 32 {
+		t.Fatalf("expected dead proxy not to reduce maxLimit (32), got %d", newMax0)
+	}
+	if newCurr0 != 2 {
+		t.Fatalf("expected newCurr0=2, got %d", newCurr0)
+	}
+
+	// 场景 B：第 2 个代理正常拉流并扩容到 12 线程，随后触发 502/限流并一路降到 1 线程
+	for range 10 {
+		ac.OnStreamEstablished()
+	}
+	if got := ac.CurrentLimit(); got != 12 {
+		t.Fatalf("expected currentLimit to ramp up to 12, got %d", got)
+	}
+	ac.OnRateLimitWithActive(12)
+	if got := ac.ThrottledAt(); got != 12 {
+		t.Fatalf("expected throttledAt=12 on first failure, got %d", got)
+	}
+	for range 15 {
+		ac.OnRateLimitWithActive(1)
+	}
+	if got := ac.CurrentLimit(); got != 1 {
+		t.Fatalf("expected currentLimit to scale down to 1 during storm, got %d", got)
+	}
+
+	// 切换到第 3 个代理：新 maxLimit 收敛至安全水位 4（< 12），且 currentLimit 锁定在 4，
+	// 同时 HasEverThrottled=true 后 OnSuccess 与 OnStreamEstablished 均不再盲目向上扩容。
+	throttled, newCurr, newMax := ac.OnTransportSwitched(1)
+	if throttled != 12 {
+		t.Errorf("expected reported throttledAt=12, got %d", throttled)
+	}
+	if newMax != 4 || ac.MaxLimit() != 4 {
+		t.Errorf("expected newMax to be capped at 4 (< 12), got %d (MaxLimit=%d)", newMax, ac.MaxLimit())
+	}
+	if newCurr != 4 || ac.CurrentLimit() != 4 {
+		t.Errorf("expected newCurr to recover to 4, got %d", newCurr)
+	}
+	if !ac.HasEverThrottled() {
+		t.Errorf("expected HasEverThrottled() to be true after throttled switch")
+	}
+	if ac.ThrottledAt() != 0 {
+		t.Errorf("expected throttledAt reset to 0 on new transport, got %d", ac.ThrottledAt())
+	}
+
+	// 第 3 个代理收到首包标记 hasEstablished，若在 4 线程下再次触发限制，切换到第 4 个代理后，maxLimit 必须严格小于 4（折半为 2）
+	ac.OnStreamEstablished()
+	for range 6 {
+		ac.OnSuccess()
+	}
+	if got := ac.CurrentLimit(); got != 4 {
+		t.Fatalf("expected currentLimit to stay locked at 4 after everThrottled, got %d", got)
+	}
+	ac.OnRateLimitWithActive(4)
+	throttled2, newCurr2, newMax2 := ac.OnTransportSwitched(4)
+	if throttled2 != 4 || newMax2 != 2 || newCurr2 != 2 {
+		t.Errorf("expected second switch to cap maxLimit at 2 (< 4), got throttled=%d, newMax=%d, newCurr=%d", throttled2, newMax2, newCurr2)
+	}
+}

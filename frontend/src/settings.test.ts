@@ -69,10 +69,11 @@ describe('settings models and defaults', () => {
     const proxy = new configModels.ProxyConfig({
       mode: configModels.ProxyMode.ProxyModeCustom,
       customAddr: 'http://127.0.0.1:7890',
+      customAddrs: ['http://127.0.0.1:7890', 'socks5://127.0.0.1:1080'],
     });
     expect(proxy.mode).toBe(configModels.ProxyMode.ProxyModeCustom);
     expect(proxy.customAddr).toBe('http://127.0.0.1:7890');
-
+    expect(proxy.customAddrs).toEqual(['http://127.0.0.1:7890', 'socks5://127.0.0.1:1080']);
     const takeover = new configModels.TakeoverConfig({
       excludedSites: ['github.com', 'example.org'],
       pauseShortcut: 'Alt',
