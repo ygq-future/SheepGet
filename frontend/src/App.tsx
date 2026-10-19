@@ -31,9 +31,11 @@ import {
   Trash2,
   CheckCheck,
   X,
+  ArrowUpCircle,
 } from 'lucide-react';
 import logoUrl from './assets/images/logo-universal.png';
 import { useSettingsStore, initSettingsListener } from './stores/settings';
+import { useAppUpdateStore, initAppUpdateListener } from './stores/appUpdate';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
 import { filterTasks, type TaskFilterType } from './lib/taskFilter';
@@ -103,6 +105,15 @@ export function App() {
     port: Ports.DefaultServer,
     connectedCount: 0,
   });
+  const { availableUpdate } = useAppUpdateStore();
+  const [updateNavTrigger, setUpdateNavTrigger] = useState<number>(0);
+
+  useEffect(() => {
+    const unlistenUpdate = initAppUpdateListener();
+    return () => {
+      unlistenUpdate();
+    };
+  }, []);
 
   useEffect(() => {
     void GetServerStatus().then((st) => {
@@ -694,7 +705,7 @@ export function App() {
           <div className="flex items-center gap-2">
             {filter !== 'settings' && (
               <>
-                <div className="w-28 sm:w-32">
+                <div className="w-24 sm:w-28">
                   <Select
                     value={selectedCategory}
                     onChange={(val) => {
@@ -726,7 +737,7 @@ export function App() {
                     </button>
 
                     {selectedTaskIds.size > 0 && (
-                      <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1 text-xs">
+                      <div className="flex items-center gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 text-[11px] whitespace-nowrap">
                         <span className="font-medium text-[var(--text-secondary)]">
                           已选择{' '}
                           <span className="font-mono font-semibold text-[var(--accent)]">
@@ -751,7 +762,28 @@ export function App() {
           </div>
 
           {/* Header Right: Progress Window, Batch Delete, New Download */}
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            {/* Header Update Icon Button */}
+            {availableUpdate?.hasUpdate && (
+              <motion.button
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                type="button"
+                onClick={() => {
+                  setFilter('settings');
+                  setUpdateNavTrigger((prev) => prev + 1);
+                }}
+                className="group relative flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-500 shadow-xs transition-all hover:bg-emerald-500/20 hover:text-emerald-400 active:scale-95"
+                title={`发现新版本 v${availableUpdate.latestVersion}，点击前往版本与更新`}
+              >
+                <ArrowUpCircle className="h-4 w-4" />
+                <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+              </motion.button>
+            )}
+
             {/* Shared Progress Window Button */}
             <button
               type="button"
@@ -815,7 +847,7 @@ export function App() {
         >
           {filter === 'settings' ? (
             <Suspense fallback={null}>
-              <SettingsPanel />
+              <SettingsPanel updateNavTrigger={updateNavTrigger} />
             </Suspense>
           ) : filteredTasks.length === 0 ? (
             <motion.div

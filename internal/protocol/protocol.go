@@ -80,6 +80,7 @@ const (
 	EventServerStatusChanged     = "server:status_changed"
 	EventUpdateAppProgress       = "update:app_progress"
 	EventUpdateExtensionProgress = "update:extension_progress"
+	EventUpdateAvailable         = "update:available"
 )
 
 // 扩展身份。ExtensionID 由 extension/wxt.config.ts 里的固定公钥推导而来（ADR-0005 决策 3），

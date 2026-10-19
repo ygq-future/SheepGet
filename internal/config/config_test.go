@@ -33,6 +33,9 @@ func TestDefaultSettings(t *testing.T) {
 	if s.General.EnableLogging {
 		t.Errorf("expected EnableLogging false by default, got true")
 	}
+	if !s.General.CheckUpdateOnStartup {
+		t.Errorf("expected CheckUpdateOnStartup true by default, got false")
+	}
 	if s.Download.MaxConcurrentDownloads != 32 {
 		t.Errorf("expected MaxConcurrentDownloads 32, got %d", s.Download.MaxConcurrentDownloads)
 	}
@@ -114,6 +117,27 @@ func TestDownloadConfig_WindowSettingsJSONUnmarshal(t *testing.T) {
 	}
 	if !c2.AutoRemoveCompletedOnOpen {
 		t.Errorf("expected AutoRemoveCompletedOnOpen true")
+	}
+}
+func TestGeneralConfig_CheckUpdateOnStartupJSONUnmarshal(t *testing.T) {
+	// Case 1: missing field in JSON -> defaults to true
+	rawMissing := `{"launchAtStartup": false}`
+	var g1 GeneralConfig
+	if err := json.Unmarshal([]byte(rawMissing), &g1); err != nil {
+		t.Fatalf("failed to unmarshal g1: %v", err)
+	}
+	if !g1.CheckUpdateOnStartup {
+		t.Errorf("expected CheckUpdateOnStartup default to true when missing")
+	}
+
+	// Case 2: explicitly set to false
+	rawExplicit := `{"checkUpdateOnStartup": false}`
+	var g2 GeneralConfig
+	if err := json.Unmarshal([]byte(rawExplicit), &g2); err != nil {
+		t.Fatalf("failed to unmarshal g2: %v", err)
+	}
+	if g2.CheckUpdateOnStartup {
+		t.Errorf("expected CheckUpdateOnStartup to be false when explicitly false")
 	}
 }
 

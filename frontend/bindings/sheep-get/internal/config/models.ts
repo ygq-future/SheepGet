@@ -218,6 +218,7 @@ export class GeneralConfig {
      * 需要排查时才打开（滚动上限见 internal/logging）。
      */
     "enableLogging": boolean;
+    "checkUpdateOnStartup": boolean;
     "serverPort": number;
     "apiKey": string;
 
@@ -234,6 +235,9 @@ export class GeneralConfig {
         }
         if (!("enableLogging" in $$source)) {
             this["enableLogging"] = false;
+        }
+        if (!("checkUpdateOnStartup" in $$source)) {
+            this["checkUpdateOnStartup"] = false;
         }
         if (!("serverPort" in $$source)) {
             this["serverPort"] = 0;

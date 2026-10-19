@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as appBindings from '../bindings/sheep-get/app';
 import * as updateModels from '../bindings/sheep-get/internal/update/models';
-
+import { useAppUpdateStore } from './stores/appUpdate';
 describe('update models and contracts', () => {
   it('instantiates AppUpdateResult correctly for portable mode', () => {
     const res = new updateModels.AppUpdateResult({
@@ -56,8 +56,23 @@ describe('update models and contracts', () => {
     expect(res.assetName).toContain('extension');
   });
 
-  it('exports GetAppVersion and GetInstalledExtensionVersion bindings', () => {
+  it('exports GetAppVersion, GetInstalledExtensionVersion and GetCachedAppUpdate bindings', () => {
     expect(typeof appBindings.GetAppVersion).toBe('function');
     expect(typeof appBindings.GetInstalledExtensionVersion).toBe('function');
+    expect(typeof appBindings.GetCachedAppUpdate).toBe('function');
+  });
+
+  it('updates appUpdateStore correctly', () => {
+    const dummy = new updateModels.AppUpdateResult({
+      hasUpdate: true,
+      currentVersion: '1.0.0',
+      latestVersion: '1.2.0',
+    });
+    useAppUpdateStore.getState().setAvailableUpdate(dummy);
+    expect(useAppUpdateStore.getState().availableUpdate?.hasUpdate).toBe(true);
+    expect(useAppUpdateStore.getState().availableUpdate?.latestVersion).toBe('1.2.0');
+
+    useAppUpdateStore.getState().setAvailableUpdate(null);
+    expect(useAppUpdateStore.getState().availableUpdate).toBeNull();
   });
 });

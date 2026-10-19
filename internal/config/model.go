@@ -130,9 +130,30 @@ type GeneralConfig struct {
 	LightweightMode bool `json:"lightweightMode"`
 	// EnableLogging 控制是否把运行日志写进数据目录的 logs/。默认关闭：正常使用不落盘，
 	// 需要排查时才打开（滚动上限见 internal/logging）。
-	EnableLogging bool   `json:"enableLogging"`
-	ServerPort    int    `json:"serverPort"`
-	APIKey        string `json:"apiKey"`
+	EnableLogging        bool   `json:"enableLogging"`
+	CheckUpdateOnStartup bool   `json:"checkUpdateOnStartup"`
+	ServerPort           int    `json:"serverPort"`
+	APIKey               string `json:"apiKey"`
+}
+
+// UnmarshalJSON customizes unmarshaling to ensure checkUpdateOnStartup defaults to true when omitted.
+func (g *GeneralConfig) UnmarshalJSON(data []byte) error {
+	type alias GeneralConfig
+	aux := &struct {
+		CheckUpdateOnStartup *bool `json:"checkUpdateOnStartup"`
+		*alias
+	}{
+		alias: (*alias)(g),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.CheckUpdateOnStartup == nil {
+		g.CheckUpdateOnStartup = true
+	} else {
+		g.CheckUpdateOnStartup = *aux.CheckUpdateOnStartup
+	}
+	return nil
 }
 
 // ProxyMode specifies the proxy strategy.
@@ -390,12 +411,12 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 	builtinCategories := DefaultBuiltinCategories(defaultDownloadDir)
 	return Settings{
 		General: GeneralConfig{
-			LaunchAtStartup: false,
-			SilentStartup:   false,
-			LightweightMode: false,
-			EnableLogging:   false,
-			ServerPort:      protocol.PortDefaultServer,
-			APIKey:          GenerateRandomToken(),
+			LaunchAtStartup:      false,
+			SilentStartup:        false,
+			LightweightMode:      false,
+			EnableLogging:        false,
+			CheckUpdateOnStartup: true,
+			ServerPort:           protocol.PortDefaultServer,
 		},
 		Appearance: AppearanceConfig{
 			Theme:       ThemeSystem,

@@ -24,6 +24,7 @@ import (
 	"sheep-get/internal/server"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/task"
+	"sheep-get/internal/update"
 	"sheep-get/internal/version"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
@@ -1921,5 +1922,28 @@ func TestApp_SkillSyncAndOpenDirectory(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(skillFile)); err != nil {
 		t.Errorf("expected skill directory to exist: %v", err)
+	}
+}
+func TestApp_CachedAppUpdate(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	// Initially nil
+	if cached := app.GetCachedAppUpdate(); cached != nil {
+		t.Fatalf("expected initial cached app update to be nil, got: %v", cached)
+	}
+
+	// Mock cached update
+	dummyResult := &update.AppUpdateResult{
+		CurrentVersion: "1.0.0",
+		LatestVersion:  "1.1.0",
+		HasUpdate:      true,
+		ReleaseNotes:   "Bug fixes",
+	}
+	app.updateMu.Lock()
+	app.cachedAppUpdate = dummyResult
+	app.updateMu.Unlock()
+
+	cached := app.GetCachedAppUpdate()
+	if cached == nil || !cached.HasUpdate || cached.LatestVersion != "1.1.0" {
+		t.Fatalf("expected cached update to report 1.1.0 with HasUpdate=true, got: %v", cached)
 	}
 }

@@ -17,4 +17,5 @@ export const Event = {
   ServerStatusChanged: 'server:status_changed',
   UpdateAppProgress: 'update:app_progress',
   UpdateExtensionProgress: 'update:extension_progress',
+  UpdateAvailable: 'update:available',
 } as const;

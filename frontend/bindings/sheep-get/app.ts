@@ -137,6 +137,15 @@ export function GetAppVersion(): $CancellablePromise<string> {
 }
 
 /**
+ * GetCachedAppUpdate returns the cached app update result if any.
+ */
+export function GetCachedAppUpdate(): $CancellablePromise<update$0.AppUpdateResult | null> {
+    return $Call.ByID(186510125).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * GetInstalledExtensionVersion returns the version of the currently bundled extension.
  */
 export function GetInstalledExtensionVersion(): $CancellablePromise<string> {

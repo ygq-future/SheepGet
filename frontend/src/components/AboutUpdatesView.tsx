@@ -37,7 +37,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { useSettingsStore } from '../stores/settings';
-
+import { useAppUpdateStore } from '../stores/appUpdate';
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -60,8 +60,10 @@ export function AboutUpdatesView() {
 
   // App Update State
   const [appVersion, setAppVersion] = useState<string>('读取中...');
+  const { availableUpdate, setAvailableUpdate } = useAppUpdateStore();
   const [checkingApp, setCheckingApp] = useState(false);
-  const [appUpdate, setAppUpdate] = useState<AppUpdateResult | null>(null);
+  const [manualUpdate, setManualUpdate] = useState<AppUpdateResult | null>(null);
+  const appUpdate = manualUpdate ?? availableUpdate;
   const [downloadingApp, setDownloadingApp] = useState(false);
   const [appProgress, setAppProgress] = useState<DownloadProgress | null>(null);
   const [downloadedAppPath, setDownloadedAppPath] = useState<string | null>(null);
@@ -127,7 +129,8 @@ export function AboutUpdatesView() {
     setDownloadedAppPath(null);
     try {
       const res = await CheckAppUpdate();
-      setAppUpdate(res);
+      setManualUpdate(res);
+      setAvailableUpdate(res);
       if (res?.hasUpdate) {
         showToast(`发现应用新版本 v${res.latestVersion}`, 'info');
       } else {

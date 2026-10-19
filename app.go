@@ -64,6 +64,8 @@ type App struct {
 	logger              atomic.Pointer[logging.Logger]
 	logError            error
 	updater             *update.Service
+	updateMu            sync.RWMutex
+	cachedAppUpdate     *update.AppUpdateResult
 	completedNotified   sync.Map
 	onShowProgress      func(taskID string)
 }
@@ -281,6 +283,7 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}
+	a.checkUpdateOnStartupAsync()
 }
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
@@ -1103,7 +1106,46 @@ func (a *App) CheckAppUpdate() (*update.AppUpdateResult, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return a.updater.CheckAppUpdate(ctx)
+	res, err := a.updater.CheckAppUpdate(ctx)
+	if err == nil && res != nil {
+		a.updateMu.Lock()
+		a.cachedAppUpdate = res
+		a.updateMu.Unlock()
+	}
+	return res, err
+}
+
+// GetCachedAppUpdate returns the cached app update result if any.
+func (a *App) GetCachedAppUpdate() *update.AppUpdateResult {
+	a.updateMu.RLock()
+	defer a.updateMu.RUnlock()
+	return a.cachedAppUpdate
+}
+
+func (a *App) checkUpdateOnStartupAsync() {
+	if a.updater == nil {
+		return
+	}
+	st := a.GetSettings()
+	if !st.General.CheckUpdateOnStartup {
+		return
+	}
+	go func() {
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-a.ctx.Done():
+			return
+		}
+		res, err := a.CheckAppUpdate()
+		if err != nil || res == nil {
+			return
+		}
+		if res.HasUpdate {
+			if app := a.getApp(); app != nil {
+				app.Event.Emit(protocol.EventUpdateAvailable, res)
+			}
+		}
+	}()
 }
 
 // CheckExtensionUpdate checks for updates to the browser extension.

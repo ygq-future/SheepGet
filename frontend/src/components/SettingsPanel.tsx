@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useSettingsStore } from '../stores/settings';
 import type { SettingsCorrection } from '../stores/settings';
 import * as configModels from '../../bindings/sheep-get/internal/config/models';
@@ -115,18 +115,20 @@ const SETTINGS_TABS: TabMeta[] = [
 ];
 
 function SettingSection({
+  id,
   title,
   description,
   action,
   children,
 }: {
+  id?: string;
   title?: string;
   description?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
+    <div id={id} className="scroll-mt-4 space-y-2">
       {(title || action) && (
         <div className="flex items-center justify-between px-1">
           <div>
@@ -399,12 +401,56 @@ function CustomCategoryItem({
   );
 }
 
-export function SettingsPanel() {
+export interface SettingsPanelProps {
+  initialTab?: SettingsTab;
+  targetSection?: string;
+  updateNavTrigger?: number;
+}
+
+export function SettingsPanel({
+  initialTab,
+  targetSection,
+  updateNavTrigger,
+}: SettingsPanelProps = {}) {
   const { settings, storageInfo, updateSettings } = useSettingsStore();
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const [userSelectedTab, setUserSelectedTab] = useState<SettingsTab | null>(null);
+  const [prevTrigger, setPrevTrigger] = useState(updateNavTrigger);
+  if (updateNavTrigger !== prevTrigger) {
+    setPrevTrigger(updateNavTrigger);
+    if (updateNavTrigger && updateNavTrigger > 0) {
+      setUserSelectedTab('general');
+    }
+  }
+
+  const activeTab: SettingsTab =
+    userSelectedTab ??
+    (targetSection === 'section-about-updates' ? 'general' : (initialTab ?? 'general'));
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [customColor, setCustomColor] = useState('');
   const colorInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (targetSection) {
+      const timer = setTimeout(() => {
+        const el = document.getElementById(targetSection);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 80);
+      return () => clearTimeout(timer);
+    }
+  }, [targetSection]);
+  useEffect(() => {
+    if (updateNavTrigger && updateNavTrigger > 0) {
+      const timer = setTimeout(() => {
+        const el = document.getElementById('section-about-updates');
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [updateNavTrigger]);
 
   const appearance = settings?.appearance || new configModels.AppearanceConfig();
   const download = settings?.download || new configModels.DownloadConfig();
@@ -523,6 +569,19 @@ export function SettingsPanel() {
       showToast(checked ? '已开启运行日志' : '已关闭运行日志', 'success');
     } catch (err) {
       showToast(`设置运行日志失败: ${String(err)}`, 'error');
+    }
+  };
+  const handleCheckUpdateOnStartupChange = async (checked: boolean) => {
+    try {
+      await updateSettings({
+        general: new configModels.GeneralConfig({
+          ...general,
+          checkUpdateOnStartup: checked,
+        }),
+      });
+      showToast(checked ? '已开启启动时检查更新' : '已关闭启动时检查更新', 'success');
+    } catch (err) {
+      showToast(`设置启动时检查更新失败: ${String(err)}`, 'error');
     }
   };
 
@@ -1345,7 +1404,7 @@ export function SettingsPanel() {
           {SETTINGS_TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
-              onClick={() => setActiveTab(id)}
+              onClick={() => setUserSelectedTab(id)}
               className="group relative flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors select-none"
             >
               {activeTab === id && (
@@ -1425,6 +1484,17 @@ export function SettingsPanel() {
                     }}
                   />
                 </SettingRow>
+                <SettingRow
+                  label="启动时检查更新"
+                  description="启动软件时在后台静默检查 GitHub Releases 新版本"
+                >
+                  <Switch
+                    checked={general.checkUpdateOnStartup ?? true}
+                    onCheckedChange={(checked) => {
+                      void handleCheckUpdateOnStartupChange(checked);
+                    }}
+                  />
+                </SettingRow>
               </SettingSection>
 
               <SettingSection title="数据存储" description="应用运行数据与持久化配置">
@@ -1459,6 +1529,7 @@ export function SettingsPanel() {
               </SettingSection>
 
               <SettingSection
+                id="section-about-updates"
                 title="版本与更新"
                 description="主程序与配套浏览器扩展的版本检查、差异更新与便携升级"
               >
