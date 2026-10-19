@@ -1,5 +1,5 @@
 import { Ports } from './protocol.generated';
-import type { SessionMetadata, TakeoverConfigSync } from './types';
+import type { DownloadTargetConfig, SessionMetadata, TakeoverConfigSync } from './types';
 
 /**
  * 接管清单的唯一来源是桌面端：内置分类的类型与用户在「接管」页加的后缀都由它下发。
@@ -15,11 +15,24 @@ export const DEFAULT_TAKEOVER_CONFIG: TakeoverConfigSync = {
   forceShortcut: 'Insert',
 };
 
+export const DEFAULT_DOWNLOAD_TARGET_CONFIG: DownloadTargetConfig = {
+  type: 'sheepget',
+  aria2: {
+    rpcUrl: 'http://127.0.0.1:6800/jsonrpc',
+    secret: '',
+  },
+  webhook: {
+    url: '',
+    method: 'POST',
+  },
+};
+
 /** 本地存储布局：键名只在这里出现一次。 */
 export const STORAGE_KEYS = {
   TAKEOVER_CONFIG: 'sheepget_takeover_config',
   SESSION: 'sheepget_session',
   TARGET_PORT: 'sheepget_target_port',
+  DOWNLOAD_TARGET: 'sheepget_download_target_config',
 } as const;
 
 export async function getStoredTakeoverConfig(): Promise<TakeoverConfigSync> {
@@ -88,5 +101,28 @@ export async function setStoredTargetPort(port: number): Promise<void> {
     }
   } catch (err) {
     console.warn('[SheepGet] Failed to write target port to storage:', err);
+  }
+}
+
+export async function getStoredTargetConfig(): Promise<DownloadTargetConfig> {
+  try {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.DOWNLOAD_TARGET);
+    if (result[STORAGE_KEYS.DOWNLOAD_TARGET]) {
+      return {
+        ...DEFAULT_DOWNLOAD_TARGET_CONFIG,
+        ...(result[STORAGE_KEYS.DOWNLOAD_TARGET] as DownloadTargetConfig),
+      };
+    }
+  } catch (err) {
+    console.warn('[SheepGet] Failed to read download target config from storage:', err);
+  }
+  return DEFAULT_DOWNLOAD_TARGET_CONFIG;
+}
+
+export async function setStoredTargetConfig(config: DownloadTargetConfig): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEYS.DOWNLOAD_TARGET]: config });
+  } catch (err) {
+    console.warn('[SheepGet] Failed to write download target config to storage:', err);
   }
 }

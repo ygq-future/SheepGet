@@ -1,4 +1,10 @@
-import type { HandoverFailureKind } from './types';
+import type {
+  Aria2Config,
+  HandoverFailureKind,
+  HandoverRequest,
+  HandoverResponse,
+  WebhookConfig,
+} from './types';
 
 /**
  * 交接失败之后的处置策略，以及「什么时候必须重新验证链路」的判定。
@@ -45,4 +51,226 @@ export function shouldReverifyLink(liveness: LinkLiveness, now: number, ttlMs: n
   if (!liveness.online) return true;
   if (liveness.lastVerifiedAt === null) return true;
   return now - liveness.lastVerifiedAt >= ttlMs;
+}
+
+/** 生成携带完整请求凭据（Referer、UA、Cookie）的标准 cURL 下载命令。 */
+export function buildCurlCommand(req: HandoverRequest): string {
+  const parts: string[] = ['curl', '-L'];
+  if (req.filenameSuggestion) {
+    parts.push('-o', JSON.stringify(req.filenameSuggestion));
+  }
+  const headers = req.credentials?.headers || {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value) {
+      parts.push('-H', JSON.stringify(`${key}: ${value}`));
+    }
+  }
+  if (req.credentials?.cookies) {
+    parts.push('-H', JSON.stringify(`Cookie: ${req.credentials.cookies}`));
+  }
+  parts.push(JSON.stringify(req.url));
+  return parts.join(' ');
+}
+
+/** 使用 aria2.getVersion 轻量探活（超时 800ms）。 */
+export async function probeAria2Liveness(
+  config: Aria2Config,
+  fetchFn: typeof fetch = fetch,
+): Promise<boolean> {
+  const rpcUrl = config.rpcUrl?.trim() || 'http://127.0.0.1:6800/jsonrpc';
+  const params: unknown[] = [];
+  if (config.secret?.trim()) {
+    params.push(`token:${config.secret.trim()}`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 800);
+  try {
+    const res = await fetchFn(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'probe',
+        method: 'aria2.getVersion',
+        params,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return false;
+    const data = (await res.json()) as { error?: unknown; result?: { version?: string } };
+    return !data.error && Boolean(data.result?.version);
+  } catch {
+    clearTimeout(timer);
+    return false;
+  }
+}
+
+/** 向 Aria2 / Motrix JSON-RPC 服务投递下载任务。 */
+export async function sendAria2Handover(
+  req: HandoverRequest,
+  config: Aria2Config,
+  fetchFn: typeof fetch = fetch,
+): Promise<HandoverResponse> {
+  const rpcUrl = config.rpcUrl?.trim() || 'http://127.0.0.1:6800/jsonrpc';
+  const params: unknown[] = [];
+  if (config.secret?.trim()) {
+    params.push(`token:${config.secret.trim()}`);
+  }
+  params.push([req.url]);
+
+  const options: Record<string, unknown> = {};
+  if (req.filenameSuggestion) {
+    options.out = req.filenameSuggestion;
+  }
+  if (config.dir?.trim()) {
+    options.dir = config.dir.trim();
+  }
+  const headerList: string[] = [];
+  if (req.credentials?.headers) {
+    for (const [k, v] of Object.entries(req.credentials.headers)) {
+      if (v) headerList.push(`${k}: ${v}`);
+    }
+  }
+  if (req.credentials?.cookies) {
+    headerList.push(`Cookie: ${req.credentials.cookies}`);
+  }
+  if (headerList.length > 0) {
+    options.header = headerList;
+  }
+  params.push(options);
+
+  const payload = {
+    jsonrpc: '2.0',
+    id: `sheepget_${Date.now()}`,
+    method: 'aria2.addUri',
+    params,
+  };
+
+  try {
+    const res = await fetchFn(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      return {
+        accepted: false,
+        failure: 'rejected',
+        reason: `Aria2 RPC returned HTTP ${res.status}`,
+      };
+    }
+    const data = (await res.json()) as { error?: { message?: string }; result?: string };
+    if (data.error) {
+      return {
+        accepted: false,
+        failure: 'rejected',
+        reason: data.error.message || 'Aria2 RPC error',
+      };
+    }
+    return {
+      accepted: true,
+      queueItemId: data.result,
+    };
+  } catch (err) {
+    return {
+      accepted: false,
+      failure: 'not_delivered',
+      reason: `Cannot reach Aria2: ${String(err)}`,
+    };
+  }
+}
+
+/** 向通用 HTTP Webhook (REST API) 投递 HandoverRequest 数据。 */
+export async function sendWebhookHandover(
+  req: HandoverRequest,
+  config: WebhookConfig,
+  fetchFn: typeof fetch = fetch,
+): Promise<HandoverResponse> {
+  const url = config.url?.trim();
+  if (!url) {
+    return {
+      accepted: false,
+      failure: 'rejected',
+      reason: 'Webhook URL 未配置',
+    };
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(config.customHeaders || {}),
+  };
+  if (config.token?.trim()) {
+    const t = config.token.trim();
+    headers.Authorization = t.toLowerCase().startsWith('bearer ') ? t : `Bearer ${t}`;
+  }
+
+  try {
+    const res = await fetchFn(url, {
+      method: config.method || 'POST',
+      headers,
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      return {
+        accepted: false,
+        failure: 'rejected',
+        reason: `Webhook returned HTTP ${res.status}`,
+      };
+    }
+    let queueItemId: string | undefined;
+    try {
+      const data = (await res.json()) as { queueItemId?: string; id?: string };
+      queueItemId = data?.queueItemId || data?.id;
+    } catch {
+      // JSON response is optional for webhooks
+    }
+    return {
+      accepted: true,
+      queueItemId,
+    };
+  } catch (err) {
+    return {
+      accepted: false,
+      failure: 'not_delivered',
+      reason: `Webhook request failed: ${String(err)}`,
+    };
+  }
+}
+
+/** 调用浏览器原生 Downloads API 直接执行下载。 */
+export async function sendBrowserDownload(req: {
+  url: string;
+  filenameSuggestion?: string;
+}): Promise<HandoverResponse> {
+  if (typeof chrome === 'undefined' || !chrome.downloads?.download) {
+    return {
+      accepted: false,
+      failure: 'rejected',
+      reason: 'Browser downloads API unavailable',
+    };
+  }
+  return new Promise((resolve) => {
+    chrome.downloads.download(
+      {
+        url: req.url,
+        filename: req.filenameSuggestion,
+      },
+      (downloadId) => {
+        const err = chrome.runtime?.lastError;
+        if (err || downloadId === undefined) {
+          resolve({
+            accepted: false,
+            failure: 'rejected',
+            reason: err?.message || 'Download start failed',
+          });
+        } else {
+          resolve({
+            accepted: true,
+            queueItemId: String(downloadId),
+          });
+        }
+      },
+    );
+  });
 }

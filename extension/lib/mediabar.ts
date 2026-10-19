@@ -849,7 +849,7 @@ export class MediaBarManager {
         }
       </style>
       <div class="bar" id="bar">
-        <button class="btn-download" id="dl-btn" title="下载视频 (${badgeText})">
+        <button class="btn-download" id="dl-btn" title="下载视频 (${badgeText}) · 右键复制直链">
           <span class="badge">${badgeText}</span>
           <svg class="dl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 15V3m0 12l-4-4m4 4l4-4M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17" />
@@ -944,6 +944,21 @@ export class MediaBarManager {
       this.scheduleHideMenu(tracked);
     });
 
+    dlBtn?.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const targetUrl = tracked.variantUri || tracked.resource?.url;
+      if (targetUrl && navigator?.clipboard?.writeText) {
+        navigator.clipboard
+          .writeText(targetUrl)
+          .then(() => {
+            this.showStatus(tracked, '已复制媒体直链 ✓', '#34d399', 2500);
+          })
+          .catch(() => {
+            this.showStatus(tracked, '复制失败', '#f87171', 2000);
+          });
+      }
+    });
     dlBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
       if (this.isContextInvalidated || !isExtensionContextValid()) {

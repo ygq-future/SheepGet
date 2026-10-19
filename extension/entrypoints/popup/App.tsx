@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Ports } from '../../lib/protocol.generated';
 import { watchDesktopStatus } from '../../lib/liveStatus';
 import { formatBytes, formatDuration, mimeShortLabel, type MediaResource } from '../../lib/media';
+import { buildCurlCommand } from '../../lib/handover';
 import type {
   DesktopStatus,
   HandoverResponse,
@@ -44,6 +45,7 @@ export default function App() {
   /** 已经发起过探测的资源：探测失败也不重试，避免面板开着时反复打桌面端。 */
   const probedRef = useRef<Set<string>>(new Set());
 
+  const [copyFeedback, setCopyFeedback] = useState<Record<string, string | null>>({});
   const [editingPort, setEditingPort] = useState(false);
   const [customPortInput, setCustomPortInput] = useState('');
   const [savingPort, setSavingPort] = useState(false);
@@ -71,6 +73,83 @@ export default function App() {
     } finally {
       setSavingPort(false);
     }
+  };
+
+  const triggerCopyFeedback = (id: string, text: string) => {
+    setCopyFeedback((prev) => ({ ...prev, [id]: text }));
+    setTimeout(() => {
+      setCopyFeedback((prev) => ({ ...prev, [id]: null }));
+    }, 2000);
+  };
+
+  const handleCopyUrl = async (res: MediaResource) => {
+    const chosenVariant = res.isHls ? selectedVariants[res.id] : undefined;
+    const targetUrl = chosenVariant || res.url;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(targetUrl);
+        triggerCopyFeedback(res.id, '已复制链接 ✓');
+      }
+    } catch {
+      triggerCopyFeedback(res.id, '复制失败');
+    }
+  };
+
+  const handleCopyCurl = async (res: MediaResource) => {
+    const chosenVariant = res.isHls ? selectedVariants[res.id] : undefined;
+    const targetUrl = chosenVariant || res.url;
+    let cookiesStr = '';
+    try {
+      const cookies = await chrome.cookies.getAll({ url: targetUrl });
+      cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+    } catch {}
+
+    const cmd = buildCurlCommand({
+      sourceType: 'resource_list',
+      url: targetUrl,
+      filenameSuggestion: res.filename,
+      pageContext: { pageUrl: res.pageUrl || '' },
+      credentials: {
+        cookies: cookiesStr,
+        headers: {
+          'User-Agent': navigator.userAgent,
+          ...(res.pageUrl ? { Referer: res.pageUrl } : {}),
+        },
+      },
+    });
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(cmd);
+        triggerCopyFeedback(res.id, '已复制 cURL ✓');
+      }
+    } catch {
+      triggerCopyFeedback(res.id, '复制失败');
+    }
+  };
+
+  const handleDirectBrowserDownload = (res: MediaResource) => {
+    const chosenVariant = res.isHls ? selectedVariants[res.id] : undefined;
+    const targetUrl = chosenVariant || res.url;
+    setHandoverStates((prev) => ({ ...prev, [res.id]: 'sending' }));
+    chrome.runtime.sendMessage(
+      {
+        type: 'TRIGGER_BROWSER_DOWNLOAD',
+        url: targetUrl,
+        filename: res.filename,
+      },
+      (resp?: HandoverResponse) => {
+        if (resp?.accepted) {
+          setHandoverStates((prev) => ({ ...prev, [res.id]: 'success' }));
+          setTimeout(() => {
+            setHandoverStates((prev) => ({ ...prev, [res.id]: 'idle' }));
+          }, 2500);
+        } else {
+          setHandoverStates((prev) => ({ ...prev, [res.id]: 'failed' }));
+          setErrorMessage(resp?.reason || '浏览器下载触发失败');
+        }
+      },
+    );
   };
   useEffect(() => {
     void loadMedia();
@@ -214,9 +293,10 @@ export default function App() {
       style={{
         display: 'flex',
         flexDirection: 'column',
-        width: '100%',
+        width: '380px',
+        boxSizing: 'border-box',
         minHeight: '160px',
-        maxHeight: '520px',
+        maxHeight: '540px',
         backgroundColor: '#11141b',
         color: '#f1f5f9',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -234,11 +314,19 @@ export default function App() {
           backgroundColor: 'rgba(255, 255, 255, 0.02)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexShrink: 0 }}
+        >
           <img
             src="/icons/48.png"
             alt="SheepGet"
-            style={{ width: '20px', height: '20px', borderRadius: '4px', display: 'block' }}
+            style={{
+              width: '20px',
+              height: '20px',
+              borderRadius: '4px',
+              display: 'block',
+              flexShrink: 0,
+            }}
           />
           <span
             style={{
@@ -246,6 +334,8 @@ export default function App() {
               fontSize: '14px',
               letterSpacing: '-0.02em',
               color: '#ffffff',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
             }}
           >
             SheepGet
@@ -254,12 +344,14 @@ export default function App() {
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '4px',
               fontSize: '11px',
               fontWeight: 500,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
               color: online ? '#34d399' : '#fbbf24',
               backgroundColor: online ? 'rgba(16, 185, 129, 0.12)' : 'rgba(245, 158, 11, 0.12)',
-              padding: '2px 8px',
+              padding: '2px 7px',
               borderRadius: '9999px',
             }}
           >
@@ -268,41 +360,62 @@ export default function App() {
                 width: '6px',
                 height: '6px',
                 borderRadius: '50%',
+                flexShrink: 0,
                 backgroundColor: online ? '#34d399' : '#fbbf24',
                 boxShadow: online ? '0 0 6px rgba(52, 211, 153, 0.6)' : 'none',
               }}
             />
-            {checking ? '检查中…' : online ? '已连接' : '未连接'}
+            {checking ? '检测中…' : online ? '已连接' : '未连接'}
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          {/* 资源计数微型徽章 */}
+          <span
+            title={`当前页面共探测到 ${resources.length} 个媒体资源`}
+            style={{
+              fontSize: '11px',
+              fontWeight: 500,
+              color: '#94a3b8',
+              backgroundColor: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              padding: '2px 6px',
+              borderRadius: '5px',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            {resources.length} 项
+          </span>
+
+          {/* 刷新连接纯图标按钮 */}
           <button
             type="button"
             onClick={() => void refreshLink(true)}
             disabled={checking}
-            title="重新验证与桌面端的连接"
+            title={checking ? '正在检测连接…' : '刷新桌面端连接'}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: '4px',
-              fontSize: '11px',
-              fontWeight: 500,
-              padding: '3px 8px',
+              justifyContent: 'center',
+              width: '26px',
+              height: '26px',
+              padding: 0,
               backgroundColor: 'rgba(255, 255, 255, 0.05)',
               color: checking ? '#64748b' : '#38bdf8',
               border: '1px solid rgba(255, 255, 255, 0.08)',
               borderRadius: '5px',
               cursor: checking ? 'default' : 'pointer',
               transition: 'all 0.15s ease',
+              flexShrink: 0,
             }}
           >
             <svg
-              width="11"
-              height="11"
+              width="13"
+              height="13"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
-              strokeWidth="2.4"
+              strokeWidth="2.3"
               strokeLinecap="round"
               strokeLinejoin="round"
               style={{ animation: checking ? 'sheepget-spin 0.9s linear infinite' : 'none' }}
@@ -310,40 +423,48 @@ export default function App() {
               <path d="M21 12a9 9 0 1 1-2.64-6.36" />
               <path d="M21 3v6h-6" />
             </svg>
-            {checking ? '连接中…' : '刷新连接'}
           </button>
-          <span
-            style={{
-              fontSize: '11px',
-              color: '#94a3b8',
-              backgroundColor: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.06)',
-              padding: '2px 7px',
-              borderRadius: '5px',
-            }}
-          >
-            {resources.length} 个资源
-          </span>
         </div>
       </div>
-
       {/* Disconnected notification banner */}
       {!online && !checking && (
         <div
           style={{
-            padding: '10px 14px',
+            padding: '8px 14px',
             backgroundColor: 'rgba(30, 41, 59, 0.7)',
             borderBottom: '1px solid #1e293b',
             display: 'flex',
-            flexDirection: 'column',
-            gap: '6px',
+            alignItems: 'center',
+            justifyContent: 'space-between',
             fontSize: '11px',
+            gap: '8px',
           }}
         >
-          <span style={{ color: '#fbbf24' }}>
-            桌面端连接不可用：{status?.reason ?? '未检测到运行中的桌面端'}
+          <span
+            style={{
+              color: '#fbbf24',
+              flex: 1,
+              minWidth: 0,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            桌面端离线 · 下载时将自动降级为浏览器原生保存
           </span>
-          <span style={{ color: '#64748b' }}>此时浏览器会自行下载，不受接管设置影响。</span>
+          <span
+            style={{
+              color: '#38bdf8',
+              fontSize: '10px',
+              backgroundColor: 'rgba(56, 189, 248, 0.1)',
+              padding: '1px 6px',
+              borderRadius: '3px',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            自动降级中
+          </span>
         </div>
       )}
 
@@ -560,6 +681,112 @@ export default function App() {
                       })}
                     </select>
                   )}
+                  {/* 快捷通用操作：复制链接、复制 cURL、浏览器下载 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyUrl(item)}
+                      title="复制下载直链"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '24px',
+                        height: '24px',
+                        padding: 0,
+                        borderRadius: '4px',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                        color: '#94a3b8',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s',
+                      }}
+                    >
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyCurl(item)}
+                      title="复制完整 cURL 命令行"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '24px',
+                        height: '24px',
+                        padding: 0,
+                        borderRadius: '4px',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                        color: '#94a3b8',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s',
+                      }}
+                    >
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="4 17 10 11 4 5" />
+                        <line x1="12" y1="19" x2="20" y2="19" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDirectBrowserDownload(item)}
+                      title="通过浏览器内置下载直接保存"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '24px',
+                        height: '24px',
+                        padding: 0,
+                        borderRadius: '4px',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                        color: '#38bdf8',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s',
+                      }}
+                    >
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="7 10 12 15 17 10" />
+                        <line x1="12" y1="15" x2="12" y2="3" />
+                      </svg>
+                    </button>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => handleDownload(item)}
@@ -610,12 +837,12 @@ export default function App() {
                       </svg>
                     )}
                     {state === 'sending'
-                      ? '移交中...'
+                      ? '下载中...'
                       : state === 'success'
-                        ? '✓ 已移交'
+                        ? '✓ 已完成'
                         : state === 'failed'
                           ? '重试'
-                          : '下载'}
+                          : copyFeedback[item.id] || '下载'}
                   </button>
                 </div>
               </div>

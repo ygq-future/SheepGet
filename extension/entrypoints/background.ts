@@ -1,6 +1,14 @@
 import { DesktopClient, type DesktopEventLink, discoverSessionViaHttp } from '../lib/client';
 import { ResponseFilenameCache, cleanFilename } from '../lib/filenames';
-import { LINK_VERIFY_TTL_MS, planHandoverFailure, shouldReverifyLink } from '../lib/handover';
+import {
+  LINK_VERIFY_TTL_MS,
+  planHandoverFailure,
+  probeAria2Liveness,
+  sendAria2Handover,
+  sendBrowserDownload,
+  sendWebhookHandover,
+  shouldReverifyLink,
+} from '../lib/handover';
 import {
   isMediaResponse,
   isHlsSegment,
@@ -18,9 +26,12 @@ import {
 } from '../lib/shortcuts';
 import { addResourceOnce, resolveTabId } from '../lib/tabmedia';
 import {
+  DEFAULT_DOWNLOAD_TARGET_CONFIG,
   getStoredSession,
+  getStoredTargetConfig,
   getStoredTargetPort,
   setStoredSession,
+  setStoredTargetConfig,
   setStoredTargetPort,
 } from '../lib/storage';
 import { applyConfig, readyConfig } from '../lib/takeoverConfig';
@@ -28,6 +39,8 @@ import { injectContentScriptsIntoExistingTabs } from '../lib/reinject';
 import type {
   DesktopStatus,
   DirectClickHandoverMessage,
+  DownloadTargetConfig,
+  DownloadTargetType,
   ExtensionMessage,
   HandoverRequest,
   HandoverResponse,
@@ -89,6 +102,19 @@ const HEALTH_ALARM_PERIOD_MINUTES = 0.5;
 const inFlightDownloads = new Set<number>();
 // 记录最近由网页点击直接交接的 URL 与时间戳，供 onCreated 快速防重
 const recentDirectHandoverUrls = new Map<string, number>();
+// 记录由扩展自身发起的浏览器原生下载 URL 与时间戳，彻底杜绝 onCreated 二次拦截导致的死循环
+const selfInitiatedDownloadUrls = new Map<string, number>();
+
+function markSelfInitiatedDownload(url?: string) {
+  if (!url) return;
+  selfInitiatedDownloadUrls.set(url, Date.now());
+  const now = Date.now();
+  for (const [u, t] of selfInitiatedDownloadUrls.entries()) {
+    if (now - t > 30_000) {
+      selfInitiatedDownloadUrls.delete(u);
+    }
+  }
+}
 
 // In-memory media resource pool indexed by tabId
 const tabMediaPool = new Map<number, MediaResource[]>();
@@ -277,10 +303,12 @@ export default defineBackground(() => {
     } else if (msg?.type === 'HANDOVER_MEDIA') {
       void (async () => {
         const preferredTabId = (msg as { tabId?: number }).tabId ?? sender.tab?.id;
+        const target = (msg as { target?: DownloadTargetType }).target;
         const result = await handleMediaHandover(
           msg.resource as MediaResource,
           msg.resource.variantUri,
           preferredTabId,
+          target,
         );
         sendResponse(result);
       })();
@@ -313,6 +341,29 @@ export default defineBackground(() => {
         } else {
           sendResponse(desktopStatus());
         }
+      })();
+      return true;
+    } else if (msg?.type === 'GET_TARGET_CONFIG') {
+      void (async () => {
+        sendResponse(await getStoredTargetConfig());
+      })();
+      return true;
+    } else if (msg?.type === 'SET_TARGET_CONFIG') {
+      void (async () => {
+        if (msg.config) {
+          await setStoredTargetConfig(msg.config);
+        }
+        sendResponse(await getStoredTargetConfig());
+      })();
+      return true;
+    } else if (msg?.type === 'TRIGGER_BROWSER_DOWNLOAD') {
+      void (async () => {
+        markSelfInitiatedDownload(msg.url);
+        const result = await sendBrowserDownload({
+          url: msg.url,
+          filenameSuggestion: msg.filename,
+        });
+        sendResponse(result);
       })();
       return true;
     }
@@ -637,6 +688,7 @@ async function handleMediaHandover(
   resource: MediaResource,
   variantUri?: string,
   preferredTabId?: number,
+  preferredTarget?: DownloadTargetType,
 ): Promise<HandoverResponse> {
   let cookiesStr = '';
   try {
@@ -672,7 +724,7 @@ async function handleMediaHandover(
     variantUri,
   };
 
-  return await handOverWithRetry(handoverReq, 3000, 'media-handover');
+  return await dispatchHandover(handoverReq, 3000, 'media-handover', preferredTarget);
 }
 
 async function handleDirectClickHandover(
@@ -718,7 +770,7 @@ async function handleDirectClickHandover(
     },
   };
 
-  return await handOverWithRetry(handoverReq, HANDOVER_TIMEOUT_MS, 'direct-click-takeover');
+  return await dispatchHandover(handoverReq, HANDOVER_TIMEOUT_MS, 'direct-click-takeover');
 }
 
 /** 拉取一份清单的可选清晰度：带 cookies/referer 转发给桌面端解析。 */
@@ -905,6 +957,17 @@ function adoptLink(session: SessionMetadata, client: DesktopClient) {
   linkOnline = true;
   linkLastVerifiedAt = Date.now();
   linkOfflineReason = null;
+  // 主客户端重连上线：若当前处于降级的 browser 模式，自动无缝切回 sheepget
+  void (async () => {
+    const currentCfg = await getStoredTargetConfig();
+    if (currentCfg.type === 'browser') {
+      await setStoredTargetConfig({ ...currentCfg, type: 'sheepget' });
+      console.info(
+        '[SheepGet] Desktop reconnected, automatically restored download target to sheepget',
+      );
+    }
+  })();
+
   currentTargetPort = session.port;
 
   eventLink = client.connectEvents(
@@ -1029,6 +1092,76 @@ async function handOverWithRetry(
 }
 
 /**
+ * 统筹调度投递请求（三级瀑布降级模型）：
+ *  1. 【第 1 梯队：SheepGet 主客户端】(绝对权威优先)：若桌面端在线，直接投递给主客户端；
+ *  2. 【第 2 梯队：外部接收端 (Aria2 / Webhook)】：若主客户端未连上，且用户显式配置了 Aria2/Webhook，尝试投递；
+ *     - 若 Aria2 / Webhook 离线或投递失败，自动熔断进入第 3 梯队；
+ *  3. 【第 3 梯队：浏览器内置下载】(终极安全兜底)：通过 chrome.downloads.download 落地，永不报错。
+ */
+async function dispatchHandover(
+  req: HandoverRequest,
+  timeoutMs: number,
+  context: string,
+  preferredTarget?: DownloadTargetType,
+): Promise<HandoverResponse> {
+  const targetConfig = await getStoredTargetConfig();
+  const effectiveTarget = preferredTarget || targetConfig.type || 'sheepget';
+
+  // 1. 若显式指定为浏览器直接下载：
+  if (effectiveTarget === 'browser') {
+    markSelfInitiatedDownload(req.url);
+    return await sendBrowserDownload(req);
+  }
+
+  // 2. 无论默认配置为何，只要 SheepGet 主客户端在线（绝对第一优先级），100% 优先投递给主客户端
+  if (linkOnline && effectiveTarget === 'sheepget') {
+    const resp = await handOverWithRetry(req, timeoutMs, context);
+    if (resp.accepted) return resp;
+  }
+
+  // 3. 第二梯队：用户显式配置了 Aria2
+  if (effectiveTarget === 'aria2' && targetConfig.aria2?.rpcUrl) {
+    const aria2Online = await probeAria2Liveness(targetConfig.aria2);
+    if (aria2Online) {
+      const resp = await sendAria2Handover(req, targetConfig.aria2);
+      if (resp.accepted) return resp;
+    }
+    console.warn('[SheepGet] Aria2 is offline or failed, falling back to browser download');
+  }
+
+  // 4. 第二梯队：用户显式配置了 Webhook
+  if (effectiveTarget === 'webhook' && targetConfig.webhook?.url) {
+    const resp = await sendWebhookHandover(req, targetConfig.webhook);
+    if (resp.accepted) return resp;
+    console.warn('[SheepGet] Webhook failed, falling back to browser download');
+  }
+
+  // 5. 若目标是 sheepget 且在需要时尝试确认客户端
+  if (effectiveTarget === 'sheepget') {
+    const client = await ensureDesktop();
+    if (client) {
+      const resp = await handOverWithRetry(req, timeoutMs, context);
+      if (resp.accepted) return resp;
+    }
+  }
+
+  // 6. 第三梯队：终极兜底
+  // 如果当前是 browser_takeover，浏览器原本就在执行该下载（只是被原位冻结），
+  // 接管失败时直接返回拒绝即可，由外部立即 resumeDownload 恢复原任务，切勿重复创建新下载！
+  if (req.sourceType === 'browser_takeover') {
+    return {
+      accepted: false,
+      failure: 'not_delivered',
+      reason: '桌面端未连接',
+    };
+  }
+
+  // 否则（面板/悬浮条主动点击下载），降级调用浏览器原生下载接口直接落盘
+  console.info('[SheepGet] Fallback to native browser download');
+  markSelfInitiatedDownload(req.url);
+  return await sendBrowserDownload(req);
+}
+/**
  * 问一次页面此刻按住了哪些键。
  *
  * 权威在页面：内容脚本的本地掩码随页面存活，而 Service Worker 手上那份只由它听见的按键事件
@@ -1106,6 +1239,12 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
   if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
     return;
   }
+  // 0. 防自身死循环检查：若该下载是由扩展自身主动发起的浏览器原生下载，立即彻底放行，绝不二次拦截！
+  const selfTime = selfInitiatedDownloadUrls.get(url) || selfInitiatedDownloadUrls.get(originUrl);
+  if (selfTime && Date.now() - selfTime < 15_000) {
+    return;
+  }
+
   // 若该 URL 在 5 秒内已被网页端直接超前拦截交接，无需二次创建任务，直接取消原生下载
   const lastDirectTime =
     recentDirectHandoverUrls.get(url) || recentDirectHandoverUrls.get(originUrl);
@@ -1126,6 +1265,11 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
     return;
   }
 
+  // 检查全局目标配置：若用户显式将目标通道设为「浏览器内置下载」，扩展不接管，完全原生下载
+  const targetConfig = await getStoredTargetConfig();
+  if (targetConfig.type === 'browser') {
+    return;
+  }
   // 判定用的文件名优先取响应头里的真名：Chrome 在 onCreated 给出的名字是从 URL 推出来的，
   // 路径里没有后缀时（GitHub 资产链接的末段是 GUID）按它判定必然漏接。
   const responseFilename = responseFilenames.lookup(item.finalUrl, item.url);
@@ -1201,7 +1345,7 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
       },
     };
 
-    const resp = await handOverWithRetry(handoverReq, HANDOVER_TIMEOUT_MS, 'download-takeover');
+    const resp = await dispatchHandover(handoverReq, HANDOVER_TIMEOUT_MS, 'download-takeover');
 
     if (resp.accepted) {
       await cancelDownload(item.id);

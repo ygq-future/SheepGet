@@ -63,6 +63,27 @@ export interface TakeoverConfigSync {
   forceShortcut: string;
 }
 
+export type DownloadTargetType = 'sheepget' | 'browser' | 'aria2' | 'webhook';
+
+export interface Aria2Config {
+  rpcUrl: string;
+  secret?: string;
+  dir?: string;
+}
+
+export interface WebhookConfig {
+  url: string;
+  method?: 'POST' | 'PUT';
+  token?: string;
+  customHeaders?: Record<string, string>;
+}
+
+export interface DownloadTargetConfig {
+  type: DownloadTargetType;
+  aria2?: Aria2Config;
+  webhook?: WebhookConfig;
+}
+
 export interface SessionMetadata {
   port: number;
   sessionToken: string;
@@ -209,6 +230,21 @@ export interface SetTargetPortMessage {
   port: number;
 }
 
+export interface GetTargetConfigMessage {
+  type: 'GET_TARGET_CONFIG';
+}
+
+export interface SetTargetConfigMessage {
+  type: 'SET_TARGET_CONFIG';
+  config: DownloadTargetConfig;
+}
+
+export interface TriggerBrowserDownloadMessage {
+  type: 'TRIGGER_BROWSER_DOWNLOAD';
+  url: string;
+  filename?: string;
+}
+
 /** 后台发给页面的消息。 */
 export type BackgroundMessage = TabMediaUpdatedMessage | QueryKeyStateMessage;
 
@@ -226,4 +262,7 @@ export type ExtensionMessage =
   | SetTargetPortMessage
   | ShortcutClickMessage
   | DirectClickHandoverMessage
-  | ReportDomMediaMessage;
+  | ReportDomMediaMessage
+  | GetTargetConfigMessage
+  | SetTargetConfigMessage
+  | TriggerBrowserDownloadMessage;
