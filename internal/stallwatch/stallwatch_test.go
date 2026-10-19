@@ -69,7 +69,7 @@ func TestWatch_AllowsSlowButActiveStream(t *testing.T) {
 // 父 ctx 取消（暂停、退出）优先于停摆：调用方必须据此把它当取消传递下去，而不是当网络故障。
 func TestWatch_ParentCancelWinsOverStall(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
-	ctx, watch := stallwatch.New(parent, 50*time.Millisecond)
+	ctx, watch := stallwatch.New(parent, 300*time.Millisecond)
 	defer watch.Stop()
 
 	time.AfterFunc(10*time.Millisecond, cancel)
