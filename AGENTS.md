@@ -138,7 +138,7 @@
 
 ## 交付前自检
 
-每实现完一个功能或缺陷修复，在交给用户验收前，逐条过 [docs/agents/post-implementation-checklist.md](docs/agents/post-implementation-checklist.md)。该清单覆盖重复实现、只写字段、死代码、魔法值、契约一致性、测试有效性等门禁无法自动判定的问题，目的是把架构债拦在提交前，而非攒到下一轮统一 improve。
+每实现完一个功能或缺陷修复，在交给用户验收前，执行 `post-impl-checklist` skill 进行质量收敛审计。覆盖重复实现、只写字段、死代码、魔法值、契约一致性等门禁无法自动判定的问题，把架构债拦在提交前，而非攒到下一轮统一 improve。
 
 ## 测试与验收
 
@@ -160,19 +160,15 @@
 - 本地提交校验与跨平台 CI 分别报告。macOS/Linux、远端 workflow 和分支保护未经实际验证不能称为已通过。
 - 禁止关闭规则、任意 suppression、删除有效测试或 --no-verify 获取通过。历史问题与误报例外遵循质量契约的证据和批准规则。
 
-## Agent skills
+## Issue 跟踪与分诊标签
 
-### Issue tracker
-
-使用 ygq-future/SheepGet 的 GitHub Issues 管理规格与任务。
-详见 docs/agents/issue-tracker.md。
-
-### Triage labels
-
-采用默认的五种分诊标签。
-详见 docs/agents/triage-labels.md。
-
-### Domain docs
-
-采用根目录 CONTEXT.md 和 docs/adr/ 的单一上下文布局。
-详见 docs/agents/domain.md。
+- **规格与任务**：以 `ygq-future/SheepGet` 的 GitHub Issues 为准。使用 `gh` CLI 操作时显式指定 `--repo ygq-future/SheepGet`，避免依赖本地 remote。
+- **分诊标签**：
+  | 标签              | 含义                        |
+  | ----------------- | --------------------------- |
+  | `needs-triage`    | 等待维护者评估              |
+  | `needs-info`      | 等待补充信息                |
+  | `ready-for-agent` | 规格充分，可交给 agent 执行 |
+  | `ready-for-human` | 需要人工实现                |
+  | `wontfix`         | 不予实施                    |
+- **领域与架构决策**：采用根目录 `CONTEXT.md`（领域术语）和 `docs/adr/`（架构决策记录）的单一上下文布局。涉及领域术语与既有 ADR 时，以此二者为准。
