@@ -39,6 +39,7 @@ import { useAppUpdateStore, initAppUpdateListener } from './stores/appUpdate';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
 import { filterTasks, type TaskFilterType } from './lib/taskFilter';
+import { TitleBarDragRegion, WindowControls } from './native/window-controls';
 import { Button } from './components/ui/Button';
 import {
   shouldDefaultDeleteDiskFileForTask,
@@ -502,30 +503,32 @@ export function App() {
       : `HTTP 服务监听中 (端口 ${serverStatus.port})，等待浏览器扩展连接`;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
-      {/* Left Full-Height Aside (Unified vertical border-r, Linear-inspired) */}
+    <div className="flex h-screen w-screen overflow-hidden bg-transparent font-sans text-[var(--text-primary)] antialiased select-none">
+      {/* Left Full-Height Aside (Transparent background for system blur/acrylic penetration) */}
       <aside
-        className={`flex h-screen shrink-0 flex-col justify-between overflow-hidden border-r border-[var(--border-subtle)] bg-[var(--bg-app)]/80 px-2.5 py-3 backdrop-blur-xl transition-[width] duration-200 ease-out ${
+        className={`flex h-screen shrink-0 flex-col justify-between overflow-hidden border-r border-[var(--border-subtle)] bg-transparent transition-[width] duration-200 ease-out ${
           sidebarCollapsed ? 'w-14' : 'w-44'
         }`}
       >
-        {/* Aside Top: Brand Header & Categorized Navigation */}
-        <div className="w-full space-y-4">
-          {/* Brand Header */}
-          <div className="flex h-10 items-center gap-2.5 overflow-hidden px-0.5">
-            <button
-              type="button"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-              className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center transition-transform hover:scale-105 active:scale-95"
-            >
-              <img
-                src={logoUrl}
-                alt="SheepGet"
-                className="h-8 w-8 rounded-lg object-contain drop-shadow-xs"
-              />
-            </button>
+        {/* Sidebar Header: Brand & Title Drag Area
+            - 左右 padding 单独设置 (px-2.5)
+            - 顶部 padding 单独设置 (macOS 下为 50px 避让红绿灯，其他平台为 0.75rem)
+            - 底部 padding 单独设置 (pb-1) */}
+        <header className="sidebar-header flex shrink-0 items-center gap-2.5 overflow-hidden px-2.5 pt-[var(--sidebar-header-pt,0.75rem)] pb-1 [--wails-draggable:drag]">
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+            className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center transition-transform [--wails-draggable:no-drag] hover:scale-105 active:scale-95"
+          >
+            <img
+              src={logoUrl}
+              alt="SheepGet"
+              className="h-8 w-8 rounded-lg object-contain drop-shadow-xs"
+            />
+          </button>
 
+          <div className="flex min-w-0 items-center gap-2.5">
             <AnimatePresence initial={false}>
               {!sidebarCollapsed && (
                 <motion.span
@@ -540,114 +543,106 @@ export function App() {
               )}
             </AnimatePresence>
           </div>
+          <TitleBarDragRegion />
+        </header>
 
-          {/* Navigation Section */}
-          <div className="space-y-1">
-            <AnimatePresence initial={false}>
-              {!sidebarCollapsed && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.18, ease: 'easeOut' }}
-                  className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-dim)] uppercase"
-                >
-                  任务列表
-                </motion.div>
-              )}
-            </AnimatePresence>
+        {/* Sidebar Main: Categorized Navigation
+            - 左右 padding 单独设置 (px-2.5)
+            - 垂直 padding 单独设置 (py-2) */}
+        <nav className="sidebar-main flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2.5 py-2">
+          <AnimatePresence initial={false}>
+            {!sidebarCollapsed && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-secondary)]/80 uppercase"
+              >
+                任务列表
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = filter === item.id;
 
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = filter === item.id;
-
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => handleSelectFilter(item.id)}
-                  title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
-                  className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
+            return (
+              <button
+                key={item.id}
+                onClick={() => handleSelectFilter(item.id)}
+                title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
+                className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
+                  isActive
+                    ? 'bg-[var(--bg-surface-hover)] text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
+                  <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
+                )}
+                <div
+                  className={`flex min-w-0 items-center gap-2.5 transition-colors ${
                     isActive
-                      ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
-                      : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+                      ? item.color
+                      : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
                   }`}
                 >
-                  {/* Active Indicator Bar */}
-                  {isActive && (
-                    <span
-                      className={`absolute top-2 bottom-2 left-1 w-0.5 rounded-full shadow-xs ${
-                        item.id === 'error' ? 'bg-rose-500' : 'bg-[var(--accent)]'
-                      }`}
-                    />
-                  )}
-                  {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
-                    <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
-                  )}
-                  <div
-                    className={`flex min-w-0 items-center gap-2.5 transition-colors ${
-                      isActive
-                        ? item.color
-                        : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
-                    }`}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <AnimatePresence initial={false}>
-                      {!sidebarCollapsed && (
-                        <motion.span
-                          initial={{ opacity: 0, x: -6, width: 0 }}
-                          animate={{ opacity: 1, x: 0, width: 'auto' }}
-                          exit={{ opacity: 0, x: -6, width: 0 }}
-                          transition={{ duration: 0.18, ease: 'easeOut' }}
-                          className="overflow-hidden whitespace-nowrap"
-                        >
-                          {item.label}
-                        </motion.span>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
+                  <Icon className="h-4 w-4 shrink-0" />
                   <AnimatePresence initial={false}>
                     {!sidebarCollapsed && (
                       <motion.span
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.8 }}
+                        initial={{ opacity: 0, x: -6, width: 0 }}
+                        animate={{ opacity: 1, x: 0, width: 'auto' }}
+                        exit={{ opacity: 0, x: -6, width: 0 }}
                         transition={{ duration: 0.18, ease: 'easeOut' }}
-                        className={`shrink-0 overflow-hidden rounded-full px-1.5 py-0.5 font-mono text-[10px] whitespace-nowrap transition-colors ${
-                          isActive
-                            ? item.id === 'error'
-                              ? 'bg-rose-500/15 font-semibold text-rose-500'
-                              : 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
-                            : item.id === 'error' && item.count > 0
-                              ? 'bg-rose-500/10 font-medium text-rose-500'
-                              : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
-                        }`}
+                        className="overflow-hidden whitespace-nowrap"
                       >
-                        {item.count}
+                        {item.label}
                       </motion.span>
                     )}
                   </AnimatePresence>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+                </div>
 
-        {/* Aside Footer: Settings Tab Button & Error status */}
-        <div className="w-full space-y-2 border-t border-[var(--border-subtle)] pt-2.5">
+                <AnimatePresence initial={false}>
+                  {!sidebarCollapsed && (
+                    <motion.span
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      transition={{ duration: 0.18, ease: 'easeOut' }}
+                      className={`shrink-0 font-mono text-[11px] whitespace-nowrap transition-colors ${
+                        isActive
+                          ? item.id === 'error'
+                            ? 'font-semibold text-rose-500'
+                            : 'font-semibold text-[var(--accent)]'
+                          : item.id === 'error' && item.count > 0
+                            ? 'font-medium text-rose-500'
+                            : 'text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
+                      }`}
+                    >
+                      {item.count}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Sidebar Footer: Settings & Service Status
+            - 左右 padding 单独设置 (px-2.5)
+            - 垂直 padding 单独设置 (pt-2.5 pb-3) */}
+        <footer className="sidebar-footer shrink-0 space-y-2 border-t border-[var(--border-subtle)] px-2.5 pt-2.5 pb-3">
           <button
             onClick={() => handleSelectFilter('settings')}
             title={sidebarCollapsed ? '偏好设置' : undefined}
             className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
               filter === 'settings'
-                ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
+                ? 'bg-[var(--bg-surface-hover)] text-[var(--text-primary)]'
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
             }`}
           >
-            {filter === 'settings' && (
-              <span className="absolute top-2 bottom-2 left-1 w-0.5 rounded-full bg-[var(--accent)] shadow-xs" />
-            )}
-
             <div
               className={`flex min-w-0 items-center gap-2.5 transition-colors ${
                 filter === 'settings'
@@ -694,18 +689,17 @@ export function App() {
               </AnimatePresence>
             )}
           </button>
-        </div>
+        </footer>
       </aside>
 
-      {/* Right Main Workspace */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Right Header Bar: Aligns perfectly on top of right workspace */}
-        <header className="flex h-12 w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 px-4 backdrop-blur-md">
-          {/* Header Left: Icon-based Select All & Icon-based Deselect */}
-          <div className="flex items-center gap-2">
+      {/* Right Main Workspace Container */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]">
+        {/* Right Header Bar: 保持原本的颜色与磨砂边框 */}
+        <header className="relative flex h-12 w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 backdrop-blur-md [--wails-draggable:drag]">
+          <div className="flex items-center gap-2 [--wails-draggable:no-drag]">
             {filter !== 'settings' && (
               <>
-                <div className="w-24 sm:w-28">
+                <div className="flex w-24 items-center sm:w-28">
                   <Select
                     value={selectedCategory}
                     onChange={(val) => {
@@ -727,10 +721,10 @@ export function App() {
                       type="button"
                       onClick={handleToggleSelectAll}
                       title={allFilteredSelected ? '取消全选' : '全部选择'}
-                      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg border transition-all duration-150 ${
+                      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg transition-colors duration-150 active:scale-95 ${
                         allFilteredSelected
-                          ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent)] shadow-xs'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] hover:border-[var(--border-hover)] hover:text-[var(--text-primary)]'
+                          ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
+                          : 'text-[var(--text-muted)] hover:bg-black/5 hover:text-[var(--text-primary)] dark:hover:bg-white/10'
                       }`}
                     >
                       <CheckCheck className="h-4 w-4" />
@@ -762,7 +756,8 @@ export function App() {
           </div>
 
           {/* Header Right: Progress Window, Batch Delete, New Download */}
-          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <TitleBarDragRegion />
+          <div className="flex shrink-0 items-center gap-1.5 [--wails-draggable:no-drag] sm:gap-2">
             {/* Header Update Icon Button */}
             {availableUpdate?.hasUpdate && (
               <motion.button
@@ -784,26 +779,25 @@ export function App() {
               </motion.button>
             )}
 
-            {/* Shared Progress Window Button */}
+            {/* Shared Progress Window Button (Ghost) */}
             <button
               type="button"
               onClick={handleProgressWindowClick}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] shadow-xs transition-colors hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)] active:scale-98"
+              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--accent)] active:scale-95 dark:hover:bg-white/10"
               title="打开下载进度窗口"
             >
-              <Activity className="h-3.5 w-3.5 text-[var(--accent)]" />
-              <span className="hidden sm:inline">下载进度</span>
+              <Activity className="h-4 w-4 text-[var(--accent)]" />
             </button>
 
-            {/* Batch Delete Button */}
+            {/* Batch Delete Button (Ghost) */}
             <button
               type="button"
               onClick={handleRequestBatchDelete}
               disabled={selectedTaskIds.size === 0}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium shadow-xs transition-colors ${
+              className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-medium transition-colors ${
                 selectedTaskIds.size > 0
-                  ? 'cursor-pointer border-rose-500/30 bg-rose-500/10 text-rose-500 hover:bg-rose-500 hover:text-white active:scale-98'
-                  : 'cursor-not-allowed border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-muted)] opacity-50'
+                  ? 'cursor-pointer text-rose-500 hover:bg-rose-500/15 active:scale-95'
+                  : 'cursor-not-allowed text-[var(--text-muted)] opacity-35'
               }`}
               title={
                 selectedTaskIds.size > 0
@@ -811,12 +805,8 @@ export function App() {
                   : '删除任务（请先选择任务）'
               }
             >
-              <Trash2 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">
-                删除{selectedTaskIds.size > 0 ? ` (${selectedTaskIds.size})` : ''}
-              </span>
+              <Trash2 className="h-4 w-4" />
             </button>
-
             {/* New Download */}
             <Button
               variant="primary"
@@ -828,6 +818,7 @@ export function App() {
               <span>新建任务</span>
             </Button>
           </div>
+          <WindowControls />
         </header>
 
         {/* Main Content Area */}
@@ -841,7 +832,7 @@ export function App() {
               handleCancelSelection();
             }
           }}
-          className={`flex min-w-0 flex-1 flex-col bg-[var(--bg-base)] ${
+          className={`flex min-w-0 flex-1 flex-col bg-transparent ${
             filter === 'settings' ? 'overflow-hidden p-0' : 'overflow-x-hidden overflow-y-auto p-3'
           }`}
         >
@@ -855,9 +846,7 @@ export function App() {
               animate={{ opacity: 1, y: 0 }}
               className="flex flex-1 flex-col items-center justify-center text-center select-none"
             >
-              <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-[var(--text-muted)] shadow-xs">
-                <Inbox className="h-8 w-8 stroke-1 text-[var(--text-muted)]" />
-              </div>
+              <Inbox className="size-12 stroke-[1.2] text-[var(--text-muted)] opacity-70" />
               <p className="mt-3 text-xs font-medium text-[var(--text-primary)]">暂无下载任务</p>
               <p className="mt-1 text-[11px] text-[var(--text-muted)]">
                 点击右上角“新建任务”开始下载

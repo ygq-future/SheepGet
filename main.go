@@ -4,7 +4,10 @@ import (
 	"embed"
 	"os"
 
+	"sheep-get/internal/config"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
@@ -38,6 +41,31 @@ func main() {
 
 	app.setApplication(wailsApp)
 
+	wailsApp.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		st := app.GetSettings()
+		if win, ok := wailsApp.Window.GetByName(winNameMain); ok {
+			setupNativeWindow(win)
+			setNativeWindowTheme(win, string(st.Appearance.Theme))
+		}
+	})
+
+	wailsApp.Event.OnApplicationEvent(events.Common.ThemeChanged, func(event *application.ApplicationEvent) {
+		isDark := false
+		if event != nil && event.Context() != nil {
+			isDark = event.Context().IsDarkMode()
+		} else if wailsApp.Env != nil {
+			isDark = wailsApp.Env.IsDarkMode()
+		}
+		st := app.GetSettings()
+		if st.Appearance.Theme == config.ThemeSystem {
+			for _, w := range wailsApp.Window.GetAll() {
+				setNativeWindowTheme(w, "system")
+			}
+			wailsApp.Event.Emit("theme:systemChanged", map[string]any{
+				"isDarkMode": isDark,
+			})
+		}
+	})
 	st := app.GetSettings()
 	isSilent := st.General.SilentStartup
 	for _, arg := range os.Args[1:] {

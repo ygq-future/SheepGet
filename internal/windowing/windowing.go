@@ -41,6 +41,7 @@ type Options struct {
 	DisableMaximise bool
 	Hidden          bool
 	Background      Colour
+	Immersive       bool
 
 	// X / Y / Positioned 是创建时的初始位置：Positioned 为 true 时用 X/Y，否则由宿主按
 	// 自己的缺省（居中）处理。注册表按 Policy.Position 填这三项。

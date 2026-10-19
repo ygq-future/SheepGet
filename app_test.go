@@ -1586,7 +1586,27 @@ func TestWebviewOptions_DisableMaximise(t *testing.T) {
 	}
 }
 
-func TestApp_MainWindowDisableMaximise(t *testing.T) {
+func TestImmersiveWindowChrome(t *testing.T) {
+	frameless, translucent, windows, mac := immersiveWindowChrome("windows")
+	if !frameless || !translucent || !windows.WebView2CompositionHosting || windows.BackdropType != application.Acrylic {
+		t.Errorf("windows immersive chrome missing: %v %v %+v", frameless, translucent, windows)
+	}
+	if mac.TitleBar != (application.MacTitleBar{}) {
+		t.Errorf("windows must not touch mac titlebar: %+v", mac.TitleBar)
+	}
+
+	frameless, translucent, windows, mac = immersiveWindowChrome("darwin")
+	if frameless || !translucent || windows.WebView2CompositionHosting || mac.Backdrop != application.MacBackdropTranslucent || mac.TitleBar.UseToolbar {
+		t.Errorf("darwin immersive chrome wrong: %v %v %+v %+v", frameless, translucent, windows, mac)
+	}
+
+	frameless, translucent, windows, mac = immersiveWindowChrome("linux")
+	if frameless || translucent || windows.WebView2CompositionHosting || windows.BackdropType != application.Auto || mac.TitleBar != (application.MacTitleBar{}) {
+		t.Errorf("linux must stay untouched: %v %v %+v %+v", frameless, translucent, windows, mac.TitleBar)
+	}
+}
+
+func TestApp_MainWindowAllowsMaximise(t *testing.T) {
 	app, _, _ := newTestApp(t)
 	host := &headlessHost{}
 	app.declareWindows(host)
@@ -1595,8 +1615,11 @@ func TestApp_MainWindowDisableMaximise(t *testing.T) {
 		t.Fatalf("expected the main window to be created")
 	}
 	win := host.windows[winNameMain]
-	if !win.options.DisableMaximise {
-		t.Errorf("main window declaration must have DisableMaximise enabled")
+	if win.options.DisableMaximise {
+		t.Errorf("main window must stay maximisable: 最大化键由页面画，命中测试交给系统")
+	}
+	if !win.options.Immersive {
+		t.Errorf("main window must declare immersive chrome")
 	}
 }
 
