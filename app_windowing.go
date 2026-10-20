@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"sheep-get/internal/config"
 	"sheep-get/internal/protocol"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
@@ -27,13 +28,18 @@ func (h *windowsHost) Open(options windowing.Options, onClose func() bool) (wind
 	if wailsApp == nil {
 		return nil, false
 	}
-	win := wailsApp.Window.NewWithOptions(webviewOptions(options))
+	theme := config.ThemeSystem
+	if h.app.settings != nil {
+		theme = h.app.settings.Get().Appearance.Theme
+	}
+	win := wailsApp.Window.NewWithOptions(webviewOptions(options, theme, systemDarkMode()))
 	win.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if onClose() {
 			event.Cancel()
 		}
 	})
 	setupNativeWindow(win)
+	setNativeWindowTheme(win, string(theme))
 	return &wailsWindow{win: win}, true
 }
 
@@ -89,7 +95,7 @@ func (w *wailsWindow) SetBackground(colour windowing.Colour) {
 	})
 }
 
-func webviewOptions(o windowing.Options) application.WebviewWindowOptions {
+func webviewOptions(o windowing.Options, theme config.ThemeMode, systemDark bool) application.WebviewWindowOptions {
 	options := application.WebviewWindowOptions{
 		Name:            o.Name,
 		Title:           o.Title,
@@ -104,8 +110,6 @@ func webviewOptions(o windowing.Options) application.WebviewWindowOptions {
 		DisableResize:   o.DisableResize,
 		Hidden:          o.Hidden,
 		InitialPosition: application.WindowCentered,
-
-		OpenInspectorOnStartup: true,
 	}
 	if o.DisableMaximise {
 		options.MaximiseButtonState = application.ButtonDisabled
@@ -126,6 +130,9 @@ func webviewOptions(o windowing.Options) application.WebviewWindowOptions {
 			options.BackgroundType = application.BackgroundTypeTranslucent
 		}
 	}
+	// 每个窗口都要钉住明暗：留成零值 SystemDefault 时 Wails 会自行注册系统主题监听，
+	// 系统一切换就把用户显式选择的主题覆盖回系统值。
+	options.Windows.Theme = nativeWindowTheme(theme, systemDark)
 	if o.Background.A != 0 && !o.Immersive {
 		options.BackgroundColour = application.RGBA{
 			Red:   o.Background.R,

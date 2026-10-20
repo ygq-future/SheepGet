@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !windows
 
 package main
 
@@ -7,9 +7,9 @@ import (
 )
 
 func setupNativeWindow(window application.Window) {
-	// 非 macOS 平台占位
+	// 其余平台由系统窗口管理器决定外观，这里保持占位。
 }
 
 func setNativeWindowTheme(window application.Window, mode string) {
-	// 非 macOS 平台占位
+	// 其余平台由系统窗口管理器决定外观，这里保持占位。
 }

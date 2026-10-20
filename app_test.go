@@ -1573,16 +1573,42 @@ func TestWebviewOptions_DisableMaximise(t *testing.T) {
 	opts := webviewOptions(windowing.Options{
 		Name:            "test",
 		DisableMaximise: true,
-	})
+	}, config.ThemeSystem, false)
 	if opts.MaximiseButtonState != application.ButtonDisabled {
 		t.Errorf("expected MaximiseButtonState to be ButtonDisabled, got %v", opts.MaximiseButtonState)
 	}
 
 	optsNormal := webviewOptions(windowing.Options{
 		Name: "test-normal",
-	})
+	}, config.ThemeSystem, false)
 	if optsNormal.MaximiseButtonState != application.ButtonEnabled {
 		t.Errorf("expected MaximiseButtonState to be ButtonEnabled by default, got %v", optsNormal.MaximiseButtonState)
+	}
+}
+
+// 创建期必须钉住明暗：留成 SystemDefault 时 Wails 会自行注册系统主题监听，
+// 系统切换就会把用户显式选择的主题覆盖回系统值。
+func TestWebviewOptions_PinsWindowTheme(t *testing.T) {
+	cases := []struct {
+		name       string
+		mode       config.ThemeMode
+		systemDark bool
+		immersive  bool
+		want       application.Theme
+	}{
+		{name: "explicit dark beats light system", mode: config.ThemeDark, systemDark: false, immersive: true, want: application.Dark},
+		{name: "explicit light beats dark system", mode: config.ThemeLight, systemDark: true, immersive: true, want: application.Light},
+		{name: "system follows dark", mode: config.ThemeSystem, systemDark: true, immersive: true, want: application.Dark},
+		{name: "system follows light", mode: config.ThemeSystem, systemDark: false, immersive: true, want: application.Light},
+		{name: "auxiliary windows are pinned too", mode: config.ThemeDark, systemDark: false, immersive: false, want: application.Dark},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts := webviewOptions(windowing.Options{Name: "window", Immersive: c.immersive}, c.mode, c.systemDark)
+			if opts.Windows.Theme != c.want {
+				t.Errorf("expected window theme %v, got %v", c.want, opts.Windows.Theme)
+			}
+		})
 	}
 }
 
