@@ -39,11 +39,15 @@
   --shell-titlebar-h: 3rem;
   --shell-control-hover: rgb(255 255 255 / 0.1);
   --sidebar-header-pt: 0.75rem;
+
+  /* 侧栏条目的激活/悬停底色：深色下 25% 黑，浅色在 light 块里降到 10%。 */
+  --sidebar-item-bg: rgb(0 0 0 / 0.25);
 }
 
 :root.light {
   --shell-overlay: rgb(255 255 255 / 0.5);
   --shell-control-hover: rgb(0 0 0 / 0.1);
+  --sidebar-item-bg: rgb(0 0 0 / 0.1);
   --bg-app: #f1f5f9;
   --bg-base: #f8fafc;
   --bg-surface: #ffffff;
@@ -86,7 +90,7 @@
 }
 
 html.is_windows {
-  --shell-window-controls-w: 138px;
+  --shell-window-controls-w: 80px;
   /* 无边框窗口没有系统标题栏，这一条是自绘标题栏高度的唯一来源。 */
   --shell-titlebar-h: 40px;
   /* 顶部占位与侧栏自身的左右 padding（px-2.5）同宽。 */

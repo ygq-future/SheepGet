@@ -26,11 +26,10 @@ import {
   PauseCircle,
   AlertTriangle,
   Inbox,
-  Settings as SettingsIcon,
+  Cog,
   Activity,
   Trash2,
   CheckCheck,
-  X,
   ArrowUpCircle,
 } from 'lucide-react';
 import logoUrl from './assets/images/logo-universal.png';
@@ -340,11 +339,8 @@ export function App() {
     setBaseSelectedIds(next);
   };
 
-  const allFilteredSelected =
-    filteredTasks.length > 0 && filteredTasks.every((t) => selectedTaskIds.has(t.id));
-
   const handleToggleSelectAll = () => {
-    if (allFilteredSelected) {
+    if (selectedTaskIds.size > 0) {
       setSelectedTaskIds(new Set());
       setSelectionAnchor(null);
       setBaseSelectedIds(new Set());
@@ -506,10 +502,7 @@ export function App() {
           sidebarCollapsed ? 'w-14' : 'w-44'
         }`}
       >
-        {/* Sidebar Header: Brand & Title Drag Area
-            - 左右 padding 单独设置 (px-2.5)
-            - 顶部 padding 单独设置 (macOS 下为 50px 避让红绿灯，其他平台为 0.75rem)
-            - 底部 padding 单独设置 (pb-1) */}
+        {/* Sidebar Header: Brand & Title Drag Area */}
         <header className="sidebar-header flex shrink-0 items-center gap-2.5 overflow-hidden px-2.5 pt-[var(--sidebar-header-pt,0.75rem)] pb-1 [--wails-draggable:drag]">
           <button
             type="button"
@@ -542,9 +535,7 @@ export function App() {
           <TitleBarDragRegion />
         </header>
 
-        {/* Sidebar Main: Categorized Navigation
-            - 左右 padding 单独设置 (px-2.5)
-            - 垂直 padding 单独设置 (py-2) */}
+        {/* Sidebar Main: Categorized Navigation */}
         <nav className="sidebar-main flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2.5 py-2">
           <AnimatePresence initial={false}>
             {!sidebarCollapsed && (
@@ -568,8 +559,8 @@ export function App() {
                 key={item.id}
                 onClick={() => handleSelectFilter(item.id)}
                 title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
-                className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none ${
-                  isActive ? 'bg-[var(--bg-surface-hover)]' : 'hover:bg-[var(--bg-surface-hover)]'
+                className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none hover:bg-[var(--sidebar-item-bg)] ${
+                  isActive ? 'bg-[var(--sidebar-item-bg)]' : ''
                 }`}
               >
                 {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
@@ -601,9 +592,7 @@ export function App() {
                       transition={{ duration: 0.18, ease: 'easeOut' }}
                       className={`shrink-0 font-mono text-[11px] whitespace-nowrap transition-colors ${
                         isActive
-                          ? item.id === 'error'
-                            ? 'font-semibold text-rose-500'
-                            : 'font-semibold text-[var(--accent)]'
+                          ? 'font-semibold text-[var(--text-primary)]'
                           : item.id === 'error' && item.count > 0
                             ? 'font-medium text-rose-500'
                             : 'text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
@@ -618,21 +607,17 @@ export function App() {
           })}
         </nav>
 
-        {/* Sidebar Footer: Settings & Service Status
-            - 左右 padding 单独设置 (px-2.5)
-            - 垂直 padding 单独设置 (pt-2.5 pb-3) */}
-        <footer className="sidebar-footer shrink-0 space-y-2 border-t border-[var(--border-subtle)] px-2.5 pt-2.5 pb-3">
+        {/* Sidebar Footer: Settings & Service Status */}
+        <footer className="sidebar-footer shrink-0 space-y-2 px-2.5 pt-2.5 pb-3">
           <button
             onClick={() => handleSelectFilter('settings')}
             title={sidebarCollapsed ? '偏好设置' : undefined}
-            className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none ${
-              filter === 'settings'
-                ? 'bg-[var(--bg-surface-hover)]'
-                : 'hover:bg-[var(--bg-surface-hover)]'
+            className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none hover:bg-[var(--sidebar-item-bg)] ${
+              filter === 'settings' ? 'bg-[var(--sidebar-item-bg)]' : ''
             }`}
           >
             <div className="flex min-w-0 items-center gap-2.5">
-              <SettingsIcon className="h-4 w-4 shrink-0" />
+              <Cog className="h-4 w-4 shrink-0" />
               <AnimatePresence initial={false}>
                 {!sidebarCollapsed && (
                   <motion.span
@@ -675,12 +660,11 @@ export function App() {
       </aside>
 
       {/* Right Main Workspace Container */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]">
-        {/* Right Header Bar: 保持原本的颜色与磨砂边框 */}
-        <header className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 backdrop-blur-md [--wails-draggable:drag]">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]/50 backdrop-blur-xl">
+        <header className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 [--wails-draggable:drag]">
           <div className="flex items-center gap-2 [--wails-draggable:no-drag]">
             {filter !== 'settings' && (
-              <>
+              <div className="flex items-center gap-1.5">
                 <div className="flex w-24 items-center sm:w-28">
                   <Select
                     value={selectedCategory}
@@ -693,47 +677,31 @@ export function App() {
                     clearable
                     placeholder="全部分类"
                     options={categoryOptions}
+                    ghost
                     className="h-7 py-1 text-xs"
                   />
                 </div>
 
                 {filteredTasks.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleToggleSelectAll}
-                      title={allFilteredSelected ? '取消全选' : '全部选择'}
-                      className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg transition-colors duration-150 active:scale-95 ${
-                        allFilteredSelected
-                          ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
-                          : 'text-[var(--text-muted)] hover:bg-black/5 hover:text-[var(--text-primary)] dark:hover:bg-white/10'
-                      }`}
-                    >
-                      <CheckCheck className="h-4 w-4" />
-                    </button>
-
+                  <button
+                    type="button"
+                    onClick={handleToggleSelectAll}
+                    title={selectedTaskIds.size > 0 ? '取消全选' : '全部选择'}
+                    className={`inline-flex h-7 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-lg transition-colors duration-150 active:scale-95 ${
+                      selectedTaskIds.size > 0
+                        ? 'bg-[var(--accent-muted)] px-2 text-[var(--accent)] hover:bg-[var(--accent)]/20'
+                        : 'w-7 text-[var(--text-muted)] hover:bg-black/5 hover:text-[var(--text-primary)] dark:hover:bg-white/10'
+                    }`}
+                  >
+                    <CheckCheck className="h-4 w-4 shrink-0" />
                     {selectedTaskIds.size > 0 && (
-                      <div className="flex items-center gap-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 text-[11px] whitespace-nowrap">
-                        <span className="font-medium text-[var(--text-secondary)]">
-                          已选择{' '}
-                          <span className="font-mono font-semibold text-[var(--accent)]">
-                            {selectedTaskIds.size}
-                          </span>{' '}
-                          项
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleCancelSelection}
-                          title="取消选择"
-                          className="flex h-4 w-4 cursor-pointer items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)]"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      </div>
+                      <span className="text-xs font-medium whitespace-nowrap">
+                        已选择 {selectedTaskIds.size} 项
+                      </span>
                     )}
-                  </div>
+                  </button>
                 )}
-              </>
+              </div>
             )}
           </div>
 
@@ -760,35 +728,38 @@ export function App() {
                 </span>
               </motion.button>
             )}
-
             {/* Shared Progress Window Button (Ghost) */}
             <button
               type="button"
               onClick={handleProgressWindowClick}
-              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--accent)] active:scale-95 dark:hover:bg-white/10"
+              className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--accent)] active:scale-95 dark:hover:bg-white/10"
               title="打开下载进度窗口"
             >
-              <Activity className="h-4 w-4 text-[var(--accent)]" />
+              <Activity className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+              <span className="whitespace-nowrap">下载进度</span>
             </button>
 
-            {/* Batch Delete Button (Ghost) */}
-            <button
-              type="button"
-              onClick={handleRequestBatchDelete}
-              disabled={selectedTaskIds.size === 0}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-medium transition-colors ${
-                selectedTaskIds.size > 0
-                  ? 'cursor-pointer text-rose-500 hover:bg-rose-500/15 active:scale-95'
-                  : 'cursor-not-allowed text-[var(--text-muted)] opacity-35'
-              }`}
-              title={
-                selectedTaskIds.size > 0
-                  ? `批量删除已选择的 ${selectedTaskIds.size} 项`
-                  : '删除任务（请先选择任务）'
-              }
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+            {/* 设置页没有选择语义，与左侧工具栏一起收起。 */}
+            {filter !== 'settings' && (
+              <button
+                type="button"
+                onClick={handleRequestBatchDelete}
+                disabled={selectedTaskIds.size === 0}
+                className={`inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors ${
+                  selectedTaskIds.size > 0
+                    ? 'cursor-pointer text-rose-500 hover:bg-rose-500/15 active:scale-95'
+                    : 'cursor-not-allowed text-[var(--text-muted)] opacity-35'
+                }`}
+                title={
+                  selectedTaskIds.size > 0
+                    ? `批量删除已选择的 ${selectedTaskIds.size} 项`
+                    : '删除任务（请先选择任务）'
+                }
+              >
+                <Trash2 className="h-4 w-4 shrink-0" />
+                <span className="whitespace-nowrap">删除</span>
+              </button>
+            )}
             {/* New Download */}
             <Button
               variant="primary"

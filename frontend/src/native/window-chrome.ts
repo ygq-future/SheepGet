@@ -2,7 +2,7 @@ import { Window } from '@wailsio/runtime';
 
 export type ChromePlatform = 'windows' | 'darwin' | 'linux';
 
-export type WindowControlKind = 'minimize' | 'maximize' | 'close';
+export type WindowControlKind = 'minimize' | 'close';
 
 export const PLATFORM_CLASS: Record<ChromePlatform, string> = {
   windows: 'is_windows',
@@ -35,12 +35,7 @@ export function resolveWindowControl(
 }
 
 export function runWindowControl(kind: WindowControlKind): void {
-  const request =
-    kind === 'minimize'
-      ? Window.Minimise()
-      : kind === 'maximize'
-        ? Window.ToggleMaximise()
-        : Window.Close();
+  const request = kind === 'minimize' ? Window.Minimise() : Window.Close();
   void request.catch((error: unknown) => {
     console.error('window control failed', kind, error);
   });
@@ -104,5 +99,5 @@ function controlUnderPoint(clientX: number, clientY: number): WindowControlKind 
   const raw = document
     .elementFromPoint(clientX, clientY)
     ?.closest<HTMLElement>('[data-window-control]')?.dataset.windowControl;
-  return raw === 'minimize' || raw === 'maximize' || raw === 'close' ? raw : null;
+  return raw === 'minimize' || raw === 'close' ? raw : null;
 }

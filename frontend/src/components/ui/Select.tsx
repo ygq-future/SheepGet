@@ -15,6 +15,8 @@ interface SelectProps<T extends string | number> {
   className?: string;
   clearable?: boolean;
   disabled?: boolean;
+  /** ghost 只保留细边框与文字，不铺底色。 */
+  ghost?: boolean;
 }
 
 export function Select<T extends string | number>({
@@ -25,6 +27,7 @@ export function Select<T extends string | number>({
   className = '',
   clearable = false,
   disabled = false,
+  ghost = false,
 }: SelectProps<T>) {
   const selectedOption = options.find((opt) => opt.value === value);
   const hasValue = value !== '' && value !== undefined && value !== null;
@@ -42,9 +45,11 @@ export function Select<T extends string | number>({
         <button
           type="button"
           disabled={disabled}
-          className={`flex w-full items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-primary)] shadow-xs transition-all duration-150 hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--border-focus)]/40 focus:outline-hidden disabled:pointer-events-none disabled:opacity-50 ${
-            className || 'h-8 py-1.5'
-          }`}
+          className={`flex w-full items-center justify-between text-xs font-medium text-[var(--text-primary)] transition-colors duration-150 focus:outline-hidden disabled:pointer-events-none disabled:opacity-50 ${
+            ghost
+              ? 'rounded-lg border border-[var(--border-subtle)] bg-transparent px-2 hover:border-[var(--border-hover)] hover:bg-black/5 focus:border-[var(--accent)] dark:hover:bg-white/10'
+              : 'rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 shadow-xs hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--border-focus)]/40'
+          } ${className || 'h-8 py-1.5'}`}
         >
           <span
             className={`truncate ${
