@@ -31,12 +31,18 @@
   --scrollbar-thumb: rgba(255, 255, 255, 0.18);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
 
+  /* Windows 无边框窗口的底板：透明 WebView 与 Acrylic 之间垫一层同向的明暗蒙版，
+     侧边栏这类透明区域才有稳定的深浅，而不是完全取决于系统磨砂。 */
+  --shell-overlay: rgb(0 0 0 / 0.5);
+
   --shell-window-controls-w: 0px;
+  --shell-titlebar-h: 3rem;
   --shell-control-hover: rgb(255 255 255 / 0.1);
   --sidebar-header-pt: 0.75rem;
 }
 
 :root.light {
+  --shell-overlay: rgb(255 255 255 / 0.5);
   --shell-control-hover: rgb(0 0 0 / 0.1);
   --bg-app: #f1f5f9;
   --bg-base: #f8fafc;
@@ -81,6 +87,10 @@
 
 html.is_windows {
   --shell-window-controls-w: 138px;
+  /* 无边框窗口没有系统标题栏，这一条是自绘标题栏高度的唯一来源。 */
+  --shell-titlebar-h: 40px;
+  /* 顶部占位与侧栏自身的左右 padding（px-2.5）同宽。 */
+  --sidebar-header-pt: 0.625rem;
 }
 
 html.is_mac {
@@ -146,6 +156,12 @@ html.is_mac {
     background-color: transparent !important;
     background: transparent !important;
     color: var(--text-primary);
+  }
+
+  /* Windows 主窗口：给 body 铺一层明暗蒙版，让透明侧边栏与 Acrylic 磨砂合成出
+     稳定的浅色/深色底。辅助窗口自带卡片背景，不参与这一层。 */
+  html.is_windows body {
+    background-color: var(--shell-overlay) !important;
   }
 
   /* FileInfo and Progress frameless auxiliary windows: eliminate native window background & scrollbar flashing */

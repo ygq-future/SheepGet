@@ -462,28 +462,24 @@ export function App() {
       label: '全部任务',
       icon: Layers,
       count: counts.total,
-      color: 'text-[var(--text-primary)]',
     },
     {
       id: 'paused' as const,
       label: '已暂停',
       icon: PauseCircle,
       count: counts.paused,
-      color: 'text-amber-500',
     },
     {
       id: 'completed' as const,
       label: '已完成',
       icon: CheckCircle2,
       count: counts.completed,
-      color: 'text-[var(--accent)]',
     },
     {
       id: 'error' as const,
       label: '下载异常',
       icon: AlertTriangle,
       count: counts.error,
-      color: 'text-rose-500',
     },
   ];
   const isServerErr = !serverStatus.running || Boolean(serverStatus.error);
@@ -557,7 +553,7 @@ export function App() {
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.18, ease: 'easeOut' }}
-                className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-secondary)]/80 uppercase"
+                className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-primary)] uppercase"
               >
                 任务列表
               </motion.div>
@@ -572,22 +568,14 @@ export function App() {
                 key={item.id}
                 onClick={() => handleSelectFilter(item.id)}
                 title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
-                className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
-                  isActive
-                    ? 'bg-[var(--bg-surface-hover)] text-[var(--text-primary)]'
-                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+                className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none ${
+                  isActive ? 'bg-[var(--bg-surface-hover)]' : 'hover:bg-[var(--bg-surface-hover)]'
                 }`}
               >
                 {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
                   <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
                 )}
-                <div
-                  className={`flex min-w-0 items-center gap-2.5 transition-colors ${
-                    isActive
-                      ? item.color
-                      : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
-                  }`}
-                >
+                <div className="flex min-w-0 items-center gap-2.5">
                   <Icon className="h-4 w-4 shrink-0" />
                   <AnimatePresence initial={false}>
                     {!sidebarCollapsed && (
@@ -637,19 +625,13 @@ export function App() {
           <button
             onClick={() => handleSelectFilter('settings')}
             title={sidebarCollapsed ? '偏好设置' : undefined}
-            className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
+            className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none ${
               filter === 'settings'
-                ? 'bg-[var(--bg-surface-hover)] text-[var(--text-primary)]'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+                ? 'bg-[var(--bg-surface-hover)]'
+                : 'hover:bg-[var(--bg-surface-hover)]'
             }`}
           >
-            <div
-              className={`flex min-w-0 items-center gap-2.5 transition-colors ${
-                filter === 'settings'
-                  ? 'text-[var(--text-primary)]'
-                  : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
-              }`}
-            >
+            <div className="flex min-w-0 items-center gap-2.5">
               <SettingsIcon className="h-4 w-4 shrink-0" />
               <AnimatePresence initial={false}>
                 {!sidebarCollapsed && (
@@ -695,7 +677,7 @@ export function App() {
       {/* Right Main Workspace Container */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]">
         {/* Right Header Bar: 保持原本的颜色与磨砂边框 */}
-        <header className="relative flex h-12 w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 backdrop-blur-md [--wails-draggable:drag]">
+        <header className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 backdrop-blur-md [--wails-draggable:drag]">
           <div className="flex items-center gap-2 [--wails-draggable:no-drag]">
             {filter !== 'settings' && (
               <>
