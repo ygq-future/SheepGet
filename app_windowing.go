@@ -6,6 +6,7 @@ package main
 
 import (
 	"net/url"
+	"runtime"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -27,12 +28,18 @@ func (h *windowsHost) Open(options windowing.Options, onClose func() bool) (wind
 	if wailsApp == nil {
 		return nil, false
 	}
-	win := wailsApp.Window.NewWithOptions(webviewOptions(options))
+	theme := config.ThemeSystem
+	if h.app.settings != nil {
+		theme = h.app.settings.Get().Appearance.Theme
+	}
+	win := wailsApp.Window.NewWithOptions(webviewOptions(options, theme, systemDarkMode()))
 	win.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if onClose() {
 			event.Cancel()
 		}
 	})
+	setupNativeWindow(win)
+	setNativeWindowTheme(win, string(theme))
 	return &wailsWindow{win: win}, true
 }
 
@@ -88,7 +95,7 @@ func (w *wailsWindow) SetBackground(colour windowing.Colour) {
 	})
 }
 
-func webviewOptions(o windowing.Options) application.WebviewWindowOptions {
+func webviewOptions(o windowing.Options, theme config.ThemeMode, systemDark bool) application.WebviewWindowOptions {
 	options := application.WebviewWindowOptions{
 		Name:            o.Name,
 		Title:           o.Title,
@@ -114,7 +121,19 @@ func webviewOptions(o windowing.Options) application.WebviewWindowOptions {
 	if o.Transparent {
 		options.BackgroundType = application.BackgroundTypeTransparent
 	}
-	if o.Background.A != 0 {
+	if o.Immersive {
+		frameless, translucent, windows, mac := immersiveWindowChrome(runtime.GOOS)
+		options.Frameless = options.Frameless || frameless
+		options.Windows = windows
+		options.Mac = mac
+		if translucent {
+			options.BackgroundType = application.BackgroundTypeTranslucent
+		}
+	}
+	// 每个窗口都要钉住明暗：留成零值 SystemDefault 时 Wails 会自行注册系统主题监听，
+	// 系统一切换就把用户显式选择的主题覆盖回系统值。
+	options.Windows.Theme = nativeWindowTheme(theme, systemDark)
+	if o.Background.A != 0 && !o.Immersive {
 		options.BackgroundColour = application.RGBA{
 			Red:   o.Background.R,
 			Green: o.Background.G,
@@ -131,15 +150,15 @@ func (a *App) declareWindows(host windowing.Host) {
 	a.windows.Declare(
 		windowing.Spec{
 			Options: windowing.Options{
-				Name:            winNameMain,
-				Title:           "SheepGet",
-				URL:             "/",
-				Width:           mainWindowWidth,
-				Height:          mainWindowHeight,
-				MinWidth:        mainWindowWidth,
-				MinHeight:       mainWindowHeight,
-				DisableMaximise: true,
-				Background:      a.mainWindowBackground(),
+				Name:       winNameMain,
+				Title:      "SheepGet",
+				URL:        "/",
+				Width:      mainWindowWidth,
+				Height:     mainWindowHeight,
+				MinWidth:   mainWindowWidth,
+				MinHeight:  mainWindowHeight,
+				Immersive:  true,
+				Background: a.mainWindowBackground(),
 			},
 			Policy: windowing.Policy{
 				// 轻量模式不拦关闭，让 Wails 销毁窗口与 WebView 渲染进程；其余情况关到托盘。

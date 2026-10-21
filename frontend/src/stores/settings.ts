@@ -77,26 +77,7 @@ export function injectThemeAndAccentCSS(settings: configModels.Settings) {
     theme === configModels.ThemeMode.ThemeDark ||
     (theme === configModels.ThemeMode.ThemeSystem && prefersDark);
 
-  const isFramelessWindow =
-    root.classList.contains('window-fileinfo') ||
-    root.classList.contains('window-progress') ||
-    ['fileinfo', 'progress'].includes(
-      new URLSearchParams(window.location.search).get('window') || '',
-    );
-
-  const bgApp = isDark ? '#0c0e12' : '#f1f5f9';
-  root.style.setProperty('--bg-app', bgApp);
-  if (!isFramelessWindow) {
-    root.style.backgroundColor = bgApp;
-    if (document.body) {
-      document.body.style.backgroundColor = bgApp;
-    }
-  } else {
-    root.style.backgroundColor = 'transparent';
-    if (document.body) {
-      document.body.style.backgroundColor = 'transparent';
-    }
-  }
+  root.style.setProperty('--bg-app', isDark ? '#0c0e12' : '#f1f5f9');
 
   if (isDark) {
     root.classList.add('dark');
@@ -203,8 +184,28 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 }));
 
-// Listen to settings:updated events
+// Listen to settings:updated events and system color-scheme changes
 export function initSettingsListener() {
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleSystemThemeChange = () => {
+      const current = useSettingsStore.getState().settings;
+      // 用户设置优先级最高：仅当设置为 system 时跟随操作系统切换
+      const theme = current?.appearance?.theme || configModels.ThemeMode.ThemeSystem;
+      if (theme === configModels.ThemeMode.ThemeSystem && current) {
+        useSettingsStore.getState().applyThemeAndAccent(current);
+      }
+    };
+    mediaQuery.addEventListener('change', handleSystemThemeChange);
+  }
+  Events.On('theme:systemChanged', () => {
+    const current = useSettingsStore.getState().settings;
+    const theme = current?.appearance?.theme || configModels.ThemeMode.ThemeSystem;
+    if (theme === configModels.ThemeMode.ThemeSystem && current) {
+      useSettingsStore.getState().applyThemeAndAccent(current);
+    }
+  });
+
   return Events.On(Event.SettingsUpdated, (event: unknown) => {
     const updated = unwrapEventData<configModels.Settings>(event);
     if (!updated) return;

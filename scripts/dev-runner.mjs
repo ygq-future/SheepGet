@@ -11,12 +11,16 @@ const devExitFile = join(toolsDir, '.dev-exit');
 const args = process.argv.slice(2);
 const isTopDev = args[0] === 'dev';
 
-if (isTopDev && existsSync(devExitFile)) {
-  try {
-    rmSync(devExitFile, { force: true });
-  } catch {
-    // Ignore if file cannot be removed immediately
+if (isTopDev) {
+  if (existsSync(devExitFile)) {
+    try {
+      rmSync(devExitFile, { force: true });
+    } catch {
+      // Ignore if file cannot be removed immediately
+    }
   }
+  // 启动前若检测到 9245 端口被上次残留脱钩的孤儿进程占用，自动先行释放
+  killPortOccupant(9245);
 }
 
 const env = {
@@ -33,7 +37,7 @@ const child = spawn(wails3Exe, args, {
 
 let isExiting = false;
 function cleanupChild() {
-  if (isExiting || !child.pid) return;
+  if (isExiting) return;
   isExiting = true;
   if (existsSync(devExitFile)) {
     try {
@@ -43,16 +47,44 @@ function cleanupChild() {
     }
   }
   try {
-    if (process.platform === 'win32') {
-      execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore' });
-    } else {
-      child.kill('SIGTERM');
+    if (child && child.pid) {
+      if (process.platform === 'win32') {
+        execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore' });
+      } else {
+        child.kill('SIGTERM');
+      }
     }
   } catch {
     // Process might already have exited
   }
+  // 针对 Windows 进程树脱钩导致的孤儿 Vite 监听进程进行兜底清理
+  killPortOccupant(9245);
 }
 
+function killPortOccupant(port) {
+  if (process.platform !== 'win32') return;
+  try {
+    const netstat = execSync('netstat -ano', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    for (const line of netstat.split('\n')) {
+      if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+        const parts = line.trim().split(/\s+/);
+        const pid = parts[parts.length - 1];
+        if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) {
+          try {
+            execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+          } catch {
+            // Ignore if process already exited
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore netstat errors
+  }
+}
 if (isTopDev) {
   // Monitor intentional user shutdown signal emitted by App.Shutdown()
   const exitCheckInterval = setInterval(() => {
@@ -69,13 +101,7 @@ if (isTopDev) {
 
   child.on('exit', () => {
     clearInterval(exitCheckInterval);
-    if (existsSync(devExitFile)) {
-      try {
-        rmSync(devExitFile, { force: true });
-      } catch {
-        // Ignore
-      }
-    }
+    cleanupChild();
     process.exit(0);
   });
 } else {

@@ -362,6 +362,12 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 	}
 	if app := a.getApp(); app != nil {
 		app.Event.Emit(protocol.EventSettingsUpdated, s)
+		if s != nil {
+			themeMode := string(s.Appearance.Theme)
+			for _, w := range app.Window.GetAll() {
+				setNativeWindowTheme(w, themeMode)
+			}
+		}
 	}
 	if a.updater != nil && s != nil {
 		_ = a.updater.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr)

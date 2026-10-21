@@ -1573,20 +1573,66 @@ func TestWebviewOptions_DisableMaximise(t *testing.T) {
 	opts := webviewOptions(windowing.Options{
 		Name:            "test",
 		DisableMaximise: true,
-	})
+	}, config.ThemeSystem, false)
 	if opts.MaximiseButtonState != application.ButtonDisabled {
 		t.Errorf("expected MaximiseButtonState to be ButtonDisabled, got %v", opts.MaximiseButtonState)
 	}
 
 	optsNormal := webviewOptions(windowing.Options{
 		Name: "test-normal",
-	})
+	}, config.ThemeSystem, false)
 	if optsNormal.MaximiseButtonState != application.ButtonEnabled {
 		t.Errorf("expected MaximiseButtonState to be ButtonEnabled by default, got %v", optsNormal.MaximiseButtonState)
 	}
 }
 
-func TestApp_MainWindowDisableMaximise(t *testing.T) {
+// 创建期必须钉住明暗：留成 SystemDefault 时 Wails 会自行注册系统主题监听，
+// 系统切换就会把用户显式选择的主题覆盖回系统值。
+func TestWebviewOptions_PinsWindowTheme(t *testing.T) {
+	cases := []struct {
+		name       string
+		mode       config.ThemeMode
+		systemDark bool
+		immersive  bool
+		want       application.Theme
+	}{
+		{name: "explicit dark beats light system", mode: config.ThemeDark, systemDark: false, immersive: true, want: application.Dark},
+		{name: "explicit light beats dark system", mode: config.ThemeLight, systemDark: true, immersive: true, want: application.Light},
+		{name: "system follows dark", mode: config.ThemeSystem, systemDark: true, immersive: true, want: application.Dark},
+		{name: "system follows light", mode: config.ThemeSystem, systemDark: false, immersive: true, want: application.Light},
+		{name: "auxiliary windows are pinned too", mode: config.ThemeDark, systemDark: false, immersive: false, want: application.Dark},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts := webviewOptions(windowing.Options{Name: "window", Immersive: c.immersive}, c.mode, c.systemDark)
+			if opts.Windows.Theme != c.want {
+				t.Errorf("expected window theme %v, got %v", c.want, opts.Windows.Theme)
+			}
+		})
+	}
+}
+
+func TestImmersiveWindowChrome(t *testing.T) {
+	frameless, translucent, windows, mac := immersiveWindowChrome("windows")
+	if !frameless || translucent || !windows.WebView2CompositionHosting || windows.BackdropType != application.None {
+		t.Errorf("windows immersive chrome missing: %v %v %+v", frameless, translucent, windows)
+	}
+	if mac.TitleBar != (application.MacTitleBar{}) {
+		t.Errorf("windows must not touch mac titlebar: %+v", mac.TitleBar)
+	}
+
+	frameless, translucent, windows, mac = immersiveWindowChrome("darwin")
+	if frameless || !translucent || windows.WebView2CompositionHosting || mac.Backdrop != application.MacBackdropTranslucent || mac.TitleBar.UseToolbar {
+		t.Errorf("darwin immersive chrome wrong: %v %v %+v %+v", frameless, translucent, windows, mac)
+	}
+
+	frameless, translucent, windows, mac = immersiveWindowChrome("linux")
+	if frameless || translucent || windows.WebView2CompositionHosting || windows.BackdropType != application.Auto || mac.TitleBar != (application.MacTitleBar{}) {
+		t.Errorf("linux must stay untouched: %v %v %+v %+v", frameless, translucent, windows, mac.TitleBar)
+	}
+}
+
+func TestApp_MainWindowAllowsMaximise(t *testing.T) {
 	app, _, _ := newTestApp(t)
 	host := &headlessHost{}
 	app.declareWindows(host)
@@ -1595,8 +1641,11 @@ func TestApp_MainWindowDisableMaximise(t *testing.T) {
 		t.Fatalf("expected the main window to be created")
 	}
 	win := host.windows[winNameMain]
-	if !win.options.DisableMaximise {
-		t.Errorf("main window declaration must have DisableMaximise enabled")
+	if win.options.DisableMaximise {
+		t.Errorf("main window must stay maximisable: 最大化键由页面画，命中测试交给系统")
+	}
+	if !win.options.Immersive {
+		t.Errorf("main window must declare immersive chrome")
 	}
 }
 

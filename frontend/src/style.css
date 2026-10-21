@@ -30,9 +30,16 @@
 
   --scrollbar-thumb: rgba(255, 255, 255, 0.18);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
+
+  /* 标题栏融合所需布局变量 */
+  --shell-window-controls-w: 0px;
+  --shell-titlebar-h: 3rem;
+  --shell-control-hover: rgb(255 255 255 / 0.1);
+  --sidebar-header-pt: 0.75rem;
 }
 
 :root.light {
+  --shell-control-hover: rgb(0 0 0 / 0.1);
   --bg-app: #f1f5f9;
   --bg-base: #f8fafc;
   --bg-surface: #ffffff;
@@ -54,6 +61,7 @@
 }
 
 :root.dark {
+  --shell-control-hover: rgb(255 255 255 / 0.1);
   --bg-app: #0c0e12;
   --bg-base: #09090b;
   --bg-surface: #121215;
@@ -73,9 +81,25 @@
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
 }
 
+html.is_windows {
+  --shell-window-controls-w: 80px;
+  --shell-titlebar-h: 40px;
+  --sidebar-header-pt: 0.5rem;
+}
+
+html.is_mac {
+  --shell-window-controls-w: 0px;
+  --sidebar-header-pt: 40px;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
+  }
+
+  img {
+    -webkit-user-drag: none;
+    user-drag: none;
   }
 
   /* Fallback for non-WebKit browsers (e.g. Firefox) */
