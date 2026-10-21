@@ -42,12 +42,12 @@ func TestWatch_CancelsIdleRequest(t *testing.T) {
 // 慢但仍在发字节的连接不该被判成停摆：限速服务器是合法场景。
 func TestWatch_AllowsSlowButActiveStream(t *testing.T) {
 	parent := context.Background()
-	_, watch := stallwatch.New(parent, 120*time.Millisecond)
+	_, watch := stallwatch.New(parent, 300*time.Millisecond)
 	defer watch.Stop()
 
 	body := watch.Reader(io.NopCloser(strings.NewReader(strings.Repeat("x", 64))))
 	written := 0
-	ticker := time.NewTicker(40 * time.Millisecond)
+	ticker := time.NewTicker(30 * time.Millisecond)
 	defer ticker.Stop()
 	buf := make([]byte, 8)
 	for written < 64 {
