@@ -373,6 +373,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		_ = a.updater.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr)
 	}
 	if a.windows != nil && s != nil {
+		a.windows.SetBackground(winNameMain, a.mainWindowBackground())
 		if s.General.LightweightMode {
 			// 打开轻量模式：不再热备，立刻收掉不可见的窗口（可见的留给用户自己关）。
 			a.windows.CloseHidden(winNameMain)

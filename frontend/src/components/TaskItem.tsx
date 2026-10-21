@@ -1,4 +1,4 @@
-import { type MouseEvent } from 'react';
+import { useRef, type MouseEvent } from 'react';
 import { motion } from 'motion/react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
 import {
@@ -16,6 +16,7 @@ import { CheckCircle2, AlertCircle, Clock, Pause, Loader2 } from 'lucide-react';
 export interface SelectionModifiers {
   ctrlKey: boolean;
   shiftKey: boolean;
+  forceSelect?: boolean;
 }
 
 interface TaskItemProps {
@@ -57,20 +58,32 @@ export function TaskItem({
     t.status === task.Status.StatusCompleted && t.elapsedNano && t.elapsedNano > 0
       ? formatTimeHMS(t.elapsedNano / 1e9)
       : null;
+  const lastClickTimeRef = useRef<number>(0);
+
   const handleRowClick = (e: MouseEvent) => {
     e.stopPropagation();
+    const now = Date.now();
+    const diff = now - lastClickTimeRef.current;
+    lastClickTimeRef.current = now;
+
+    // 仅当用户在 260ms 内快速连击时，认定为有意双击打开进度窗口，且确保保持为选中态
+    if (diff > 0 && diff < 260 && onShowProgress) {
+      if (onToggleSelect) {
+        onToggleSelect(t.id, {
+          ctrlKey: false,
+          shiftKey: false,
+          forceSelect: true,
+        });
+      }
+      onShowProgress(t.id);
+      return;
+    }
+
     if (onToggleSelect) {
       onToggleSelect(t.id, {
         ctrlKey: e.ctrlKey || e.metaKey,
         shiftKey: e.shiftKey,
       });
-    }
-  };
-
-  const handleRowDoubleClick = (e: MouseEvent) => {
-    e.stopPropagation();
-    if (onShowProgress) {
-      onShowProgress(t.id);
     }
   };
 
@@ -141,7 +154,6 @@ export function TaskItem({
         ease: 'easeOut',
       }}
       onClick={handleRowClick}
-      onDoubleClick={handleRowDoubleClick}
       data-task-item={t.id}
       className={`group relative flex cursor-pointer items-center justify-between gap-2.5 rounded-lg border px-3 py-1.5 shadow-2xs backdrop-blur-xs transition-all duration-150 select-none ${
         selected

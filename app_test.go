@@ -1614,7 +1614,7 @@ func TestWebviewOptions_PinsWindowTheme(t *testing.T) {
 
 func TestImmersiveWindowChrome(t *testing.T) {
 	frameless, translucent, windows, mac := immersiveWindowChrome("windows")
-	if !frameless || !translucent || !windows.WebView2CompositionHosting || windows.BackdropType != application.Acrylic {
+	if !frameless || translucent || !windows.WebView2CompositionHosting || windows.BackdropType != application.None {
 		t.Errorf("windows immersive chrome missing: %v %v %+v", frameless, translucent, windows)
 	}
 	if mac.TitleBar != (application.MacTitleBar{}) {

@@ -33,7 +33,7 @@ func nativeWindowTheme(mode config.ThemeMode, systemDark bool) application.Theme
 func immersiveWindowChrome(goos string) (frameless bool, translucent bool, windows application.WindowsWindow, mac application.MacWindow) {
 	switch goos {
 	case "windows":
-		return true, true, application.WindowsWindow{BackdropType: application.Acrylic, WebView2CompositionHosting: true}, application.MacWindow{}
+		return true, false, application.WindowsWindow{BackdropType: application.None, WebView2CompositionHosting: true}, application.MacWindow{}
 	case "darwin":
 		return false, true, application.WindowsWindow{}, application.MacWindow{
 			Backdrop: application.MacBackdropTranslucent,

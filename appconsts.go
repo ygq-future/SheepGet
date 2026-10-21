@@ -2,6 +2,8 @@ package main
 
 import (
 	"time"
+
+	"sheep-get/internal/windowing"
 )
 
 // 窗口名与窗口几何的单一命名来源：窗口的三份声明在 app_windows.go，这里只留标识与尺寸这一层，
@@ -18,6 +20,12 @@ const (
 const (
 	mainWindowWidth  = 800
 	mainWindowHeight = 520
+)
+
+// 主窗口默认背景色（与前端暗色/亮色基调 #09090b / #f8fafc 完全统一，避免深蓝模板色与黑白主题割裂）。
+var (
+	mainWindowDarkBackgroundColour  = windowing.Colour{R: 9, G: 9, B: 11, A: 255}
+	mainWindowLightBackgroundColour = windowing.Colour{R: 248, G: 250, B: 252, A: 255}
 )
 
 // Windows 平台 WebView2 启动加速参数（裁剪非桌面必要服务，缩短内核冷启动耗时）。

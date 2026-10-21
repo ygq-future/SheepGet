@@ -26,7 +26,7 @@ import {
   PauseCircle,
   AlertTriangle,
   Inbox,
-  Cog,
+  Settings as SettingsIcon,
   Activity,
   Trash2,
   CheckCheck,
@@ -296,7 +296,18 @@ export function App() {
   };
 
   // Selection model: Exclusive Single Selection by default, Shift for range, Ctrl/Cmd for toggle
-  const handleToggleSelect = (id: string, modifiers: { ctrlKey: boolean; shiftKey: boolean }) => {
+  const handleToggleSelect = (
+    id: string,
+    modifiers: { ctrlKey: boolean; shiftKey: boolean; forceSelect?: boolean },
+  ) => {
+    // 0. Force Select (e.g. on double-click open progress)
+    if (modifiers.forceSelect) {
+      const next = new Set([id]);
+      setSelectedTaskIds(next);
+      setSelectionAnchor(id);
+      setBaseSelectedIds(next);
+      return;
+    }
     // 1. Shift key pressed: continuous range selection based on anchor
     if (modifiers.shiftKey) {
       const anchorId = selectionAnchor || id;
@@ -332,13 +343,19 @@ export function App() {
       return;
     }
 
-    // 3. Normal single click: mutually exclusive, selects only current item
+    // 3. Normal single click: if already exclusively selected, deselect it; otherwise select it exclusively
+    if (selectedTaskIds.size === 1 && selectedTaskIds.has(id)) {
+      setSelectedTaskIds(new Set());
+      setSelectionAnchor(null);
+      setBaseSelectedIds(new Set());
+      return;
+    }
+
     const next = new Set([id]);
     setSelectedTaskIds(next);
     setSelectionAnchor(id);
     setBaseSelectedIds(next);
   };
-
   const handleToggleSelectAll = () => {
     if (selectedTaskIds.size > 0) {
       setSelectedTaskIds(new Set());
@@ -458,24 +475,28 @@ export function App() {
       label: '全部任务',
       icon: Layers,
       count: counts.total,
+      color: 'text-[var(--text-primary)]',
     },
     {
       id: 'paused' as const,
       label: '已暂停',
       icon: PauseCircle,
       count: counts.paused,
+      color: 'text-amber-500',
     },
     {
       id: 'completed' as const,
       label: '已完成',
       icon: CheckCircle2,
       count: counts.completed,
+      color: 'text-[var(--accent)]',
     },
     {
       id: 'error' as const,
       label: '下载异常',
       icon: AlertTriangle,
       count: counts.error,
+      color: 'text-rose-500',
     },
   ];
   const isServerErr = !serverStatus.running || Boolean(serverStatus.error);
@@ -495,29 +516,33 @@ export function App() {
       : `HTTP 服务监听中 (端口 ${serverStatus.port})，等待浏览器扩展连接`;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-transparent font-sans text-[var(--text-primary)] antialiased select-none">
-      {/* Left Full-Height Aside (Transparent background for system blur/acrylic penetration) */}
+    <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased select-none">
+      {/* Left Full-Height Aside (Unified vertical border-r, Linear-inspired) */}
       <aside
-        className={`flex h-screen shrink-0 flex-col justify-between overflow-hidden border-r border-[var(--border-subtle)] bg-transparent transition-[width] duration-200 ease-out ${
-          sidebarCollapsed ? 'w-14' : 'w-44'
-        }`}
+        className={`flex h-screen shrink-0 flex-col justify-between overflow-hidden border-r border-[var(--border-subtle)] bg-[var(--bg-app)]/80 ${
+          sidebarCollapsed ? 'w-14 px-2' : 'w-[160px] px-2.5'
+        } pt-[var(--sidebar-header-pt,0.5rem)] pb-3 backdrop-blur-xl transition-[width] duration-200 ease-out`}
       >
-        {/* Sidebar Header: Brand & Title Drag Area */}
-        <header className="sidebar-header flex shrink-0 items-center gap-2.5 overflow-hidden px-2.5 pt-[var(--sidebar-header-pt,0.75rem)] pb-1 [--wails-draggable:drag]">
-          <button
-            type="button"
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-            className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center transition-transform [--wails-draggable:no-drag] hover:scale-105 active:scale-95"
+        {/* Aside Top: Brand Header & Categorized Navigation */}
+        <div className="w-full space-y-2">
+          {/* Brand Header: 收起时水平居中 */}
+          <div
+            className={`flex h-10 items-center ${
+              sidebarCollapsed ? 'w-full justify-center px-0' : 'gap-2.5 px-0.5'
+            } overflow-hidden [--wails-draggable:drag]`}
           >
-            <img
-              src={logoUrl}
-              alt="SheepGet"
-              className="h-8 w-8 rounded-lg object-contain drop-shadow-xs"
-            />
-          </button>
+            <button
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+              className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center transition-transform [--wails-draggable:no-drag] hover:scale-105 active:scale-95"
+            >
+              <img
+                src={logoUrl}
+                alt="SheepGet"
+                className="h-8 w-8 rounded-lg object-contain drop-shadow-xs"
+              />
+            </button>
 
-          <div className="flex min-w-0 items-center gap-2.5">
             <AnimatePresence initial={false}>
               {!sidebarCollapsed && (
                 <motion.span
@@ -531,93 +556,132 @@ export function App() {
                 </motion.span>
               )}
             </AnimatePresence>
+            <TitleBarDragRegion />
           </div>
-          <TitleBarDragRegion />
-        </header>
 
-        {/* Sidebar Main: Categorized Navigation */}
-        <nav className="sidebar-main flex-1 space-y-1 overflow-x-hidden overflow-y-auto px-2.5 py-2">
-          <AnimatePresence initial={false}>
-            {!sidebarCollapsed && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
-                className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-primary)] uppercase"
-              >
-                任务列表
-              </motion.div>
-            )}
-          </AnimatePresence>
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = filter === item.id;
+          {/* Navigation Section */}
+          <div className="space-y-1">
+            <AnimatePresence initial={false}>
+              {!sidebarCollapsed && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  className="overflow-hidden px-2 pb-1 text-[10px] font-semibold tracking-wider whitespace-nowrap text-[var(--text-dim)] uppercase"
+                >
+                  任务列表
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-            return (
-              <button
-                key={item.id}
-                onClick={() => handleSelectFilter(item.id)}
-                title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
-                className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none hover:bg-[var(--sidebar-item-bg)] ${
-                  isActive ? 'bg-[var(--sidebar-item-bg)]' : ''
-                }`}
-              >
-                {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
-                  <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
-                )}
-                <div className="flex min-w-0 items-center gap-2.5">
-                  <Icon className="h-4 w-4 shrink-0" />
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = filter === item.id;
+
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleSelectFilter(item.id)}
+                  title={sidebarCollapsed ? `${item.label} (${item.count})` : undefined}
+                  className={`group relative flex h-9 w-full cursor-pointer items-center ${
+                    sidebarCollapsed ? 'justify-center px-0' : 'justify-between px-2.5'
+                  } rounded-lg text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
+                    isActive
+                      ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
+                      : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
+                  }`}
+                >
+                  {/* Active Indicator Bar */}
+                  {isActive && (
+                    <span
+                      className={`absolute top-2 bottom-2 left-1 w-0.5 rounded-full shadow-xs ${
+                        item.id === 'error' ? 'bg-rose-500' : 'bg-[var(--accent)]'
+                      }`}
+                    />
+                  )}
+                  {sidebarCollapsed && item.id === 'error' && item.count > 0 && (
+                    <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-rose-500" />
+                  )}
+                  <div
+                    className={`flex min-w-0 items-center ${
+                      sidebarCollapsed ? 'justify-center' : 'gap-2.5'
+                    } transition-colors ${
+                      isActive
+                        ? item.color
+                        : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <AnimatePresence initial={false}>
+                      {!sidebarCollapsed && (
+                        <motion.span
+                          initial={{ opacity: 0, x: -6, width: 0 }}
+                          animate={{ opacity: 1, x: 0, width: 'auto' }}
+                          exit={{ opacity: 0, x: -6, width: 0 }}
+                          transition={{ duration: 0.18, ease: 'easeOut' }}
+                          className="overflow-hidden whitespace-nowrap"
+                        >
+                          {item.label}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
                   <AnimatePresence initial={false}>
                     {!sidebarCollapsed && (
                       <motion.span
-                        initial={{ opacity: 0, x: -6, width: 0 }}
-                        animate={{ opacity: 1, x: 0, width: 'auto' }}
-                        exit={{ opacity: 0, x: -6, width: 0 }}
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
                         transition={{ duration: 0.18, ease: 'easeOut' }}
-                        className="overflow-hidden whitespace-nowrap"
+                        className={`shrink-0 overflow-hidden rounded-full px-1.5 py-0.5 font-mono text-[10px] whitespace-nowrap transition-colors ${
+                          isActive
+                            ? item.id === 'error'
+                              ? 'bg-rose-500/15 font-semibold text-rose-500'
+                              : 'bg-[var(--accent-muted)] font-semibold text-[var(--accent)]'
+                            : item.id === 'error' && item.count > 0
+                              ? 'bg-rose-500/10 font-medium text-rose-500'
+                              : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
+                        }`}
                       >
-                        {item.label}
+                        {item.count}
                       </motion.span>
                     )}
                   </AnimatePresence>
-                </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
-                <AnimatePresence initial={false}>
-                  {!sidebarCollapsed && (
-                    <motion.span
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      transition={{ duration: 0.18, ease: 'easeOut' }}
-                      className={`shrink-0 font-mono text-[11px] whitespace-nowrap transition-colors ${
-                        isActive
-                          ? 'font-semibold text-[var(--text-primary)]'
-                          : item.id === 'error' && item.count > 0
-                            ? 'font-medium text-rose-500'
-                            : 'text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]'
-                      }`}
-                    >
-                      {item.count}
-                    </motion.span>
-                  )}
-                </AnimatePresence>
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Sidebar Footer: Settings & Service Status */}
-        <footer className="sidebar-footer shrink-0 space-y-2 px-2.5 pt-2.5 pb-3">
+        {/* Aside Footer: Settings Tab Button & Error status */}
+        <div className="w-full space-y-2 border-t border-[var(--border-subtle)] pt-2.5">
           <button
             onClick={() => handleSelectFilter('settings')}
-            title={sidebarCollapsed ? '偏好设置' : undefined}
-            className={`group relative flex h-9 w-full cursor-pointer items-center justify-between rounded-lg px-2.5 text-xs font-medium text-[var(--text-primary)] outline-hidden transition-colors duration-150 select-none hover:bg-[var(--sidebar-item-bg)] ${
-              filter === 'settings' ? 'bg-[var(--sidebar-item-bg)]' : ''
+            title={sidebarCollapsed ? '设置' : undefined}
+            className={`group relative flex h-9 w-full cursor-pointer items-center ${
+              sidebarCollapsed ? 'justify-center px-0' : 'justify-between px-2.5'
+            } rounded-lg text-xs font-medium outline-hidden transition-colors duration-150 select-none ${
+              filter === 'settings'
+                ? 'bg-white/[0.07] text-[var(--text-primary)] shadow-xs ring-1 ring-white/5 dark:bg-white/[0.06]'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <div className="flex min-w-0 items-center gap-2.5">
-              <Cog className="h-4 w-4 shrink-0" />
+            {filter === 'settings' && (
+              <span className="absolute top-2 bottom-2 left-1 w-0.5 rounded-full bg-[var(--accent)] shadow-xs" />
+            )}
+
+            <div
+              className={`flex min-w-0 items-center ${
+                sidebarCollapsed ? 'justify-center' : 'gap-2.5'
+              } transition-colors ${
+                filter === 'settings'
+                  ? 'text-[var(--text-primary)]'
+                  : 'text-[var(--text-secondary)] group-hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <SettingsIcon className="h-4 w-4 shrink-0" />
               <AnimatePresence initial={false}>
                 {!sidebarCollapsed && (
                   <motion.span
@@ -627,7 +691,7 @@ export function App() {
                     transition={{ duration: 0.18, ease: 'easeOut' }}
                     className="overflow-hidden whitespace-nowrap"
                   >
-                    偏好设置
+                    设置
                   </motion.span>
                 )}
               </AnimatePresence>
@@ -656,16 +720,18 @@ export function App() {
               </AnimatePresence>
             )}
           </button>
-        </footer>
+        </div>
       </aside>
 
-      {/* Right Main Workspace Container */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-base)]/50 backdrop-blur-xl">
-        <header className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 [--wails-draggable:drag]">
+      {/* Right Main Workspace */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Right Header Bar: Aligns perfectly on top of right workspace */}
+        <header className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 [--wails-draggable:drag]">
+          {/* Header Left: Compact Select All & Selection Status */}
           <div className="flex items-center gap-2 [--wails-draggable:no-drag]">
             {filter !== 'settings' && (
               <div className="flex items-center gap-1.5">
-                <div className="flex w-24 items-center sm:w-28">
+                <div className="w-[88px] sm:w-[96px]">
                   <Select
                     value={selectedCategory}
                     onChange={(val) => {
@@ -677,7 +743,6 @@ export function App() {
                     clearable
                     placeholder="全部分类"
                     options={categoryOptions}
-                    ghost
                     className="h-7 py-1 text-xs"
                   />
                 </div>
@@ -705,7 +770,6 @@ export function App() {
             )}
           </div>
 
-          {/* Header Right: Progress Window, Batch Delete, New Download */}
           <TitleBarDragRegion />
           <div className="flex shrink-0 items-center gap-1.5 [--wails-draggable:no-drag] sm:gap-2">
             {/* Header Update Icon Button */}
@@ -728,18 +792,8 @@ export function App() {
                 </span>
               </motion.button>
             )}
-            {/* Shared Progress Window Button (Ghost) */}
-            <button
-              type="button"
-              onClick={handleProgressWindowClick}
-              className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--accent)] active:scale-95 dark:hover:bg-white/10"
-              title="打开下载进度窗口"
-            >
-              <Activity className="h-4 w-4 shrink-0 text-[var(--accent)]" />
-              <span className="whitespace-nowrap">下载进度</span>
-            </button>
 
-            {/* 设置页没有选择语义，与左侧工具栏一起收起。 */}
+            {/* Batch Delete Button (紧凑排版，调换到下载进度前) */}
             {filter !== 'settings' && (
               <button
                 type="button"
@@ -760,6 +814,18 @@ export function App() {
                 <span className="whitespace-nowrap">删除</span>
               </button>
             )}
+
+            {/* Shared Progress Window Button (紧凑排版，调换到下载进度后) */}
+            <button
+              type="button"
+              onClick={handleProgressWindowClick}
+              className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--accent)] active:scale-95 dark:hover:bg-white/10"
+              title="打开下载进度窗口"
+            >
+              <Activity className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+              <span className="whitespace-nowrap">进度</span>
+            </button>
+
             {/* New Download */}
             <Button
               variant="primary"
@@ -785,7 +851,7 @@ export function App() {
               handleCancelSelection();
             }
           }}
-          className={`flex min-w-0 flex-1 flex-col bg-transparent ${
+          className={`flex min-w-0 flex-1 flex-col bg-[var(--bg-base)] ${
             filter === 'settings' ? 'overflow-hidden p-0' : 'overflow-x-hidden overflow-y-auto p-3'
           }`}
         >
@@ -799,7 +865,9 @@ export function App() {
               animate={{ opacity: 1, y: 0 }}
               className="flex flex-1 flex-col items-center justify-center text-center select-none"
             >
-              <Inbox className="size-12 stroke-[1.2] text-[var(--text-muted)] opacity-70" />
+              <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-[var(--text-muted)] shadow-xs">
+                <Inbox className="h-8 w-8 stroke-1 text-[var(--text-muted)]" />
+              </div>
               <p className="mt-3 text-xs font-medium text-[var(--text-primary)]">暂无下载任务</p>
               <p className="mt-1 text-[11px] text-[var(--text-muted)]">
                 点击右上角“新建任务”开始下载

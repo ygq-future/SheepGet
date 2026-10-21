@@ -150,14 +150,15 @@ func (a *App) declareWindows(host windowing.Host) {
 	a.windows.Declare(
 		windowing.Spec{
 			Options: windowing.Options{
-				Name:      winNameMain,
-				Title:     "SheepGet",
-				URL:       "/",
-				Width:     mainWindowWidth,
-				Height:    mainWindowHeight,
-				MinWidth:  mainWindowWidth,
-				MinHeight: mainWindowHeight,
-				Immersive: true,
+				Name:       winNameMain,
+				Title:      "SheepGet",
+				URL:        "/",
+				Width:      mainWindowWidth,
+				Height:     mainWindowHeight,
+				MinWidth:   mainWindowWidth,
+				MinHeight:  mainWindowHeight,
+				Immersive:  true,
+				Background: a.mainWindowBackground(),
 			},
 			Policy: windowing.Policy{
 				// 轻量模式不拦关闭，让 Wails 销毁窗口与 WebView 渲染进程；其余情况关到托盘。
@@ -243,6 +244,13 @@ func (a *App) lightweightMode() bool {
 		return false
 	}
 	return a.settings.Get().General.LightweightMode
+}
+
+func (a *App) mainWindowBackground() windowing.Colour {
+	if a.settings != nil && a.settings.Get().Appearance.Theme == config.ThemeLight {
+		return mainWindowLightBackgroundColour
+	}
+	return mainWindowDarkBackgroundColour
 }
 
 // ensureMainWindow 保证主窗口存在。hidden 只影响创建那一刻：静默启动时先建出来但不显示。

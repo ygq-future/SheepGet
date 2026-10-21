@@ -31,23 +31,15 @@
   --scrollbar-thumb: rgba(255, 255, 255, 0.18);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
 
-  /* Windows 无边框窗口的底板：透明 WebView 与 Acrylic 之间垫一层同向的明暗蒙版，
-     侧边栏这类透明区域才有稳定的深浅，而不是完全取决于系统磨砂。 */
-  --shell-overlay: rgb(0 0 0 / 0.5);
-
+  /* 标题栏融合所需布局变量 */
   --shell-window-controls-w: 0px;
   --shell-titlebar-h: 3rem;
   --shell-control-hover: rgb(255 255 255 / 0.1);
   --sidebar-header-pt: 0.75rem;
-
-  /* 侧栏条目的激活/悬停底色：深色下 25% 黑，浅色在 light 块里降到 10%。 */
-  --sidebar-item-bg: rgb(0 0 0 / 0.25);
 }
 
 :root.light {
-  --shell-overlay: rgb(255 255 255 / 0.5);
   --shell-control-hover: rgb(0 0 0 / 0.1);
-  --sidebar-item-bg: rgb(0 0 0 / 0.1);
   --bg-app: #f1f5f9;
   --bg-base: #f8fafc;
   --bg-surface: #ffffff;
@@ -91,13 +83,12 @@
 
 html.is_windows {
   --shell-window-controls-w: 80px;
-  /* 无边框窗口没有系统标题栏，这一条是自绘标题栏高度的唯一来源。 */
   --shell-titlebar-h: 40px;
-  /* 顶部占位与侧栏自身的左右 padding（px-2.5）同宽。 */
-  --sidebar-header-pt: 0.625rem;
+  --sidebar-header-pt: 0.5rem;
 }
 
 html.is_mac {
+  --shell-window-controls-w: 0px;
   --sidebar-header-pt: 40px;
 }
 
@@ -110,6 +101,7 @@ html.is_mac {
     -webkit-user-drag: none;
     user-drag: none;
   }
+
   /* Fallback for non-WebKit browsers (e.g. Firefox) */
   @supports not (selector(::-webkit-scrollbar)) {
     * {
@@ -150,22 +142,14 @@ html.is_mac {
     background: transparent;
   }
 
-  html,
   body {
     margin: 0;
     font-family:
       -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     user-select: none;
     -webkit-user-select: none;
-    background-color: transparent !important;
-    background: transparent !important;
+    background-color: var(--bg-base);
     color: var(--text-primary);
-  }
-
-  /* Windows 主窗口：给 body 铺一层明暗蒙版，让透明侧边栏与 Acrylic 磨砂合成出
-     稳定的浅色/深色底。辅助窗口自带卡片背景，不参与这一层。 */
-  html.is_windows body {
-    background-color: var(--shell-overlay) !important;
   }
 
   /* FileInfo and Progress frameless auxiliary windows: eliminate native window background & scrollbar flashing */
