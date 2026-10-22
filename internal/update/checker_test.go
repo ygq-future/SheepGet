@@ -212,3 +212,108 @@ func TestChecker_CheckAppUpdate(t *testing.T) {
 		}
 	})
 }
+
+func TestChecker_HTMLFallbackOn403(t *testing.T) {
+	// Mock API server returning HTTP 403 (Rate Limit)
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "API rate limit exceeded for 127.0.0.1"}`))
+	}))
+	defer apiServer.Close()
+
+	// Mock HTML server simulating GitHub website
+	htmlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/test/repo/releases/latest":
+			http.Redirect(w, r, "/test/repo/releases/tag/v2.0.0", http.StatusFound)
+		case "/test/repo/releases/expanded_assets/v2.0.0":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`
+				<ul>
+					<li><a href="/test/repo/releases/download/v2.0.0/SheepGet_2.0.0_windows-x64-portable.zip">SheepGet_2.0.0_windows-x64-portable.zip</a></li>
+					<li><a href="/test/repo/releases/download/v2.0.0/SheepGet_2.0.0_x64-setup.exe">SheepGet_2.0.0_x64-setup.exe</a></li>
+				</ul>
+			`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer htmlServer.Close()
+
+	checker := NewChecker(
+		WithBaseURL(apiServer.URL),
+		WithHTMLBaseURL(htmlServer.URL),
+		WithRepo("test/repo"),
+	)
+
+	res, err := checker.CheckAppUpdate(context.Background(), "1.0.0", "windows", "amd64", true)
+	if err != nil {
+		t.Fatalf("CheckAppUpdate unexpectedly failed: %v", err)
+	}
+	if !res.HasUpdate {
+		t.Errorf("expected HasUpdate = true")
+	}
+	if res.LatestVersion != "2.0.0" {
+		t.Errorf("expected LatestVersion = 2.0.0, got %s", res.LatestVersion)
+	}
+	if res.AssetName != "SheepGet_2.0.0_windows-x64-portable.zip" {
+		t.Errorf("expected portable zip asset, got %s", res.AssetName)
+	}
+}
+
+func TestChecker_MultiProxyFallbackChain(t *testing.T) {
+	// Proxy 1 is dead (refuses connection)
+	deadProxy := "http://127.0.0.1:54321"
+
+	// Target API server
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(GitHubRelease{
+			TagName: "v2.1.0",
+			Name:    "SheepGet 2.1.0",
+			Assets: []GitHubAsset{
+				{Name: "SheepGet_2.1.0_windows-x64-portable.zip", BrowserDownloadURL: "https://dl/win.zip"},
+			},
+		})
+	}))
+	defer apiServer.Close()
+
+	checker := NewChecker(
+		WithBaseURL(apiServer.URL),
+		WithProxyChain(deadProxy, "direct"),
+	)
+
+	res, err := checker.CheckAppUpdate(context.Background(), "2.0.0", "windows", "amd64", true)
+	if err != nil {
+		t.Fatalf("CheckAppUpdate should succeed via direct fallback: %v", err)
+	}
+	if !res.HasUpdate || res.LatestVersion != "2.1.0" {
+		t.Fatalf("expected update to 2.1.0, got %+v", res)
+	}
+	if checker.ActiveNode() != "direct" {
+		t.Errorf("expected ActiveNode = direct, got %s", checker.ActiveNode())
+	}
+}
+
+func TestBuildCandidateChain(t *testing.T) {
+	t.Run("Custom mode with multiple proxies", func(t *testing.T) {
+		chain := BuildCandidateChain("custom", "http://127.0.0.1:7890", "http://127.0.0.1:7891")
+		if len(chain) < 3 {
+			t.Fatalf("expected at least 3 candidates, got %v", chain)
+		}
+		if chain[0] != "http://127.0.0.1:7890" || chain[1] != "http://127.0.0.1:7891" {
+			t.Errorf("expected custom proxies first, got %v", chain)
+		}
+		if chain[len(chain)-1] != "direct" {
+			t.Errorf("expected direct at the end, got %s", chain[len(chain)-1])
+		}
+	})
+
+	t.Run("Direct/none mode", func(t *testing.T) {
+		chain := BuildCandidateChain("direct")
+		if chain[len(chain)-1] != "direct" {
+			t.Errorf("expected direct at the end, got %v", chain)
+		}
+	})
+}

@@ -3,7 +3,6 @@ package update
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,7 +21,7 @@ type Service struct {
 	downloader   *Downloader
 	storage      *storage.Storage
 	proxyMode    string
-	customProxy  string
+	customAddrs  []string
 	lastCheckApp *AppUpdateResult
 	lastCheckExt *ExtensionUpdateResult
 }
@@ -40,24 +39,18 @@ func NewService(st *storage.Storage, checker *Checker) *Service {
 }
 
 // SetProxy updates the proxy settings used for update checks and downloads.
-func (s *Service) SetProxy(mode, customAddr string) error {
+func (s *Service) SetProxy(mode string, customAddrs ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.proxyMode = mode
-	s.customProxy = customAddr
+	s.customAddrs = append([]string(nil), customAddrs...)
 
-	if err := s.checker.ConfigureProxy(mode, customAddr); err != nil {
+	if err := s.checker.ConfigureProxy(mode, customAddrs...); err != nil {
 		return err
 	}
 
-	transport, err := createTransport(mode, customAddr)
-	if err != nil {
-		return err
-	}
-	s.downloader = NewDownloader(&http.Client{
-		Transport: transport,
-	})
+	s.downloader.SetProxyChain(s.checker.ProxyChain()...)
 	return nil
 }
 
@@ -72,6 +65,9 @@ func (s *Service) CheckAppUpdate(ctx context.Context) (*AppUpdateResult, error) 
 		return nil, err
 	}
 	s.lastCheckApp = res
+	if s.checker.ActiveNode() != "" {
+		s.downloader.SetActiveNode(s.checker.ActiveNode())
+	}
 	return res, nil
 }
 
@@ -100,6 +96,9 @@ func (s *Service) CheckExtensionUpdate(ctx context.Context) (*ExtensionUpdateRes
 		return nil, err
 	}
 	s.lastCheckExt = res
+	if s.checker.ActiveNode() != "" {
+		s.downloader.SetActiveNode(s.checker.ActiveNode())
+	}
 	return res, nil
 }
 

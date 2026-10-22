@@ -215,7 +215,7 @@ func NewApp() *App {
 	app.loopbackServer = loopbackSrv
 
 	updater := update.NewService(storeDir, nil)
-	_ = updater.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.CustomAddr)
+	_ = updater.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.EffectiveCustomAddrs()...)
 	app.updater = updater
 	app.syncSkillFile()
 
@@ -370,7 +370,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		}
 	}
 	if a.updater != nil && s != nil {
-		_ = a.updater.SetProxy(string(s.Proxy.Mode), s.Proxy.CustomAddr)
+		_ = a.updater.SetProxy(string(s.Proxy.Mode), s.Proxy.EffectiveCustomAddrs()...)
 	}
 	if a.windows != nil && s != nil {
 		a.windows.SetBackground(winNameMain, a.mainWindowBackground())

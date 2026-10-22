@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"sheep-get/internal/sys"
 )
 
 const (
@@ -17,56 +19,206 @@ const (
 	DefaultTimeout    = 30 * time.Second
 )
 
-// Checker checks for updates from GitHub Releases.
+// Checker checks for updates from GitHub Releases using REST API with HTML fallback and multi-proxy resilience.
 type Checker struct {
-	repoURL    string
-	httpClient *http.Client
+	repoURL     string
+	htmlBaseURL string
+	repo        string
+	httpClient  *http.Client
+	proxyChain  []string
+	activeNode  string
+	timeout     time.Duration
 }
 
 // CheckerOption configures the Checker.
 type CheckerOption func(*Checker)
 
-// WithBaseURL sets a custom releases endpoint URL (primarily for testing).
+// WithBaseURL sets a custom releases API endpoint URL (primarily for testing).
 func WithBaseURL(urlStr string) CheckerOption {
 	return func(c *Checker) {
 		c.repoURL = urlStr
 	}
 }
 
-// WithHTTPClient sets a custom HTTP client.
+// WithHTMLBaseURL sets a custom HTML releases base URL (primarily for testing).
+func WithHTMLBaseURL(urlStr string) CheckerOption {
+	return func(c *Checker) {
+		c.htmlBaseURL = strings.TrimRight(urlStr, "/")
+	}
+}
+
+// WithRepo sets the repository in "owner/repo" format.
+func WithRepo(repo string) CheckerOption {
+	return func(c *Checker) {
+		c.repo = repo
+	}
+}
+
+// WithHTTPClient sets a custom base HTTP client.
 func WithHTTPClient(client *http.Client) CheckerOption {
 	return func(c *Checker) {
 		c.httpClient = client
 	}
 }
 
+// WithTimeout sets the request timeout for checking updates.
+func WithTimeout(d time.Duration) CheckerOption {
+	return func(c *Checker) {
+		c.timeout = d
+	}
+}
+
+// WithProxyChain sets an explicit proxy candidate chain.
+func WithProxyChain(chain ...string) CheckerOption {
+	return func(c *Checker) {
+		c.proxyChain = append([]string(nil), chain...)
+	}
+}
+
 // NewChecker creates a new Checker instance.
 func NewChecker(opts ...CheckerOption) *Checker {
 	c := &Checker{
-		repoURL: fmt.Sprintf("https://api.github.com/repos/%s/releases", DefaultGitHubRepo),
-		httpClient: &http.Client{
-			Timeout: DefaultTimeout,
-		},
+		repo:        DefaultGitHubRepo,
+		repoURL:     fmt.Sprintf("https://api.github.com/repos/%s/releases", DefaultGitHubRepo),
+		htmlBaseURL: "https://github.com",
+		timeout:     DefaultTimeout,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	if c.httpClient == nil {
+		c.httpClient = &http.Client{
+			Timeout: c.timeout,
+		}
+	}
 	return c
 }
 
-// ConfigureProxy configures the HTTP client transport with the specified proxy settings.
-func (c *Checker) ConfigureProxy(mode, customAddr string) error {
-	transport, err := createTransport(mode, customAddr)
+// ActiveNode returns the node (proxy URL or "direct") that successfully performed the last update check.
+func (c *Checker) ActiveNode() string {
+	return c.activeNode
+}
+
+// ProxyChain returns the current candidate chain of proxy nodes.
+func (c *Checker) ProxyChain() []string {
+	return append([]string(nil), c.proxyChain...)
+}
+
+// BuildCandidateChain constructs an ordered proxy fallback chain based on mode and custom addresses:
+// - "custom": customAddrs... -> candidateSystemProxy (if present) -> "direct"
+// - "system" or "none" / "direct": candidateSystemProxy (if present) -> "direct"
+func BuildCandidateChain(mode string, customAddrs ...string) []string {
+	var chain []string
+	sysAddr := strings.TrimSpace(sys.CandidateSystemProxyAddr())
+
+	switch strings.ToLower(mode) {
+	case "custom":
+		for _, addr := range customAddrs {
+			trimmed := strings.TrimSpace(addr)
+			if trimmed != "" && !sliceContains(chain, trimmed) {
+				chain = append(chain, trimmed)
+			}
+		}
+		if sysAddr != "" && !sliceContains(chain, sysAddr) {
+			chain = append(chain, sysAddr)
+		}
+		if !sliceContains(chain, "direct") {
+			chain = append(chain, "direct")
+		}
+	case "system", "none", "direct", "":
+		if sysAddr != "" {
+			chain = append(chain, sysAddr)
+		}
+		if !sliceContains(chain, "direct") {
+			chain = append(chain, "direct")
+		}
+	default:
+		chain = append(chain, "direct")
+	}
+	return chain
+}
+
+func sliceContains(slice []string, val string) bool {
+	for _, item := range slice {
+		if strings.EqualFold(item, val) {
+			return true
+		}
+	}
+	return false
+}
+
+// ConfigureProxy updates the proxy settings and establishes the candidate proxy fallback chain.
+func (c *Checker) ConfigureProxy(mode string, customAddrs ...string) error {
+	chain := BuildCandidateChain(mode, customAddrs...)
+	c.proxyChain = chain
+
+	// Initialize the primary httpClient using the first candidate in the chain
+	firstNode := "direct"
+	if len(chain) > 0 {
+		firstNode = chain[0]
+	}
+	client, err := c.clientForNode(firstNode)
 	if err != nil {
 		return err
 	}
-	c.httpClient.Transport = transport
+	c.httpClient = client
 	return nil
 }
 
+func (c *Checker) clientForNode(node string) (*http.Client, error) {
+	var transport *http.Transport
+	var err error
+
+	switch strings.ToLower(node) {
+	case "direct", "":
+		transport, err = createTransport("direct", "")
+	case "system":
+		transport, err = createTransport("system", "")
+	default:
+		transport, err = createTransport("custom", node)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   c.timeout,
+	}, nil
+}
+
 // FetchReleases fetches the latest releases from GitHub.
-// It transparently accepts both a JSON array of releases and a single release object (for /releases/latest or mocks).
+// It iterates through the candidate proxy chain, attempting GitHub REST API first,
+// and transparently falls back to zero-quota HTML inspection upon encountering HTTP 403 (Rate Limit).
 func (c *Checker) FetchReleases(ctx context.Context) ([]GitHubRelease, error) {
+	candidates := c.proxyChain
+	if len(candidates) == 0 {
+		// Single client mode (e.g. testing with WithHTTPClient without proxy chain)
+		return c.fetchWithClient(ctx, c.httpClient)
+	}
+
+	var errors []string
+	for _, node := range candidates {
+		client, err := c.clientForNode(node)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("[%s] build client failed: %v", node, err))
+			continue
+		}
+
+		releases, err := c.fetchWithClient(ctx, client)
+		if err == nil && len(releases) > 0 {
+			c.activeNode = node
+			return releases, nil
+		}
+
+		errors = append(errors, fmt.Sprintf("[%s] %v", node, err))
+	}
+
+	return nil, fmt.Errorf("all proxy candidates failed: %s", strings.Join(errors, "; "))
+}
+
+func (c *Checker) fetchWithClient(ctx context.Context, client *http.Client) ([]GitHubRelease, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.repoURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request failed: %w", err)
@@ -74,11 +226,21 @@ func (c *Checker) FetchReleases(ctx context.Context) ([]GitHubRelease, error) {
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "SheepGet-AutoUpdater")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request releases failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusForbidden {
+		// HTTP 403 Rate Limit: TCP/TLS connection is healthy, but API rate limit exceeded.
+		// Immediately fallback to HTML probing on this same healthy connection!
+		htmlReleases, htmlErr := FetchReleasesViaHTML(ctx, client, c.htmlBaseURL, c.repo)
+		if htmlErr == nil && len(htmlReleases) > 0 {
+			return htmlReleases, nil
+		}
+		return nil, fmt.Errorf("api rate limited (403) and html fallback failed: %w", htmlErr)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status code: %d %s", resp.StatusCode, resp.Status)
@@ -131,29 +293,32 @@ func (c *Checker) CheckAppUpdate(ctx context.Context, currentVersion string, goo
 	// Find the desktop application release with the highest semantic version (skips standalone extension tags like ext-v*)
 	var rel *GitHubRelease
 	var bestAppVer string
+
 	for i := range releases {
-		tagLower := strings.ToLower(releases[i].TagName)
-		if strings.HasPrefix(tagLower, "ext-") {
+		// Standalone extension releases (ext-v*) are not desktop app releases
+		if strings.HasPrefix(releases[i].TagName, "ext-v") {
 			continue
 		}
-		ver := strings.TrimPrefix(releases[i].TagName, "v")
+
+		v := strings.TrimPrefix(releases[i].TagName, "v")
 		if bestAppVer == "" {
+			bestAppVer = v
 			rel = &releases[i]
-			bestAppVer = ver
 			continue
 		}
-		cmp, err := CompareVersions(ver, bestAppVer)
+
+		cmp, err := CompareVersions(v, bestAppVer)
 		if err == nil && cmp > 0 {
+			bestAppVer = v
 			rel = &releases[i]
-			bestAppVer = ver
 		}
 	}
+
 	if rel == nil {
 		return &AppUpdateResult{
 			HasUpdate:      false,
 			CurrentVersion: currentVersion,
 			LatestVersion:  currentVersion,
-			IsPortable:     isPortable,
 		}, nil
 	}
 
@@ -251,7 +416,7 @@ func (c *Checker) CheckExtensionUpdate(ctx context.Context, currentExtVersion st
 func createTransport(mode, customAddr string) (*http.Transport, error) {
 	var proxyFunc func(*http.Request) (*url.URL, error)
 	switch strings.ToLower(mode) {
-	case "direct":
+	case "direct", "none":
 		proxyFunc = nil
 	case "custom":
 		if customAddr != "" {
@@ -263,8 +428,10 @@ func createTransport(mode, customAddr string) (*http.Transport, error) {
 		} else {
 			proxyFunc = nil
 		}
-	default: // "system"
-		proxyFunc = http.ProxyFromEnvironment
+	case "system":
+		proxyFunc = sys.SystemProxyFunc()
+	default:
+		proxyFunc = nil
 	}
 
 	return &http.Transport{
