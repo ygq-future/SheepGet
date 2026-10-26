@@ -201,3 +201,43 @@ export function isHLSResource(item: windowModels.FileInfoItem | null, draftUrl?:
   const targetUrl = (draftUrl || item?.url || '').split('?')[0].split('#')[0].toLowerCase();
   return targetUrl.endsWith('.m3u8') || targetUrl.endsWith('.m3u');
 }
+
+/**
+ * 后端后台探测完成（或兜底轮询取回已完成项）时，把探测补齐的真实文件名、命中分类、目录、
+ * 同名冲突及重复裁决合并到当前草稿中，同时保留用户在等待期间已手动修改过的字段。
+ */
+export function patchFromProbedItem(
+  item: windowModels.FileInfoItem,
+  current: FileInfoDraft,
+): Partial<FileInfoDraft> {
+  const result: Partial<FileInfoDraft> = {};
+  if (!current.nameEdited && item.filename && item.filename !== current.filename) {
+    result.filename = item.filename;
+    result.originalFilename = item.filename;
+  }
+  const isDestinationOccupied =
+    item.duplicateDecision?.case === duplicateModels.Case.CaseDestinationOccupied ||
+    current.duplicateDecision?.case === duplicateModels.Case.CaseDestinationOccupied;
+  if (item.fileConflict !== undefined) {
+    result.fileConflict = isDestinationOccupied ? false : item.fileConflict;
+  }
+  if (item.suggestedFilename !== undefined) {
+    result.suggestedFilename = item.suggestedFilename;
+  }
+  if (item.categoryId) {
+    result.autoCategoryId = item.categoryId;
+    if (!current.categoryEdited) {
+      result.selectedCategoryId = item.categoryId;
+    }
+  }
+  if (item.directory && !current.dirEdited) {
+    result.directory = item.directory;
+  }
+  if (item.duplicateDecision) {
+    result.duplicateDecision = item.duplicateDecision;
+    result.selectedAction = resolveAction(item.duplicateDecision, current.selectedAction, {
+      keepSelection: true,
+    });
+  }
+  return result;
+}

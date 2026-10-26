@@ -9,6 +9,7 @@ import {
   emptyFileInfoDraft,
   isHLSResource,
   overwriteOptionOf,
+  patchFromProbedItem,
   resolveAction,
   reuseFields,
   shouldBlockForDiskConflict,
@@ -396,5 +397,62 @@ describe('isHLSResource', () => {
     expect(isHLSResource(null, 'https://example.com/live/index.m3u8?token=abc#section')).toBe(true);
     expect(isHLSResource(null, 'https://example.com/playlist.m3u')).toBe(true);
     expect(isHLSResource(null, 'https://example.com/file.m3u80')).toBe(false);
+  });
+});
+
+describe('patchFromProbedItem', () => {
+  it('后台探测补齐真实文件名与分类目录时更新未手动编辑的字段', () => {
+    const initial = draftFromItem(
+      makeItem({
+        id: 'item-1',
+        url: 'https://host/download?id=123',
+        filename: 'download.bin',
+        directory: '/downloads/Files',
+        categoryId: 'builtin-file',
+        probing: true,
+      }),
+      null,
+    );
+    const probed = makeItem({
+      id: 'item-1',
+      url: 'https://host/download?id=123',
+      filename: 'setup.msi',
+      directory: '/downloads/Software',
+      categoryId: 'builtin-software',
+      totalBytes: 0,
+      probing: false,
+    });
+
+    const patch = patchFromProbedItem(probed, initial);
+    expect(patch.filename).toBe('setup.msi');
+    expect(patch.originalFilename).toBe('setup.msi');
+    expect(patch.autoCategoryId).toBe('builtin-software');
+    expect(patch.selectedCategoryId).toBe('builtin-software');
+    expect(patch.directory).toBe('/downloads/Software');
+  });
+
+  it('用户在探测等待期间已手动改过文件名或目录时保留用户的修改', () => {
+    const initial = {
+      ...draftFromItem(makeItem({ filename: 'raw.bin', directory: '/downloads' }), null),
+      filename: 'custom.bin',
+      nameEdited: true,
+      directory: '/custom-dir',
+      dirEdited: true,
+      selectedCategoryId: 'custom-cat',
+      categoryEdited: true,
+    };
+    const probed = makeItem({
+      filename: 'server-name.msi',
+      directory: '/downloads/Software',
+      categoryId: 'builtin-software',
+      totalBytes: 2048,
+      probing: false,
+    });
+
+    const patch = patchFromProbedItem(probed, initial);
+    expect(patch.filename).toBeUndefined();
+    expect(patch.directory).toBeUndefined();
+    expect(patch.autoCategoryId).toBe('builtin-software');
+    expect(patch.selectedCategoryId).toBeUndefined();
   });
 });

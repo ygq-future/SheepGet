@@ -153,9 +153,10 @@ type FileInfoItem struct {
 	// probe 是登记时那次探测的原始结果，probeErr 是它的失败原因，probeDone 在探测
 	// 结束时关闭。提交建任务（AddTaskFromProbe）只认这一份结果，探测还在路上时就靠在
 	// probeDone 上等它——三者一起构成「提交是瞬时的」的前提。
-	probe     *engine.ProbeResult
-	probeErr  error
-	probeDone chan struct{}
+	probe       *engine.ProbeResult
+	probeErr    error
+	probeDone   chan struct{}
+	probeCancel context.CancelFunc
 }
 
 // FileInfoSubmission represents user confirmation from the FileInfo window.
@@ -273,7 +274,9 @@ func (qc *QueueController) SwitchActive(index int) (*FileInfoItem, error) {
 	activeItem := qc.items[qc.activeIndex]
 	activeCopy := *activeItem
 
-	actions.emit(protocol.EventFileInfoNext, &activeCopy)
+	actions.emitFunc(protocol.EventFileInfoNext, func() any {
+		return qc.snapshotItem(activeCopy.ID, &activeCopy)
+	})
 
 	return &activeCopy, nil
 }
@@ -294,6 +297,19 @@ func (qc *QueueController) indexOfLocked(id string) int {
 		}
 	}
 	return -1
+}
+
+// snapshotItem 在窗口副作用真正执行那一刻，按 ID 取一次该队列项的最新快照。
+// 窗口创建/显示（Show）可能耗时数百毫秒，期间后台探测往往已经落地；发送实时快照能避免用
+// 登记那一刻的旧状态（Probing: true）把前端已经收到的探测完成状态重新覆盖回转圈圈。
+func (qc *QueueController) snapshotItem(id string, fallback *FileInfoItem) *FileInfoItem {
+	qc.mu.Lock()
+	defer qc.mu.Unlock()
+	if it := qc.itemByIDLocked(id); it != nil {
+		cp := *it
+		return &cp
+	}
+	return fallback
 }
 
 // ReservedNames 返回「队列已经发出的名字」判定器，不含 exceptID 那一项。
@@ -458,8 +474,10 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		skipConfirm:       preDownload && activeSettings.Download.SkipFileInfoConfirm && req.URL != "",
 	}
 	// 有链接就一定会探测：探测的完成信号在这里就先挂上，提交才知道该等谁。
+	var probeCtx context.Context
 	if req.URL != "" {
 		item.probeDone = make(chan struct{})
+		probeCtx, item.probeCancel = context.WithTimeout(context.Background(), 15*time.Second)
 	}
 
 	qc.items = append(qc.items, item)
@@ -472,7 +490,9 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 	if len(qc.items) == 1 {
 		itemCopy := *item
-		actions.emit(protocol.EventFileInfoNext, &itemCopy)
+		actions.emitFunc(protocol.EventFileInfoNext, func() any {
+			return qc.snapshotItem(itemCopy.ID, &itemCopy)
+		})
 	} else {
 		// If already open with an item, update it immediately to the latest manual click so the user immediately sees response
 		actions.emit(protocol.EventFileInfoQueueUpdated, map[string]int{
@@ -483,7 +503,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	// Trigger background async probe if URL is present
 	if req.URL != "" {
-		go qc.asyncProbeItem(probeJob{
+		go qc.asyncProbeItem(probeCtx, probeJob{
 			itemID:          item.ID,
 			url:             req.URL,
 			headers:         req.Headers,
@@ -519,10 +539,12 @@ type probeJob struct {
 	variantURI string
 }
 
-func (qc *QueueController) asyncProbeItem(job probeJob) {
-	probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
+func (qc *QueueController) asyncProbeItem(probeCtx context.Context, job probeJob) {
+	if probeCtx == nil {
+		var cancel context.CancelFunc
+		probeCtx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+	}
 	// 带上这一项的请求上下文：防盗链或需要登录的链接，没有 Referer/Cookie 只会探出 403，
 	// 界面显示「未知大小」，而提交时还得为同一份元数据再付一次探测。
 	probe, probeErr := qc.engine.ProbeURL(probeCtx, job.url, job.headers)
@@ -633,7 +655,9 @@ func (qc *QueueController) fallbackToShow(itemID string) {
 	actions.show()
 	actions.focus()
 	itemCopy := *targetItem
-	actions.emit(protocol.EventFileInfoNext, &itemCopy)
+	actions.emitFunc(protocol.EventFileInfoNext, func() any {
+		return qc.snapshotItem(itemID, &itemCopy)
+	})
 }
 
 func (qc *QueueController) startPreDownload(start *preDownloadStart) {
@@ -693,6 +717,10 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	targetItem.probe = probe
 	targetItem.probeErr = probeErr
 	targetItem.Probing = false
+	if targetItem.probeCancel != nil {
+		targetItem.probeCancel()
+		targetItem.probeCancel = nil
+	}
 	if ch := targetItem.probeDone; ch != nil {
 		close(ch)
 		targetItem.probeDone = nil
@@ -734,7 +762,11 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 		}
 	} else {
 		// 探测连兜底文件名都没给（引擎没做出任何结论）：这一项保持登记时的样子，
-		// 也不去启动预下载——重复裁决与预下载都要基于实实在在的元数据。
+		// 也不去启动预下载，但必须通知前端结束 Probing 加载动画，避免界面一直转圈。
+		itemCopy := *targetItem
+		actions.emitFunc(protocol.EventFileInfoUpdated, func() any {
+			return qc.snapshotItem(itemCopy.ID, &itemCopy)
+		})
 		return nil
 	}
 
@@ -779,7 +811,9 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	}
 
 	itemCopy := *targetItem
-	actions.emit(protocol.EventFileInfoUpdated, &itemCopy)
+	actions.emitFunc(protocol.EventFileInfoUpdated, func() any {
+		return qc.snapshotItem(itemCopy.ID, &itemCopy)
+	})
 
 	return start
 }
@@ -894,7 +928,9 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 	}
 
 	itemCopy := *item
-	actions.emit(protocol.EventFileInfoUpdated, &itemCopy)
+	actions.emitFunc(protocol.EventFileInfoUpdated, func() any {
+		return qc.snapshotItem(itemCopy.ID, &itemCopy)
+	})
 
 	if start != nil {
 		go qc.startPreDownload(start)
@@ -965,7 +1001,9 @@ func (qc *QueueController) finishPreDownloadStart(start *preDownloadStart, preTa
 
 	start.item.PreDownloadTaskID = preTask.ID
 	itemCopy := *start.item
-	actions.emit(protocol.EventFileInfoUpdated, &itemCopy)
+	actions.emitFunc(protocol.EventFileInfoUpdated, func() any {
+		return qc.snapshotItem(itemCopy.ID, &itemCopy)
+	})
 	return false
 }
 
@@ -1208,6 +1246,10 @@ func (qc *QueueController) CancelCurrent(ctx context.Context) error {
 		return ErrSubmitInProgress
 	}
 
+	if active.probeCancel != nil {
+		active.probeCancel()
+		active.probeCancel = nil
+	}
 	if active.PreDownloadTaskID != "" {
 		_ = qc.engine.CancelPreDownload(ctx, active.PreDownloadTaskID)
 	}
@@ -1228,8 +1270,10 @@ func (qc *QueueController) advanceQueueLocked(actions *windowActions) {
 		if qc.activeIndex >= len(qc.items) {
 			qc.activeIndex = len(qc.items) - 1
 		}
-		nextItem := *qc.items[qc.activeIndex]
-		actions.emit(protocol.EventFileInfoNext, &nextItem)
+		nextCopy := *qc.items[qc.activeIndex]
+		actions.emitFunc(protocol.EventFileInfoNext, func() any {
+			return qc.snapshotItem(nextCopy.ID, &nextCopy)
+		})
 	} else {
 		qc.activeIndex = 0
 		actions.hide()

@@ -68,6 +68,15 @@ func (a *windowActions) emit(event string, data any) {
 	a.tasks = append(a.tasks, func() { a.view.Emit(event, data) })
 }
 
+func (a *windowActions) emitFunc(event string, fn func() any) {
+	if a.view == nil || fn == nil {
+		return
+	}
+	a.tasks = append(a.tasks, func() {
+		a.view.Emit(event, fn())
+	})
+}
+
 // add 收集一个同样会阻塞调用方的副作用，例如唤起下载进度窗口。
 func (a *windowActions) add(task func()) {
 	a.tasks = append(a.tasks, task)

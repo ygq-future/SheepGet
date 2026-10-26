@@ -326,7 +326,7 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		case <-done:
 			return cloneProbeResult(call.result), call.err
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return &ProbeResult{URL: urlStr, TotalBytes: -1, Filename: extractFilenameFromURL(urlStr)}, ctx.Err()
 		}
 	}
 	call := &probeFlightCall{}

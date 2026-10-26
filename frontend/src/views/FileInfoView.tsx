@@ -54,6 +54,7 @@ import {
   effectiveCategoryIdOf,
   isHLSResource,
   overwriteOptionOf,
+  patchFromProbedItem,
   resolveAction,
   reuseFields,
   shouldBlockForDiskConflict,
@@ -93,10 +94,10 @@ export function FileInfoView() {
     existingPath,
   } = draft;
 
+  const [manualProbing, setManualProbing] = useState(false);
   const probeSeqRef = useRef(0);
   const filenameSeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
-
   // 时长是异步读出来的：先转加载动画，读到了就显示，读不到就不再显示——它是附加信息，
   // 不参与任何下载决策，因此绝不阻塞别的操作，也绝不编一个数值出来。
   const [durationSeconds, setDurationSeconds] = useState(0);
@@ -106,10 +107,10 @@ export function FileInfoView() {
   // 每来一次就发一次范围请求实在没必要。
   const durationKeyRef = useRef('');
 
-  // 切换项时作废在途请求：上一项的探测与文件名解析结果不得落到下一项上。
   const invalidateInFlight = useCallback(() => {
     probeSeqRef.current += 1;
     filenameSeqRef.current += 1;
+    setManualProbing(false);
   }, []);
 
   const resetDuration = useCallback(() => {
@@ -187,8 +188,40 @@ export function FileInfoView() {
     return next;
   };
 
+  const applyProbedItem = useCallback(
+    (item: windowModels.FileInfoItem) => {
+      setProbing(false);
+      setActiveItem((prev) => (prev ? { ...prev, ...item } : item));
+      // 真实文件名与文件大小都要等这次探测回来才有（扩展名决定能不能读时长，大小决定
+      // 非 faststart 的 mp4 该读哪里），所以时长要在这里补一次。
+      void refreshDuration(item.url, item.filename, item.totalBytes);
+      const current = useFileInfoDraftStore.getState().draft;
+      patch(patchFromProbedItem(item, current));
+      if (item.url && (item.filename || current.filename)) {
+        void (async () => {
+          const checkName = item.filename || current.filename;
+          const checkDir = item.directory || current.directory;
+          if (checkDir && checkName) {
+            const conf = await CheckURLFilesExist(item.url, checkDir, checkName);
+            patch(reuseFields(conf), item.id);
+          }
+        })();
+      }
+    },
+    [patch, refreshDuration, setProbing],
+  );
+
   const initItem = useCallback(
     (item: windowModels.FileInfoItem) => {
+      // 若当前已经在显示同一队列项且探测已完成，而迟到的初始快照仍标着 probing: true，
+      // 只按探测完成更新合并，绝不用旧快照把已探明的大小与文件名倒退回转圈状态。
+      if (
+        useFileInfoDraftStore.getState().activeItemId === item.id &&
+        !useFileInfoDraftStore.getState().probing &&
+        item.probing
+      ) {
+        return;
+      }
       invalidateInFlight();
       resetDuration();
       setActiveItem((prev) => ({
@@ -206,23 +239,16 @@ export function FileInfoView() {
   useEffect(() => {
     void loadSettings();
 
-    // Fetch initial active request
-    void (async () => {
-      try {
-        const item = await GetActiveFileInfo();
-        if (item) {
-          initItem(item);
-        }
-      } catch (err) {
-        console.error('Failed to get active file info:', err);
-      }
-    })();
-
+    // 先注册事件监听，再拉取当前队列项，消除「拉取与监听注册之间探测恰好完成」的盲区。
     // Listen for next item in queue
     const unlistenNext = Events.On(Event.FileInfoNext, (ev: unknown) => {
       const item = unwrapEventData<windowModels.FileInfoItem>(ev);
       if (item) {
-        void initItem(item);
+        if (useFileInfoDraftStore.getState().activeItemId === item.id && !item.probing) {
+          applyProbedItem(item);
+        } else {
+          initItem(item);
+        }
       } else {
         setActiveItem(null);
       }
@@ -247,58 +273,73 @@ export function FileInfoView() {
     // Listen for probed updates on the active item
     const unlistenUpdated = Events.On(Event.FileInfoUpdated, (ev: unknown) => {
       const item = unwrapEventData<windowModels.FileInfoItem>(ev);
-      if (item && item.id === useFileInfoDraftStore.getState().activeItemId) {
-        setProbing(false);
-        setActiveItem((prev) => (prev ? { ...prev, ...item } : item));
-        // 真实文件名与文件大小都要等这次探测回来才有（扩展名决定能不能读时长，大小决定
-        // 非 faststart 的 mp4 该读哪里），所以时长要在这里补一次。
-        void refreshDuration(item.url, item.filename, item.totalBytes);
-        const current = useFileInfoDraftStore.getState().draft;
-        if (item.totalBytes !== undefined && item.totalBytes > 0) {
-          if (!current.nameEdited && item.filename) {
-            patch({ filename: item.filename, originalFilename: item.filename });
-          }
-        }
-        const isDestinationOccupied =
-          item.duplicateDecision?.case === duplicateModels.Case.CaseDestinationOccupied ||
-          current.duplicateDecision?.case === duplicateModels.Case.CaseDestinationOccupied;
-        if (item.fileConflict !== undefined) {
-          patch({ fileConflict: isDestinationOccupied ? false : item.fileConflict });
-        }
-        if (item.suggestedFilename) {
-          patch({ suggestedFilename: item.suggestedFilename });
-        }
-        // 探测补齐真实文件名后，后端会按新名字重算命中分类与落点。这里与手动改链接的处理
-        // 保持一致：命中分类只取决于文件名，目录只在用户没自己改过时才跟随。
-        if (item.categoryId) {
-          patch({ autoCategoryId: item.categoryId });
-        }
-        if (item.directory && !current.dirEdited) {
-          patch({ directory: item.directory });
-        }
-        // 后端探测完毕后会带着重新裁决的结果回来，界面照它更新选项与选中项。
-        if (item.duplicateDecision) {
-          applyDecision(item.duplicateDecision, { keepSelection: true });
-        }
-        if (item.url && (item.filename || current.filename)) {
-          void (async () => {
-            const checkName = item.filename || current.filename;
-            const checkDir = item.directory || current.directory;
-            if (checkDir && checkName) {
-              const conf = await CheckURLFilesExist(item.url, checkDir, checkName);
-              patch(reuseFields(conf), item.id);
-            }
-          })();
-        }
+      if (!item) return;
+      const currentActiveId = useFileInfoDraftStore.getState().activeItemId;
+      if (!currentActiveId) {
+        // 窗口冷启动时 FileInfoUpdated 可能先于首次 GetActiveFileInfo() 返回到达：
+        // 直接用这份已完成探测的项初始化，避免因 activeItemId 尚未填入而丢弃事件。
+        initItem(item);
+        return;
+      }
+      if (item.id === currentActiveId) {
+        applyProbedItem(item);
       }
     });
+
+    // Fetch initial active request
+    void (async () => {
+      try {
+        const item = await GetActiveFileInfo();
+        if (item) {
+          if (useFileInfoDraftStore.getState().activeItemId === item.id && !item.probing) {
+            applyProbedItem(item);
+          } else {
+            initItem(item);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to get active file info:', err);
+      }
+    })();
 
     return () => {
       unlistenNext();
       unlistenQueue();
       unlistenUpdated();
     };
-  }, [loadSettings, initItem, applyDecision, patch, setProbing, refreshDuration]);
+  }, [loadSettings, initItem, applyProbedItem]);
+
+  // 兜底同步：当窗口冷启动创建 WebView2 期间，若后端在前端挂载前就已经广播过 FileInfoUpdated，
+  // 或当前项正处于后台探测（activeItem.probing 为 true），定时向后端轮询一次最新状态，
+  // 确保一旦后端探测落地，界面立即结束转圈并回填大小与文件名。
+  useEffect(() => {
+    if (!activeItem?.id || !activeItem.probing) {
+      return;
+    }
+    let cancelled = false;
+    const expectedId = activeItem.id;
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const latest = await GetActiveFileInfo();
+          if (cancelled || !latest) return;
+          if (latest.id !== expectedId) {
+            initItem(latest);
+            return;
+          }
+          if (!latest.probing) {
+            applyProbedItem(latest);
+          }
+        } catch {
+          // ignore transient poll error
+        }
+      })();
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeItem?.id, activeItem?.probing, applyProbedItem, initItem]);
 
   // Handle URL probe when URL is changed manually
   // 手动改链接后的探测。每一步 await 之后都要重新确认请求还有效，否则上一项的结果会写进下一项。
@@ -308,8 +349,8 @@ export function FileInfoView() {
       return;
     }
     const seq = ++probeSeqRef.current;
+    setManualProbing(true);
     setProbing(true);
-
     try {
       const result = await ProbeURL(trimmed);
       if (seq !== probeSeqRef.current || !result) return;
@@ -413,6 +454,7 @@ export function FileInfoView() {
       patch({ error: `资源探测失败: ${msg}` });
     } finally {
       if (seq === probeSeqRef.current) {
+        setManualProbing(false);
         setProbing(false);
       }
     }
@@ -425,7 +467,7 @@ export function FileInfoView() {
   const isOverwriteSelected = overwriteOption !== undefined && selectedAction === overwriteOption;
   const destinationOccupied =
     duplicateDecision.case === duplicateModels.Case.CaseDestinationOccupied;
-  const isManualProbing = probing;
+  const isManualProbing = manualProbing;
   const hasUnselectedVariants = Boolean(
     activeItem?.variants && activeItem.variants.length > 1 && !activeItem?.qualityLabel,
   );

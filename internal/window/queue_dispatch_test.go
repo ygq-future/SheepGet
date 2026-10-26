@@ -17,6 +17,7 @@ type recordingWindowView struct {
 	showStarted chan struct{}
 	release     chan struct{}
 	ops         chan string
+	emitted     chan emittedEvent
 }
 
 func newRecordingWindowView() *recordingWindowView {
@@ -33,6 +34,7 @@ func newWindowView(blockShow bool) *recordingWindowView {
 		showStarted: make(chan struct{}, 1),
 		release:     make(chan struct{}),
 		ops:         make(chan string, 16),
+		emitted:     make(chan emittedEvent, 16),
 	}
 	if !blockShow {
 		close(view.release)
@@ -54,7 +56,13 @@ func (v *recordingWindowView) Show() {
 func (v *recordingWindowView) Hide()  { v.ops <- "hide" }
 func (v *recordingWindowView) Focus() { v.ops <- "focus" }
 
-func (v *recordingWindowView) Emit(event string, _ any) { v.ops <- "emit:" + event }
+func (v *recordingWindowView) Emit(event string, data any) {
+	v.ops <- "emit:" + event
+	select {
+	case v.emitted <- emittedEvent{Name: event, Data: data}:
+	default:
+	}
+}
 
 // waitForOps 按次序收集 n 次窗口调用；超时即报错，避免用例在窗口调用丢失时静默挂住。
 func (v *recordingWindowView) waitForOps(t *testing.T, n int) []string {
@@ -172,5 +180,56 @@ func TestQueueController_WindowCallsKeepSubmissionOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("window calls out of order: got %v, want %v", got, want)
 		}
+	}
+}
+
+// 复现首次点击下载接管时窗口冷启动（Show 耗时数秒）期间后台探测已完成的场景：
+// 窗口创建完毕后投递的 FileInfoNext 事件必须携带探测完成后的实时状态（Probing == false、
+// TotalBytes == 1024），绝不能把入队那一刻的旧快照（Probing == true、TotalBytes == -1）
+// 推给前端，否则前端会把已经探明的状态覆盖回永远转圈。
+func TestQueueController_ColdStartEmitUsesLatestProbedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	view := newBlockedWindowView()
+	eng := newBlockingEngine()
+	qc, tmpDir := setupQueueWithEngine(t, eng, view, newAsyncOps())
+
+	if _, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:       "https://example.com/coldstart.zip",
+		Directory: tmpDir,
+	}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+
+	// 等待窗口进入 Show 阻塞（模拟首次创建 WebView2 耗时）
+	select {
+	case <-view.showStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("window Show was never called")
+	}
+
+	// 窗口仍在创建中，后台探测已经完成落地
+	waitForProbe(t, qc)
+
+	// 放行窗口创建，随后紧接着投递的 EventFileInfoNext 必须携带最新已探明状态
+	close(view.release)
+	_ = view.waitForOps(t, 3) // show, focus, emit:fileinfo:next
+
+	select {
+	case ev := <-view.emitted:
+		if ev.Name != protocol.EventFileInfoNext {
+			t.Fatalf("expected first event %s, got %s", protocol.EventFileInfoNext, ev.Name)
+		}
+		item, ok := ev.Data.(*FileInfoItem)
+		if !ok || item == nil {
+			t.Fatalf("expected *FileInfoItem payload, got %T", ev.Data)
+		}
+		if item.Probing {
+			t.Fatalf("expected FileInfoNext payload to have Probing=false after probe completed during Show, got Probing=true")
+		}
+		if item.TotalBytes != 1024 {
+			t.Fatalf("expected FileInfoNext payload TotalBytes=1024, got %d", item.TotalBytes)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected emitted FileInfoNext event")
 	}
 }
