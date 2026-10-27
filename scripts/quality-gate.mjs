@@ -10,7 +10,7 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 process.chdir(root);
 const exe = (name) => join(root, '.tools', name + (process.platform === 'win32' ? '.exe' : ''));
 const node = (file, args = [], options = {}) =>
-  run(process.execPath, ['--throw-deprecation', file, ...args], options);
+  run(process.execPath, ['--throw-deprecation', file, ...args], { quiet: true, ...options });
 const commitlint = 'node_modules/@commitlint/cli/cli.js';
 const args = process.argv.slice(2);
 const git = (...values) => {
@@ -50,7 +50,8 @@ function toolVersions() {
     [exe('wails3'), ['tool', 'buildinfo'], tools.wails3],
     [exe('actionlint'), ['-version'], tools.actionlint],
   ]) {
-    if (!run(command, values).includes(expected)) throw new Error(`Unexpected version: ${command}`);
+    if (!run(command, values, { quiet: true }).includes(expected))
+      throw new Error(`Unexpected version: ${command}`);
   }
 }
 
@@ -58,14 +59,16 @@ function goFormat() {
   const paths = files(root, (path) => path.endsWith('.go'));
   if (!paths.length) throw new Error('No Go source discovered');
   for (let offset = 0; offset < paths.length; offset += 100) {
-    if (run('gofmt', ['-l', ...paths.slice(offset, offset + 100)]).trim()) {
+    if (run('gofmt', ['-l', ...paths.slice(offset, offset + 100)], { quiet: true }).trim()) {
       throw new Error('Go formatting failed');
     }
   }
 }
 
 function ownedPackages() {
-  const entries = run('go', ['list', '-mod=readonly', '-f', '{{.ImportPath}}|{{.Dir}}', './...'])
+  const entries = run('go', ['list', '-mod=readonly', '-f', '{{.ImportPath}}|{{.Dir}}', './...'], {
+    quiet: true,
+  })
     .trim()
     .split('\n');
   const packages = entries
@@ -84,12 +87,12 @@ function tests() {
   if ((!goTests.length || !webTests.length) && !bootstrap.scaffoldOnly) {
     throw new Error('Both Go and frontend behavior tests are required');
   }
-  run('go', ['test', '-mod=readonly', ...ownedPackages()]);
+  run('go', ['test', '-mod=readonly', ...ownedPackages()], { quiet: true });
   if (webTests.length)
     node('node_modules/vitest/vitest.mjs', ['run'], { cwd: join(root, 'frontend') });
   else console.log('PARTIAL: frontend behavior tests pending (scaffold-only contract)');
   if (!goTests.length) console.log('PARTIAL: Go behavior tests pending (scaffold-only contract)');
-  run('bun', ['test'], { cwd: join(root, 'extension') });
+  run('bun', ['test'], { cwd: join(root, 'extension'), quiet: true });
 }
 
 const stages = {
@@ -120,8 +123,8 @@ const stages = {
     node('scripts/protocol.mjs', ['--check']);
   },
   dependencies() {
-    run('go', ['mod', 'verify']);
-    run('go', ['mod', 'tidy', '-diff']);
+    run('go', ['mod', 'verify'], { quiet: true });
+    run('go', ['mod', 'tidy', '-diff'], { quiet: true });
     run('bun', ['install', '--frozen-lockfile', '--dry-run', '--ignore-scripts'], { quiet: true });
     run('bun', ['install', '--frozen-lockfile', '--dry-run', '--ignore-scripts'], {
       cwd: join(root, 'frontend'),
@@ -133,7 +136,7 @@ const stages = {
     });
   },
   diagnostics() {
-    run(exe('actionlint'), ['-shellcheck=', '-pyflakes=']);
+    run(exe('actionlint'), ['-shellcheck=', '-pyflakes='], { quiet: true });
     node('frontend/node_modules/eslint/bin/eslint.js', [
       'scripts',
       'eslint.config.mjs',
@@ -148,24 +151,25 @@ const stages = {
     });
     run('bun', ['run', 'compile'], {
       cwd: join(root, 'extension'),
+      quiet: true,
     });
   },
   frontendBuild() {
     node('node_modules/vite/bin/vite.js', ['build'], { cwd: join(root, 'frontend') });
   },
   extensionBuild() {
-    run('bun', ['run', 'build'], { cwd: join(root, 'extension') });
+    run('bun', ['run', 'build'], { cwd: join(root, 'extension'), quiet: true });
   },
   goAnalysis() {
-    run(exe('golangci-lint'), ['config', 'verify']);
-    run(exe('golangci-lint'), ['run', ...ownedPackages()]);
+    run(exe('golangci-lint'), ['config', 'verify'], { quiet: true });
+    run(exe('golangci-lint'), ['run', ...ownedPackages()], { quiet: true });
   },
   tests,
   build() {
     const target = 'build/bin/quality-app' + (process.platform === 'win32' ? '.exe' : '');
     mkdirSync('build/bin', { recursive: true });
     try {
-      run('go', ['build', '-mod=readonly', '-o', target, '.']);
+      run('go', ['build', '-mod=readonly', '-o', target, '.'], { quiet: true });
     } finally {
       rmSync(target, { force: true });
     }

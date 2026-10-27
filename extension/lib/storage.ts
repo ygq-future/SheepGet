@@ -35,6 +35,8 @@ export const STORAGE_KEYS = {
   DOWNLOAD_TARGET: 'sheepget_download_target_config',
 } as const;
 
+const formatError = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 export async function getStoredTakeoverConfig(): Promise<TakeoverConfigSync> {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEYS.TAKEOVER_CONFIG);
@@ -42,7 +44,7 @@ export async function getStoredTakeoverConfig(): Promise<TakeoverConfigSync> {
       return result[STORAGE_KEYS.TAKEOVER_CONFIG] as TakeoverConfigSync;
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to read takeover config from storage:', err);
+    console.warn('[SheepGet] Failed to read takeover config from storage:', formatError(err));
   }
   return DEFAULT_TAKEOVER_CONFIG;
 }
@@ -53,7 +55,7 @@ export async function setStoredTakeoverConfig(config: TakeoverConfigSync): Promi
       [STORAGE_KEYS.TAKEOVER_CONFIG]: config,
     });
   } catch (err) {
-    console.warn('[SheepGet] Failed to write takeover config to storage:', err);
+    console.warn('[SheepGet] Failed to write takeover config to storage:', formatError(err));
   }
 }
 
@@ -64,7 +66,7 @@ export async function getStoredSession(): Promise<SessionMetadata | null> {
       return result[STORAGE_KEYS.SESSION] as SessionMetadata;
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to read session from storage:', err);
+    console.warn('[SheepGet] Failed to read session from storage:', formatError(err));
   }
   return null;
 }
@@ -77,7 +79,7 @@ export async function setStoredSession(session: SessionMetadata | null): Promise
       await chrome.storage.local.remove(STORAGE_KEYS.SESSION);
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to write session to storage:', err);
+    console.warn('[SheepGet] Failed to write session to storage:', formatError(err));
   }
 }
 
@@ -89,7 +91,7 @@ export async function getStoredTargetPort(): Promise<number> {
       return val;
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to read target port from storage:', err);
+    console.warn('[SheepGet] Failed to read target port from storage:', formatError(err));
   }
   return Ports.DefaultServer;
 }
@@ -100,7 +102,7 @@ export async function setStoredTargetPort(port: number): Promise<void> {
       await chrome.storage.local.set({ [STORAGE_KEYS.TARGET_PORT]: port });
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to write target port to storage:', err);
+    console.warn('[SheepGet] Failed to write target port to storage:', formatError(err));
   }
 }
 
@@ -114,7 +116,10 @@ export async function getStoredTargetConfig(): Promise<DownloadTargetConfig> {
       };
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to read download target config from storage:', err);
+    console.warn(
+      '[SheepGet] Failed to read download target config from storage:',
+      formatError(err),
+    );
   }
   return DEFAULT_DOWNLOAD_TARGET_CONFIG;
 }
@@ -123,6 +128,6 @@ export async function setStoredTargetConfig(config: DownloadTargetConfig): Promi
   try {
     await chrome.storage.local.set({ [STORAGE_KEYS.DOWNLOAD_TARGET]: config });
   } catch (err) {
-    console.warn('[SheepGet] Failed to write download target config to storage:', err);
+    console.warn('[SheepGet] Failed to write download target config to storage:', formatError(err));
   }
 }

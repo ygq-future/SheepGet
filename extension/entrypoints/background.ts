@@ -847,7 +847,10 @@ async function init() {
   await chrome.alarms
     .create(HEALTH_ALARM, { periodInMinutes: HEALTH_ALARM_PERIOD_MINUTES })
     .catch((err: unknown) => {
-      console.warn('[SheepGet] Failed to create the link health alarm:', err);
+      console.warn(
+        '[SheepGet] Failed to create the link health alarm:',
+        err instanceof Error ? err.message : String(err),
+      );
     });
   currentTargetPort = await getStoredTargetPort();
   await reverifyLink('startup');
@@ -1359,7 +1362,11 @@ async function handleDownloadIntercept(item: chrome.downloads.DownloadItem) {
       await resumeDownload(item.id, paused);
     }
   } catch (err) {
-    console.warn('[SheepGet] Unexpected interception failure, resuming download:', item.id, err);
+    console.warn(
+      '[SheepGet] Unexpected interception failure, resuming download:',
+      item.id,
+      err instanceof Error ? err.message : String(err),
+    );
     await resumeDownload(item.id, paused);
   } finally {
     inFlightDownloads.delete(item.id);
@@ -1422,7 +1429,11 @@ async function pauseDownload(downloadId: number): Promise<boolean> {
     await pauseFn(downloadId);
     return true;
   } catch (err) {
-    console.warn('[SheepGet] Failed to pause download, continuing with handover:', downloadId, err);
+    console.warn(
+      '[SheepGet] Failed to pause download, continuing with handover:',
+      downloadId,
+      err instanceof Error ? err.message : String(err),
+    );
     return false;
   }
 }
@@ -1448,7 +1459,11 @@ async function cancelDownload(downloadId: number) {
       await downloads.erase({ id: downloadId });
     }
   } catch (err) {
-    console.warn('[SheepGet] Failed to cancel the browser download:', downloadId, err);
+    console.warn(
+      '[SheepGet] Failed to cancel the browser download:',
+      downloadId,
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
@@ -1471,7 +1486,7 @@ async function resumeDownload(downloadId: number, paused: boolean) {
     console.warn(
       '[SheepGet] Failed to resume download, it stays paused in the browser:',
       downloadId,
-      err,
+      err instanceof Error ? err.message : String(err),
     );
   }
 }

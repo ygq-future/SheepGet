@@ -94,6 +94,7 @@
 - **全链路质量门禁**：
   - 统一入口为 `node scripts/quality-gate.mjs`（或 `bun run quality`）；
   - 首次克隆使用 `node scripts/bootstrap.mjs` 安装固定工具和本仓库 hooks；门禁本身采用 check-only，不能代替准备操作；
+  - 开发与调试期间，优先按修改范围运行局部测试（如 `go test ./internal/...`）或单阶段门禁（`node scripts/quality-gate.mjs --stage <name>`）；全量 `node scripts/quality-gate.mjs` 仅在代码与测试全部就绪后执行一次，避免在同一轮任务中重复多次运行全量门禁；
   - 修改代码后执行适当检查；提交前在最终代码树运行完整门禁，修复本次引入的诊断，包括警告与弃用 API；
   - Go 与前端业务测试已随下载行为落地并纳入门禁：`scripts/test-scope.json` 的 scaffoldOnly 为 false，任一侧缺失测试即失败；
   - 本地提交校验与跨平台 CI 分别报告。macOS/Linux、远端 workflow 和分支保护未经实际验证不能称为已通过。

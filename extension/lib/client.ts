@@ -40,7 +40,10 @@ export async function discoverSessionViaHttp(
       };
     }
   } catch (err) {
-    console.debug(`[SheepGet] Discover probe failed on port ${candidatePort}:`, err);
+    console.debug(
+      `[SheepGet] Discover probe failed on port ${candidatePort}:`,
+      err instanceof Error ? err.message : String(err),
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -119,7 +122,10 @@ export class DesktopClient {
       if (!res.ok) return null;
       return (await res.json()) as TakeoverConfigSync;
     } catch (err) {
-      console.warn('[SheepGet] Failed to fetch takeover config from desktop:', err);
+      console.warn(
+        '[SheepGet] Failed to fetch takeover config from desktop:',
+        err instanceof Error ? err.message : String(err),
+      );
       return null;
     }
   }
