@@ -1,0 +1,32 @@
+# Dependencies & build outputs
+node_modules/
+dist/
+dist-extension/
+frontend/dist/
+extension/.wxt/
+extension/.output/
+build/bin/
+build/dist/
+build/dist-extension/
+build/windows/installer/tmp/
+
+# Binaries & compiler artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.syso
+*.wixobj
+*.wixpdb
+*.test
+*.out
+*.tsbuildinfo
+
+# Test binary fixtures
+internal/media/testdata/
+
+# Local scratches & agent workspace
+.tmp/
+.tools/
+.workbuddy/
