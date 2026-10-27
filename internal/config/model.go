@@ -239,34 +239,36 @@ type Settings struct {
 }
 
 // DefaultBuiltinCategories returns the 6 preset built-in categories with their relative subdirectories and extensions.
+// 遵循零侵扰原则：默认接管分组中剔除所有浏览器原生可直接打开预览的常见格式（如 mp4, webm, mp3, png, jpg, gif, webp, svg, ico, bmp, txt）。
+// 浏览器内嵌媒体播放由专用悬浮条/嗅探器覆盖，日常浏览看图与视频预览绝不受下载弹窗打断。
 func DefaultBuiltinCategories(defaultDownloadDir string) []CategoryConfig {
 	return []CategoryConfig{
 		{
 			ID:         "builtin-video",
 			Name:       "视频",
 			Directory:  "Videos",
-			Extensions: []string{"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts", "m3u8"},
+			Extensions: []string{"mkv", "avi", "mov", "wmv", "flv", "m4v", "ts", "m3u8", "rmvb"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-audio",
 			Name:       "音频",
 			Directory:  "Audio",
-			Extensions: []string{"mp3", "wav", "flac", "aac", "ogg", "m4a", "wma", "opus"},
+			Extensions: []string{"flac", "ape", "wav", "aac", "ogg", "m4a", "wma", "opus"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-image",
 			Name:       "图片",
 			Directory:  "Images",
-			Extensions: []string{"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "tiff"},
+			Extensions: []string{"psd", "ai", "raw", "cr2", "nef", "dng", "tiff", "eps", "cdr"},
 			IsBuiltin:  true,
 		},
 		{
 			ID:         "builtin-archive",
 			Name:       "压缩包",
 			Directory:  "Archives",
-			Extensions: []string{"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz"},
+			Extensions: []string{"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "iso"},
 			IsBuiltin:  true,
 		},
 		{
@@ -280,7 +282,7 @@ func DefaultBuiltinCategories(defaultDownloadDir string) []CategoryConfig {
 			ID:         "builtin-file",
 			Name:       "文件",
 			Directory:  "Files",
-			Extensions: []string{"doc", "docx", "pdf", "txt", "xls", "xlsx", "ppt", "pptx", "epub"},
+			Extensions: []string{"doc", "docx", "pdf", "xls", "xlsx", "ppt", "pptx", "epub"},
 			IsBuiltin:  true,
 		},
 	}
@@ -654,7 +656,8 @@ func (d DownloadConfig) AllExtensions() []string {
 // 1. First matching custom category in CustomCategories (top-to-bottom order).
 // 2. Matching non-file built-in category (video, audio, image, archive, software).
 // 3. Explicit extension match in built-in "文件" category.
-// 4. Unmatched fallback into built-in "文件" category (or DefaultDirectory).
+// 4. Common media semantic fallback (mp4, webm -> 视频; mp3 -> 音频; png, jpg, gif, webp, svg 等 -> 图片).
+// 5. Unmatched fallback into built-in "文件" category (or DefaultDirectory).
 func (d DownloadConfig) ResolveCategory(filename string) (CategoryConfig, bool) {
 	ext := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(filepath.Ext(filename), ".")))
 
@@ -701,9 +704,15 @@ func (d DownloadConfig) ResolveCategory(filename string) (CategoryConfig, bool) 
 				}
 			}
 		}
+
+		// 4. Common media semantic fallback: 为避免接管打断浏览器在线预览，内置默认接管清单中移除了
+		// mp4/png/jpg 等常见格式，但在任务归档落盘时仍智能归入对应内置媒体分类，避免无端落入“文件”。
+		if cat, ok := d.resolveCommonMediaFallback(ext); ok {
+			return buildResult(cat)
+		}
 	}
 
-	// 4. Fallback: unmatched files enter "文件" category
+	// 5. Fallback: unmatched files enter "文件" category
 	for i := range d.BuiltinCategories {
 		cat := &d.BuiltinCategories[i]
 		if cat.ID == "builtin-file" || cat.Name == "文件" {
@@ -717,6 +726,38 @@ func (d DownloadConfig) ResolveCategory(filename string) (CategoryConfig, bool) 
 		Directory: d.DefaultDirectory,
 		IsBuiltin: true,
 	}, false
+}
+
+var (
+	commonVideoSemanticExts = map[string]bool{
+		"mp4": true, "webm": true,
+	}
+	commonAudioSemanticExts = map[string]bool{
+		"mp3": true,
+	}
+	commonImageSemanticExts = map[string]bool{
+		"jpg": true, "jpeg": true, "png": true, "gif": true, "webp": true, "svg": true, "bmp": true, "ico": true,
+	}
+)
+
+func (d DownloadConfig) resolveCommonMediaFallback(ext string) (CategoryConfig, bool) {
+	var targetID string
+	if commonVideoSemanticExts[ext] {
+		targetID = "builtin-video"
+	} else if commonAudioSemanticExts[ext] {
+		targetID = "builtin-audio"
+	} else if commonImageSemanticExts[ext] {
+		targetID = "builtin-image"
+	}
+	if targetID == "" {
+		return CategoryConfig{}, false
+	}
+	for _, cat := range d.BuiltinCategories {
+		if cat.ID == targetID {
+			return cat, true
+		}
+	}
+	return CategoryConfig{}, false
 }
 
 // ResolveDestination returns the matched category and its dynamic save directory for a filename

@@ -895,3 +895,89 @@ func TestDownloadConfig_AllExtensions(t *testing.T) {
 		t.Errorf("expected leading dot to be stripped from .mobi")
 	}
 }
+
+// 验证默认内置分类遵循零侵扰原则：浏览器原生直接预览格式绝不进入接管清单
+func TestDefaultBuiltinCategories_ZeroIntrusionExtensions(t *testing.T) {
+	settings := DefaultSettings("/downloads", "/temp")
+	initialExts := settings.Download.AllExtensions()
+
+	have := make(map[string]bool, len(initialExts))
+	for _, ext := range initialExts {
+		have[ext] = true
+	}
+
+	// 浏览器原生直接打开并预览的 Web 格式严禁在默认接管清单中出现
+	forbiddenPreviewExts := []string{
+		"mp4", "webm",
+		"mp3",
+		"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico",
+		"txt",
+	}
+	for _, ext := range forbiddenPreviewExts {
+		if have[ext] {
+			t.Errorf("默认接管清单中严禁包含浏览器原生可预览格式: .%s", ext)
+		}
+	}
+
+	// 关键刚需格式必须在接管清单中
+	expectedTakeoverExts := []string{
+		"zip", "rar", "7z", "tar", "gz",
+		"exe", "msi", "dmg", "apk",
+		"mkv", "avi", "ts", "m3u8",
+		"flac", "ape",
+		"psd", "ai", "raw", "tiff",
+		"doc", "docx", "pdf",
+	}
+	for _, ext := range expectedTakeoverExts {
+		if !have[ext] {
+			t.Errorf("关键接管格式缺失: .%s", ext)
+		}
+	}
+}
+
+// 验证通用媒体语义兜底：即便未纳入接管清单，手动/嗅探下载归档落盘时仍智能归入对应分类，
+// 且自定义分类优先截获。
+func TestResolveCategory_SemanticFallbackAndCustomPrecedence(t *testing.T) {
+	d := DownloadConfig{
+		DefaultDirectory:  "/downloads",
+		BuiltinCategories: DefaultBuiltinCategories("/downloads"),
+	}
+
+	// 1. 默认配置下，png/jpg 智能归入“图片”分类
+	catImg, ok := d.ResolveCategory("banner.jpg")
+	if !ok || catImg.ID != "builtin-image" || catImg.Directory != "Images" {
+		t.Errorf("expected banner.jpg to resolve to builtin-image, got %+v (ok=%v)", catImg, ok)
+	}
+
+	// 2. 默认配置下，mp4/webm 智能归入“视频”分类
+	catVid, ok := d.ResolveCategory("movie.mp4")
+	if !ok || catVid.ID != "builtin-video" || catVid.Directory != "Videos" {
+		t.Errorf("expected movie.mp4 to resolve to builtin-video, got %+v (ok=%v)", catVid, ok)
+	}
+
+	// 3. 默认配置下，mp3 智能归入“音频”分类
+	catAud, ok := d.ResolveCategory("podcast.mp3")
+	if !ok || catAud.ID != "builtin-audio" || catAud.Directory != "Audio" {
+		t.Errorf("expected podcast.mp3 to resolve to builtin-audio, got %+v (ok=%v)", catAud, ok)
+	}
+
+	// 4. 自定义分类配置了 png 时，优先进入自定义分类，不被通用兜底拦截
+	d.CustomCategories = []CategoryConfig{
+		{
+			ID:         "custom-wallpapers",
+			Name:       "壁纸",
+			Directory:  "Wallpapers",
+			Extensions: []string{"png"},
+		},
+	}
+	catCustom, ok := d.ResolveCategory("desktop.png")
+	if !ok || catCustom.ID != "custom-wallpapers" || catCustom.Directory != "Wallpapers" {
+		t.Errorf("expected custom category precedence for desktop.png, got %+v (ok=%v)", catCustom, ok)
+	}
+
+	// jpg 未被自定义分类截获，仍智能归入内置图片分类
+	catImgFallback, ok := d.ResolveCategory("photo.jpeg")
+	if !ok || catImgFallback.ID != "builtin-image" {
+		t.Errorf("expected photo.jpeg to fallback to builtin-image, got %+v", catImgFallback)
+	}
+}
