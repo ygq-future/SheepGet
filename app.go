@@ -522,6 +522,16 @@ func (a *App) ResolveDestination(filename string) DestinationInfo {
 	return DestinationInfo{Directory: dir, CategoryID: cat.ID}
 }
 
+// ResolveCategoryDestination resolves the save directory for an explicit category choice.
+// 界面切换分类时用它取落点：分类目录的相对子目录由后端拼装，界面不再自行 join。
+func (a *App) ResolveCategoryDestination(categoryID, filename string) DestinationInfo {
+	if a.settings == nil {
+		return DestinationInfo{Directory: sys.DefaultDownloadDir()}
+	}
+	cat, dir := a.settings.Get().Download.ResolveCategoryDestination(categoryID, filename)
+	return DestinationInfo{Directory: dir, CategoryID: cat.ID}
+}
+
 // categoryDirectory returns only the save directory for internal callers that do not need
 // the matched category; the frontend uses ResolveDestination.
 func (a *App) categoryDirectory(filename string) string {

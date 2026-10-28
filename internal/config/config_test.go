@@ -699,6 +699,46 @@ func TestResolveDestination_SingleRule(t *testing.T) {
 	}
 }
 
+// TestResolveCategoryDestination_ExplicitChoice 保证界面切换分类时拿到的目录与
+// “按文件名命中”共用同一条拼装规则：内置分类的相对子目录必须落在默认目录之下。
+func TestResolveCategoryDestination_ExplicitChoice(t *testing.T) {
+	booksDir := filepath.Join(t.TempDir(), "books")
+	d := DownloadConfig{
+		DefaultDirectory: "/downloads",
+		BuiltinCategories: []CategoryConfig{
+			{ID: "builtin-video", Name: "视频", Directory: "Videos", Extensions: []string{"mp4"}},
+			{ID: "builtin-file", Name: "文件", Directory: "Files", Extensions: []string{"pdf"}},
+		},
+		CustomCategories: []CategoryConfig{
+			{ID: "custom-books", Name: "电子书", Directory: booksDir, Extensions: []string{"epub"}},
+		},
+	}
+
+	// 内置分类存的是相对子目录：显式选择后仍要拼上当前默认目录。
+	cat, dir := d.ResolveCategoryDestination("builtin-video", "notes.txt")
+	if want := filepath.Join("/downloads", "Videos"); cat.ID != "builtin-video" || dir != want {
+		t.Fatalf("explicit builtin category = %q / %q, want builtin-video / %q", cat.ID, dir, want)
+	}
+
+	// 自定义分类存绝对目录：原样使用。
+	cat, dir = d.ResolveCategoryDestination("custom-books", "notes.txt")
+	if cat.ID != "custom-books" || dir != booksDir {
+		t.Fatalf("explicit custom category = %q / %q, want custom-books / %q", cat.ID, dir, booksDir)
+	}
+
+	// 未知分类退回按文件名命中，不给出空目录。
+	cat, dir = d.ResolveCategoryDestination("missing", "clip.mp4")
+	if want := filepath.Join("/downloads", "Videos"); cat.ID != "builtin-video" || dir != want {
+		t.Fatalf("unknown category should fall back to filename match, got %q / %q", cat.ID, dir)
+	}
+
+	// 分类自己的目录为空时落到默认目录。
+	d.BuiltinCategories[1].Directory = ""
+	if _, dir := d.ResolveCategoryDestination("builtin-file", "clip.mp4"); dir != "/downloads" {
+		t.Fatalf("empty category directory should fall back to default, got %q", dir)
+	}
+}
+
 func TestResolveDestination_DynamicPrefixUpdate(t *testing.T) {
 	d := DownloadConfig{
 		DefaultDirectory:  "/initial/downloads",

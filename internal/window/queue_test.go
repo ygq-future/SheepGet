@@ -675,6 +675,9 @@ func TestQueueController_CategoryDirectoryResolution_AndManualPriority(t *testin
 	if item1.Directory != expectedVideoDir {
 		t.Errorf("expected category directory %s, got %s", expectedVideoDir, item1.Directory)
 	}
+	if item1.CategoryDirectory != expectedVideoDir {
+		t.Errorf("expected category default directory %s, got %s", expectedVideoDir, item1.CategoryDirectory)
+	}
 	_ = qc.CancelCurrent(ctx)
 
 	// 2. Request with empty directory for .epub -> should resolve to custom "电子书" directory!
@@ -688,6 +691,9 @@ func TestQueueController_CategoryDirectoryResolution_AndManualPriority(t *testin
 	item2, _ := qc.GetActive()
 	if item2.Directory != booksDir {
 		t.Errorf("expected custom category directory %s, got %s", booksDir, item2.Directory)
+	}
+	if item2.CategoryDirectory != booksDir {
+		t.Errorf("expected custom category default directory %s, got %s", booksDir, item2.CategoryDirectory)
 	}
 	_ = qc.CancelCurrent(ctx)
 
@@ -704,6 +710,10 @@ func TestQueueController_CategoryDirectoryResolution_AndManualPriority(t *testin
 	item3, _ := qc.GetActive()
 	if item3.Directory != manualDir {
 		t.Errorf("expected manual directory %s to take precedence, got %s", manualDir, item3.Directory)
+	}
+	// 手动目录不改变命中分类的默认目录：界面判断“是否改过路径”靠的是这一对事实。
+	if item3.CategoryDirectory != expectedVideoDir {
+		t.Errorf("expected category default %s beside the manual directory, got %s", expectedVideoDir, item3.CategoryDirectory)
 	}
 }
 

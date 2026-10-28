@@ -955,6 +955,40 @@ func TestApp_ResolveDestination(t *testing.T) {
 	}
 }
 
+// TestApp_ResolveCategoryDestination pins the interface the file info window uses when the
+// user switches category: the backend joins relative built-in subdirectories with the current
+// default directory, so the window never re-derives the target itself.
+func TestApp_ResolveCategoryDestination(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	settings := app.settings.Get()
+
+	var video config.CategoryConfig
+	for _, cat := range settings.Download.BuiltinCategories {
+		if cat.ID == "builtin-video" {
+			video = cat
+			break
+		}
+	}
+	if video.ID == "" {
+		t.Fatal("expected builtin-video category in test settings")
+	}
+	if filepath.IsAbs(video.Directory) {
+		t.Fatalf("expected a relative built-in subdirectory, got %q", video.Directory)
+	}
+
+	got := app.ResolveCategoryDestination(video.ID, "notes.txt")
+	want := filepath.Join(settings.Download.DefaultDirectory, video.Directory)
+	if got.CategoryID != video.ID || got.Directory != want {
+		t.Fatalf("ResolveCategoryDestination = %q / %q, want %q / %q", got.CategoryID, got.Directory, video.ID, want)
+	}
+
+	// 未知分类退回按文件名命中，不返回空目录。
+	fallback := app.ResolveCategoryDestination("missing", "clip.mp4")
+	if fallback.CategoryID == "" || fallback.Directory == "" {
+		t.Fatalf("expected filename fallback for unknown category, got %+v", fallback)
+	}
+}
+
 func TestApp_Startup_MigratesEmptyCategoryID(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))

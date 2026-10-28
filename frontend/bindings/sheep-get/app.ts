@@ -326,6 +326,16 @@ export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResu
 }
 
 /**
+ * ResolveCategoryDestination resolves the save directory for an explicit category choice.
+ * 界面切换分类时用它取落点：分类目录的相对子目录由后端拼装，界面不再自行 join。
+ */
+export function ResolveCategoryDestination(categoryID: string, filename: string): $CancellablePromise<$models.DestinationInfo> {
+    return $Call.ByID(2785897365, categoryID, filename).then(($result: any) => {
+        return $$createType19($result);
+    });
+}
+
+/**
  * ResolveDestination resolves the save directory and matched category for a filename.
  * 分类规则只在后端实现一次：界面用它展示命中分类并填充目录，不再自建同一规则。
  */

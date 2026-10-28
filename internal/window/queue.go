@@ -107,12 +107,15 @@ type DownloadResponse struct {
 
 // FileInfoItem represents a single item waiting in the file info window queue.
 type FileInfoItem struct {
-	ID                string     `json:"id"`
-	URL               string     `json:"url"`
-	Filename          string     `json:"filename"`
-	SuggestedFilename string     `json:"suggestedFilename"`
-	Directory         string     `json:"directory"`
-	CategoryID        string     `json:"categoryId,omitempty"`
+	ID                string `json:"id"`
+	URL               string `json:"url"`
+	Filename          string `json:"filename"`
+	SuggestedFilename string `json:"suggestedFilename"`
+	Directory         string `json:"directory"`
+	CategoryID        string `json:"categoryId,omitempty"`
+	// CategoryDirectory 是命中分类的默认保存目录（后端按当前默认目录拼好）。界面判断
+	// “这条路径是否还是分类默认值”时拿它比较，不再自己拼相对子目录。
+	CategoryDirectory string     `json:"categoryDirectory"`
 	TotalBytes        int64      `json:"totalBytes"`
 	MimeType          string     `json:"mimeType"`
 	Resumable         bool       `json:"resumable"`
@@ -409,12 +412,14 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 	dir := req.Directory
 	categoryID := ""
+	categoryDirectory := ""
 	// 目录是这份请求自己给的、还是按分类裁出来的，决定探测补齐真名后要不要跟着重算落点。
 	dirFromCategory := req.Directory == ""
 	if filename != "" {
 		// 分类只决定目录；手动指定目录时仍然给出命中分类，供界面展示与"记住分类"使用。
 		cat, resolvedDir := activeSettings.Download.ResolveDestination(filename)
 		categoryID = cat.ID
+		categoryDirectory = resolvedDir
 		if dir == "" {
 			dir = resolvedDir
 		}
@@ -460,6 +465,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 		SuggestedFilename: suggested,
 		Directory:         dir,
 		CategoryID:        categoryID,
+		CategoryDirectory: categoryDirectory,
 		TotalBytes:        -1,
 		MimeType:          "",
 		Resumable:         false,
@@ -748,6 +754,7 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 				cat, resolvedDir := qc.settings.Get().Download.ResolveDestination(targetItem.Filename)
 				targetItem.CategoryID = cat.ID
 				targetItem.Directory = resolvedDir
+				targetItem.CategoryDirectory = resolvedDir
 				dir = resolvedDir
 			}
 		}
@@ -757,6 +764,7 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 				cat, resolvedDir := qc.settings.Get().Download.ResolveDestination(targetItem.Filename)
 				targetItem.CategoryID = cat.ID
 				targetItem.Directory = resolvedDir
+				targetItem.CategoryDirectory = resolvedDir
 				dir = resolvedDir
 			}
 		}

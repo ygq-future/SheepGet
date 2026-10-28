@@ -34,6 +34,7 @@ import {
   ShowProgressWindow,
   SwitchFileInfoActive,
   ResolveDestination,
+  ResolveCategoryDestination,
   ResolveDuplicateDecision,
   AssignExtensionToCategory,
   SetCategoryDirectory,
@@ -97,6 +98,7 @@ export function FileInfoView() {
   const [manualProbing, setManualProbing] = useState(false);
   const probeSeqRef = useRef(0);
   const filenameSeqRef = useRef(0);
+  const categorySeqRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
   // 时长是异步读出来的：先转加载动画，读到了就显示，读不到就不再显示——它是附加信息，
   // 不参与任何下载决策，因此绝不阻塞别的操作，也绝不编一个数值出来。
@@ -110,6 +112,7 @@ export function FileInfoView() {
   const invalidateInFlight = useCallback(() => {
     probeSeqRef.current += 1;
     filenameSeqRef.current += 1;
+    categorySeqRef.current += 1;
     setManualProbing(false);
   }, []);
 
@@ -176,12 +179,17 @@ export function FileInfoView() {
     nextDir: string,
     nextName: string,
     options?: { keepSelection?: boolean },
+    stillCurrent?: () => boolean,
   ): Promise<duplicateModels.Decision> => {
     let next = new duplicateModels.Decision();
     if (nextUrl && nextDir && nextName) {
       next = await ResolveDuplicateDecision(nextUrl, nextDir, nextName);
     }
     if (owner !== useFileInfoDraftStore.getState().activeItemId) {
+      return next;
+    }
+    // 连着改了几次分类/链接时，只让最后一次的结果落到草稿上。
+    if (stillCurrent && !stillCurrent()) {
       return next;
     }
     applyDecision(next, options);
@@ -370,10 +378,13 @@ export function FileInfoView() {
           const dest = await ResolveDestination(rawName);
           if (seq !== probeSeqRef.current) return;
           autoCategoryId = dest.categoryId || 'builtin-file';
+          if (!current.categoryEdited && dest.directory) {
+            destinationPatch = { categoryDefaultDir: dest.directory };
+          }
           if (!current.dirEdited && dest.directory) {
             effectiveDir = dest.directory;
             if (dest.directory !== current.directory) {
-              destinationPatch = { directory: dest.directory };
+              destinationPatch = { ...destinationPatch, directory: dest.directory };
             }
           }
         } catch {
@@ -487,27 +498,45 @@ export function FileInfoView() {
   }, [currentSettings?.download?.customCategories, currentSettings?.download?.builtinCategories]);
 
   const handleCategoryDropdownChange = (catId: string) => {
-    patch({ selectedCategoryId: catId, categoryEdited: true, dirEdited: true });
-
-    const allCats = [
-      ...(currentSettings?.download?.customCategories || []),
-      ...(currentSettings?.download?.builtinCategories || []),
-    ];
-    const targetCat = allCats.find((c) => c.id === catId);
-    const catDir = targetCat?.directory || currentSettings?.download?.defaultDirectory || '';
-
-    patch({ directory: catDir });
-    if (filename) {
-      const owner = useFileInfoDraftStore.getState().activeItemId;
-      void (async () => {
-        const conf = await CheckFileConflict(catDir, filename);
+    const owner = useFileInfoDraftStore.getState().activeItemId;
+    const current = useFileInfoDraftStore.getState().draft;
+    const seq = ++categorySeqRef.current;
+    void (async () => {
+      try {
+        // 分类目录的相对子目录由后端拼装；界面只回传分类 id，不再自己 join。
+        const target = await ResolveCategoryDestination(catId, current.filename);
+        // 连着换了几次分类时，只让最后一次结果落地。
+        if (seq !== categorySeqRef.current) return;
+        patch(
+          {
+            selectedCategoryId: catId,
+            categoryEdited: true,
+            dirEdited: true,
+            directory: target.directory,
+            categoryDefaultDir: target.directory,
+          },
+          owner,
+        );
+        const latest = useFileInfoDraftStore.getState().draft;
+        if (!latest.filename) return;
+        const conf = await CheckFileConflict(target.directory, latest.filename);
+        if (seq !== categorySeqRef.current) return;
         patch({ fileConflict: conf.exists, suggestedFilename: conf.suggestedFilename }, owner);
-        await refreshDuplicateDecision(owner, url, catDir, filename, { keepSelection: true });
-      })();
-    }
+        await refreshDuplicateDecision(
+          owner,
+          latest.url,
+          target.directory,
+          latest.filename,
+          { keepSelection: true },
+          () => seq === categorySeqRef.current,
+        );
+      } catch (err) {
+        console.error('Failed to resolve category destination:', err);
+      }
+    })();
   };
 
-  const canKeepCategoryPath = canKeepCategoryPathOf(draft, currentSettings);
+  const canKeepCategoryPath = canKeepCategoryPathOf(draft);
 
   const handleSelectDir = async () => {
     try {
@@ -593,11 +622,7 @@ export function FileInfoView() {
         }
       }
 
-      if (
-        keepCategoryPath &&
-        categoryId &&
-        canKeepCategoryPathOf(current, useSettingsStore.getState().settings)
-      ) {
+      if (keepCategoryPath && categoryId && canKeepCategoryPathOf(current)) {
         try {
           await SetCategoryDirectory(categoryId, directory.trim());
           await loadSettings();
@@ -1107,11 +1132,12 @@ export function FileInfoView() {
                           const dest = await ResolveDestination(newName);
                           if (seq === filenameSeqRef.current) {
                             // 命中分类跟随文件名变化；目录仅在用户未手动改过时跟随。
+                            const latest = useFileInfoDraftStore.getState().draft;
                             patch({ autoCategoryId: dest.categoryId || 'builtin-file' });
-                            if (
-                              !useFileInfoDraftStore.getState().draft.dirEdited &&
-                              dest.directory
-                            ) {
+                            if (!latest.categoryEdited && dest.directory) {
+                              patch({ categoryDefaultDir: dest.directory });
+                            }
+                            if (!latest.dirEdited && dest.directory) {
                               patch({ directory: dest.directory });
                             }
                           }

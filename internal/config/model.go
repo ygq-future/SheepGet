@@ -764,16 +764,48 @@ func (d DownloadConfig) resolveCommonMediaFallback(ext string) (CategoryConfig, 
 // in one step. 统一根据当前 DefaultDirectory 动态拼装相对子目录，保证前缀变动时所有分类实时联动。
 func (d DownloadConfig) ResolveDestination(filename string) (CategoryConfig, string) {
 	cat, _ := d.ResolveCategory(filename)
-	subDir := strings.TrimSpace(cat.Directory)
-	var dir string
-	if subDir == "" || subDir == "." {
-		dir = d.DefaultDirectory
-	} else if filepath.IsAbs(subDir) {
-		dir = subDir
-	} else {
-		dir = filepath.Join(d.DefaultDirectory, subDir)
+	return cat, d.destinationDirectory(cat)
+}
+
+// ResolveCategoryDestination returns an explicitly chosen category and its save directory.
+// categoryID 为空或不在当前配置里时退回按文件名命中分类，与 ResolveDestination 同一条规则。
+// 界面切换分类时用它取落点：相对子目录的拼装只在 destinationDirectory 一处发生。
+func (d DownloadConfig) ResolveCategoryDestination(categoryID, filename string) (CategoryConfig, string) {
+	if cat, ok := d.categoryByID(categoryID); ok {
+		return cat, d.destinationDirectory(cat)
 	}
-	return cat, dir
+	return d.ResolveDestination(filename)
+}
+
+// categoryByID 先查自定义分类（用户排序即优先级），再查内置分类。
+func (d DownloadConfig) categoryByID(id string) (CategoryConfig, bool) {
+	if id == "" {
+		return CategoryConfig{}, false
+	}
+	for _, cat := range d.CustomCategories {
+		if cat.ID == id {
+			return cat, true
+		}
+	}
+	for _, cat := range d.BuiltinCategories {
+		if cat.ID == id {
+			return cat, true
+		}
+	}
+	return CategoryConfig{}, false
+}
+
+// destinationDirectory 是“分类目录 + 默认目录”的唯一拼装规则。
+func (d DownloadConfig) destinationDirectory(cat CategoryConfig) string {
+	subDir := strings.TrimSpace(cat.Directory)
+	switch {
+	case subDir == "" || subDir == ".":
+		return d.DefaultDirectory
+	case filepath.IsAbs(subDir):
+		return subDir
+	default:
+		return filepath.Join(d.DefaultDirectory, subDir)
+	}
 }
 
 // ResolveCategoryDirectory returns the save directory for a given filename.

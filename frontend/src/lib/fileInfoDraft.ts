@@ -13,6 +13,8 @@ export interface FileInfoDraft {
   url: string;
   filename: string;
   directory: string;
+  /** 命中分类的默认目录，由后端拼好；界面只拿它判断“路径是否被改过”。 */
+  categoryDefaultDir: string;
   maxConn: number;
   preDownload: boolean;
   // 裁决结果与用户选中的动作都由后端给出/校验，草稿只做原样保存与恢复。
@@ -43,6 +45,7 @@ export function emptyFileInfoDraft(): FileInfoDraft {
     url: '',
     filename: '',
     directory: '',
+    categoryDefaultDir: '',
     maxConn: 32,
     preDownload: false,
     duplicateDecision: new duplicateModels.Decision(),
@@ -82,6 +85,7 @@ export function draftFromItem(
     url: item.url || '',
     filename: initialName,
     directory,
+    categoryDefaultDir: item.categoryDirectory || directory,
     maxConn: item.maxConn || settings?.download?.defaultConnectionsPerTask || 32,
     // 提前下载在登记请求时就按「设置默认值或请求覆盖」定好并随项下发，窗口只展示它。
     preDownload: item.preDownload,
@@ -171,23 +175,10 @@ export function effectiveCategoryIdOf(draft: FileInfoDraft): string {
     : draft.autoCategoryId;
 }
 
-/** 选了分类、且路径相对该分类的默认值被改过时，才允许把这条路径写回分类设置。 */
-export function canKeepCategoryPathOf(
-  draft: FileInfoDraft,
-  settings: configModels.Settings | null,
-): boolean {
-  const categoryId = effectiveCategoryIdOf(draft);
-  if (!categoryId) return false;
-  const categories = [
-    ...(settings?.download?.customCategories || []),
-    ...(settings?.download?.builtinCategories || []),
-  ];
-  const categoryDir =
-    categories.find((c) => c.id === categoryId)?.directory ||
-    settings?.download?.defaultDirectory ||
-    '';
+/** 选了分类、且路径已经离开该分类的默认值时才允许把这条路径写回分类设置。 */
+export function canKeepCategoryPathOf(draft: FileInfoDraft): boolean {
   const directory = draft.directory.trim();
-  return directory.length > 0 && directory !== categoryDir.trim();
+  return directory.length > 0 && directory !== draft.categoryDefaultDir.trim();
 }
 
 /**
@@ -229,6 +220,10 @@ export function patchFromProbedItem(
     if (!current.categoryEdited) {
       result.selectedCategoryId = item.categoryId;
     }
+  }
+  // 用户没改过分类时，默认目录随命中分类走；改过分类时它绑定用户选中的那个分类。
+  if (item.categoryDirectory && !current.categoryEdited) {
+    result.categoryDefaultDir = item.categoryDirectory;
   }
   if (item.directory && !current.dirEdited) {
     result.directory = item.directory;

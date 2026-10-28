@@ -99,6 +99,12 @@ export class FileInfoItem {
     "suggestedFilename": string;
     "directory": string;
     "categoryId"?: string;
+
+    /**
+     * CategoryDirectory 是命中分类的默认保存目录（后端按当前默认目录拼好）。界面判断
+     * “这条路径是否还是分类默认值”时拿它比较，不再自己拼相对子目录。
+     */
+    "categoryDirectory": string;
     "totalBytes": number;
     "mimeType": string;
     "resumable": boolean;
@@ -152,6 +158,9 @@ export class FileInfoItem {
         if (!("directory" in $$source)) {
             this["directory"] = "";
         }
+        if (!("categoryDirectory" in $$source)) {
+            this["categoryDirectory"] = "";
+        }
         if (!("totalBytes" in $$source)) {
             this["totalBytes"] = 0;
         }
@@ -190,22 +199,22 @@ export class FileInfoItem {
      * Creates a new FileInfoItem instance from a string or object.
      */
     static createFrom($$source: any = {}): FileInfoItem {
-        const $$createField13_0 = $$createType2;
-        const $$createField14_0 = $$createType3;
-        const $$createField17_0 = $$createType0;
-        const $$createField20_0 = $$createType5;
+        const $$createField14_0 = $$createType2;
+        const $$createField15_0 = $$createType3;
+        const $$createField18_0 = $$createType0;
+        const $$createField21_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("duplicateTask" in $$parsedSource) {
-            $$parsedSource["duplicateTask"] = $$createField13_0($$parsedSource["duplicateTask"]);
+            $$parsedSource["duplicateTask"] = $$createField14_0($$parsedSource["duplicateTask"]);
         }
         if ("duplicateDecision" in $$parsedSource) {
-            $$parsedSource["duplicateDecision"] = $$createField14_0($$parsedSource["duplicateDecision"]);
+            $$parsedSource["duplicateDecision"] = $$createField15_0($$parsedSource["duplicateDecision"]);
         }
         if ("headers" in $$parsedSource) {
-            $$parsedSource["headers"] = $$createField17_0($$parsedSource["headers"]);
+            $$parsedSource["headers"] = $$createField18_0($$parsedSource["headers"]);
         }
         if ("variants" in $$parsedSource) {
-            $$parsedSource["variants"] = $$createField20_0($$parsedSource["variants"]);
+            $$parsedSource["variants"] = $$createField21_0($$parsedSource["variants"]);
         }
         return new FileInfoItem($$parsedSource as Partial<FileInfoItem>);
     }

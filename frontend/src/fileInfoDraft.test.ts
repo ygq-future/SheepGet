@@ -72,6 +72,16 @@ describe('draftFromItem', () => {
     expect(fromItem.maxConn).toBe(3);
   });
 
+  it('分类默认目录取后端给出的值，不按分类配置重算', () => {
+    // 内置分类在配置里存的是相对子目录，落到目录时已经由后端拼成绝对路径。
+    const draft = draftFromItem(
+      makeItem({ directory: '/manual', categoryDirectory: '/downloads/Videos' }),
+      makeSettings(),
+    );
+    expect(draft.directory).toBe('/manual');
+    expect(draft.categoryDefaultDir).toBe('/downloads/Videos');
+  });
+
   it('提前下载开关以队列项上的值为准', () => {
     expect(
       draftFromItem(makeItem({ preDownload: true }), makeSettings({ preDownload: false }))
@@ -203,31 +213,27 @@ describe('reuseFields', () => {
 });
 
 describe('canKeepCategoryPathOf', () => {
-  const settings = makeSettings({
-    defaultDirectory: '/downloads',
-    builtinCategories: [
-      new configModels.CategoryConfig({ id: 'builtin-video', name: '视频', directory: '/videos' }),
-    ],
-  });
-
-  it('选了分类且路径被改过时可用', () => {
+  it('路径与分类默认值不同时可用', () => {
     const draft = {
       ...emptyFileInfoDraft(),
       categoryEdited: true,
       selectedCategoryId: 'builtin-video',
       directory: '/custom',
+      categoryDefaultDir: '/downloads/Videos',
     };
-    expect(canKeepCategoryPathOf(draft, settings)).toBe(true);
+    expect(canKeepCategoryPathOf(draft)).toBe(true);
   });
 
-  it('路径仍等于该分类默认值时不可用', () => {
+  it('路径仍等于分类默认值时不可用', () => {
+    // 回归：分类配置里存的是相对子目录 "Videos"，与绝对路径直接比较会永远判成“改过”。
     const draft = {
       ...emptyFileInfoDraft(),
       categoryEdited: true,
       selectedCategoryId: 'builtin-video',
-      directory: '/videos',
+      directory: '/downloads/Videos',
+      categoryDefaultDir: '/downloads/Videos',
     };
-    expect(canKeepCategoryPathOf(draft, settings)).toBe(false);
+    expect(canKeepCategoryPathOf(draft)).toBe(false);
   });
 
   it('没有填目录时不可用', () => {
@@ -236,8 +242,9 @@ describe('canKeepCategoryPathOf', () => {
       categoryEdited: true,
       selectedCategoryId: 'builtin-video',
       directory: '   ',
+      categoryDefaultDir: '/downloads/Videos',
     };
-    expect(canKeepCategoryPathOf(draft, settings)).toBe(false);
+    expect(canKeepCategoryPathOf(draft)).toBe(false);
   });
 });
 
@@ -419,6 +426,7 @@ describe('patchFromProbedItem', () => {
       filename: 'setup.msi',
       directory: '/downloads/Software',
       categoryId: 'builtin-software',
+      categoryDirectory: '/downloads/Software',
       totalBytes: 0,
       probing: false,
     });
@@ -429,6 +437,7 @@ describe('patchFromProbedItem', () => {
     expect(patch.autoCategoryId).toBe('builtin-software');
     expect(patch.selectedCategoryId).toBe('builtin-software');
     expect(patch.directory).toBe('/downloads/Software');
+    expect(patch.categoryDefaultDir).toBe('/downloads/Software');
   });
 
   it('用户在探测等待期间已手动改过文件名或目录时保留用户的修改', () => {
@@ -445,6 +454,7 @@ describe('patchFromProbedItem', () => {
       filename: 'server-name.msi',
       directory: '/downloads/Software',
       categoryId: 'builtin-software',
+      categoryDirectory: '/downloads/Software',
       totalBytes: 2048,
       probing: false,
     });
@@ -454,5 +464,7 @@ describe('patchFromProbedItem', () => {
     expect(patch.directory).toBeUndefined();
     expect(patch.autoCategoryId).toBe('builtin-software');
     expect(patch.selectedCategoryId).toBeUndefined();
+    // 用户选过的分类保持自己的默认目录，不被后台探测算出的另一个分类覆盖。
+    expect(patch.categoryDefaultDir).toBeUndefined();
   });
 });
