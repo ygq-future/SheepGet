@@ -17,6 +17,7 @@ import (
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
+	"sheep-get/internal/chrome"
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
@@ -1613,7 +1614,7 @@ func TestWebviewOptions_PinsWindowTheme(t *testing.T) {
 }
 
 func TestImmersiveWindowChrome(t *testing.T) {
-	frameless, translucent, windows, mac := immersiveWindowChrome("windows")
+	frameless, translucent, windows, mac := chrome.ImmersiveWindowChrome("windows")
 	if !frameless || translucent || !windows.WebView2CompositionHosting || windows.BackdropType != application.None {
 		t.Errorf("windows immersive chrome missing: %v %v %+v", frameless, translucent, windows)
 	}
@@ -1621,12 +1622,12 @@ func TestImmersiveWindowChrome(t *testing.T) {
 		t.Errorf("windows must not touch mac titlebar: %+v", mac.TitleBar)
 	}
 
-	frameless, translucent, windows, mac = immersiveWindowChrome("darwin")
+	frameless, translucent, windows, mac = chrome.ImmersiveWindowChrome("darwin")
 	if frameless || !translucent || windows.WebView2CompositionHosting || mac.Backdrop != application.MacBackdropTranslucent || mac.TitleBar.UseToolbar {
 		t.Errorf("darwin immersive chrome wrong: %v %v %+v %+v", frameless, translucent, windows, mac)
 	}
 
-	frameless, translucent, windows, mac = immersiveWindowChrome("linux")
+	frameless, translucent, windows, mac = chrome.ImmersiveWindowChrome("linux")
 	if frameless || translucent || windows.WebView2CompositionHosting || windows.BackdropType != application.Auto || mac.TitleBar != (application.MacTitleBar{}) {
 		t.Errorf("linux must stay untouched: %v %v %+v %+v", frameless, translucent, windows, mac.TitleBar)
 	}

@@ -12,11 +12,53 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
+	"sheep-get/internal/chrome"
 	"sheep-get/internal/config"
 	"sheep-get/internal/protocol"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
 )
+
+// 窗口名与窗口几何的单一命名来源：窗口声明与几何参数收拢于此，避免同一标识散落成多处字面量。
+const (
+	winNameMain     = "main"
+	winNameFileInfo = "fileinfo"
+	winNameProgress = "progress"
+)
+
+// 主窗口几何与默认背景色。
+const (
+	mainWindowWidth  = 800
+	mainWindowHeight = 520
+)
+
+var (
+	mainWindowDarkBackgroundColour  = windowing.Colour{R: 9, G: 9, B: 11, A: 255}
+	mainWindowLightBackgroundColour = windowing.Colour{R: 248, G: 250, B: 252, A: 255}
+)
+
+// 进度窗口几何。创建声明与内容驱动的高度调整共用同一组数字。
+const (
+	progressWindowWidth        = 560
+	progressWindowHeight       = 160
+	progressWindowMinWidth     = 560
+	progressWindowMaxWidth     = 560
+	progressWindowMinH         = 96
+	progressWindowMaxH         = 640
+	progressWindowEdgeGap      = 32
+	progressWindowBottomOffset = 320
+)
+
+// 文件信息窗口几何。
+const (
+	fileInfoWindowWidth  = 460
+	fileInfoWindowHeight = 300
+	fileInfoWindowMinH   = 240
+	fileInfoWindowMaxH   = 700
+)
+
+// 独立浮动窗口（新建下载与进度窗口）在轻量模式下的闲置销毁宽限期。
+const windowIdleDestroyGracePeriod = 60 * time.Second
 
 // windowsHost 把注册表的声明翻译成 Wails 窗口。
 type windowsHost struct {
@@ -32,14 +74,14 @@ func (h *windowsHost) Open(options windowing.Options, onClose func() bool) (wind
 	if h.app.settings != nil {
 		theme = h.app.settings.Get().Appearance.Theme
 	}
-	win := wailsApp.Window.NewWithOptions(webviewOptions(options, theme, systemDarkMode()))
+	win := wailsApp.Window.NewWithOptions(webviewOptions(options, theme, chrome.SystemDarkMode()))
 	win.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
 		if onClose() {
 			event.Cancel()
 		}
 	})
-	setupNativeWindow(win)
-	setNativeWindowTheme(win, string(theme))
+	chrome.SetupNativeWindow(win, trayIcon)
+	chrome.SetNativeWindowTheme(win, string(theme))
 	return &wailsWindow{win: win}, true
 }
 
@@ -122,7 +164,7 @@ func webviewOptions(o windowing.Options, theme config.ThemeMode, systemDark bool
 		options.BackgroundType = application.BackgroundTypeTransparent
 	}
 	if o.Immersive {
-		frameless, translucent, windows, mac := immersiveWindowChrome(runtime.GOOS)
+		frameless, translucent, windows, mac := chrome.ImmersiveWindowChrome(runtime.GOOS)
 		options.Frameless = options.Frameless || frameless
 		options.Windows = windows
 		options.Mac = mac
@@ -132,7 +174,7 @@ func webviewOptions(o windowing.Options, theme config.ThemeMode, systemDark bool
 	}
 	// 每个窗口都要钉住明暗：留成零值 SystemDefault 时 Wails 会自行注册系统主题监听，
 	// 系统一切换就把用户显式选择的主题覆盖回系统值。
-	options.Windows.Theme = nativeWindowTheme(theme, systemDark)
+	options.Windows.Theme = chrome.NativeWindowTheme(theme, systemDark)
 	if o.Background.A != 0 && !o.Immersive {
 		options.BackgroundColour = application.RGBA{
 			Red:   o.Background.R,

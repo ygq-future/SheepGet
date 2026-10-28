@@ -8,7 +8,7 @@
 /** 内容区之外的固定开销：标题栏 32px + 内容区内边距 24px + 边框 2px。 */
 export const PROGRESS_WINDOW_CHROME_H = 58;
 
-/** 高度上限，与 Go 侧 appconsts.go 的 progressWindowMaxH 保持一致。 */
+/** 高度上限，与 Go 侧 app_windowing.go 的 progressWindowMaxH 保持一致。 */
 export const PROGRESS_WINDOW_MAX_H = 640;
 
 /** 由内容区自然高度换算出窗口高度。 */

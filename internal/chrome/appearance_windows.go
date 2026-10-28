@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package chrome
 
 import (
 	"encoding/binary"
@@ -13,10 +13,10 @@ import (
 	"sheep-get/internal/config"
 )
 
-// setupNativeWindow 为无边框窗口设置原生 Windows 应用程序图标，
+// SetupNativeWindow 为无边框窗口设置原生 Windows 应用程序图标，
 // 确保在开发环境（bun dev）及无 .syso 资源注入时任务栏和 Alt+Tab 稳定显示图标。
-func setupNativeWindow(window application.Window) {
-	if window == nil || len(trayIcon) == 0 {
+func SetupNativeWindow(window application.Window, icon []byte) {
+	if window == nil || len(icon) == 0 {
 		return
 	}
 	wvWin, ok := window.(*application.WebviewWindow)
@@ -31,11 +31,11 @@ func setupNativeWindow(window application.Window) {
 
 	application.InvokeSync(func() {
 		// ICON_BIG = 1 (任务栏与 Alt+Tab，通常为 32x32 或以上)
-		if bigIcon, err := createHIconFromICO(trayIcon, 32); err == nil && bigIcon != 0 {
+		if bigIcon, err := createHIconFromICO(icon, 32); err == nil && bigIcon != 0 {
 			w32.SendMessage(hwnd, w32.WM_SETICON, 1, uintptr(bigIcon))
 		}
 		// ICON_SMALL = 0 (标题栏与小图标，通常为 16x16)
-		if smallIcon, err := createHIconFromICO(trayIcon, 16); err == nil && smallIcon != 0 {
+		if smallIcon, err := createHIconFromICO(icon, 16); err == nil && smallIcon != 0 {
 			w32.SendMessage(hwnd, w32.WM_SETICON, 0, uintptr(smallIcon))
 		}
 	})
@@ -52,7 +52,7 @@ func createHIconFromICO(data []byte, desiredWidth int) (w32.HICON, error) {
 
 	bestIdx := -1
 	bestDiff := 999999
-	for i := 0; i < count; i++ {
+	for i := range count {
 		off := 6 + i*16
 		w := int(data[off])
 		if w == 0 {
@@ -96,11 +96,11 @@ func createHIconFromICO(data []byte, desiredWidth int) (w32.HICON, error) {
 	return w32.HICON(hicon), nil
 }
 
-// setNativeWindowTheme 让原生窗口跟随界面主题：DWM 的沉浸式深色属性同时决定
+// SetNativeWindowTheme 让原生窗口跟随界面主题：DWM 的沉浸式深色属性同时决定
 // 标题栏/边框和 Acrylic 磨砂的底色，不设置它时磨砂会一直停在系统主题上。
 // 用户显式选择的 dark/light 必须在这里覆盖系统值；「跟随系统」则读取当前系统状态，
 // 由 ThemeChanged 回调重新调用本函数完成切换。
-func setNativeWindowTheme(window application.Window, mode string) {
+func SetNativeWindowTheme(window application.Window, mode string) {
 	if window == nil {
 		return
 	}
@@ -113,7 +113,7 @@ func setNativeWindowTheme(window application.Window, mode string) {
 		return
 	}
 
-	dark := nativeWindowThemeDark(config.ThemeMode(mode), systemDarkMode())
+	dark := NativeWindowThemeDark(config.ThemeMode(mode), SystemDarkMode())
 	hwnd := w32.HWND(uintptr(ptr))
 
 	// DWM 与 uxtheme 的窗口属性只能在拥有该窗口的 GUI 线程上修改。
@@ -126,8 +126,8 @@ func setNativeWindowTheme(window application.Window, mode string) {
 	})
 }
 
-// systemDarkMode 报告 Windows 当前的深色状态。窗口设置可能在应用环境尚未建立前发生，
+// SystemDarkMode 报告 Windows 当前的深色状态。窗口设置可能在应用环境尚未建立前发生，
 // 因此这里直接读注册表而不是通过 Wails 的 Env。
-func systemDarkMode() bool {
+func SystemDarkMode() bool {
 	return w32.IsCurrentlyDarkMode()
 }

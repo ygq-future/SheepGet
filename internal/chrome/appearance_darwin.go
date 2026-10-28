@@ -1,6 +1,6 @@
 //go:build darwin
 
-package main
+package chrome
 
 /*
 #cgo CFLAGS: -x objective-c -mmacosx-version-min=10.14
@@ -193,7 +193,8 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-func setupNativeWindow(window application.Window) {
+// SetupNativeWindow 为无边框窗口设置原生透明与紧凑交通灯样式。
+func SetupNativeWindow(window application.Window, _ []byte) {
 	if window == nil {
 		return
 	}
@@ -205,7 +206,8 @@ func setupNativeWindow(window application.Window) {
 	}
 }
 
-func setNativeWindowTheme(window application.Window, mode string) {
+// SetNativeWindowTheme 让 macOS 窗口跟随界面主题切换深浅外观。
+func SetNativeWindowTheme(window application.Window, mode string) {
 	if window == nil {
 		return
 	}

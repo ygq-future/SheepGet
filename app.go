@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sheep-get/internal/browser"
+	"sheep-get/internal/chrome"
 	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
@@ -365,7 +366,7 @@ func (a *App) OnSettingsUpdated(s *config.Settings) error {
 		if s != nil {
 			themeMode := string(s.Appearance.Theme)
 			for _, w := range app.Window.GetAll() {
-				setNativeWindowTheme(w, themeMode)
+				chrome.SetNativeWindowTheme(w, themeMode)
 			}
 		}
 	}

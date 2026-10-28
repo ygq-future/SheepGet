@@ -4,10 +4,10 @@ import (
 	"embed"
 	"os"
 
-	"sheep-get/internal/config"
-
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	"sheep-get/internal/chrome"
+	"sheep-get/internal/config"
 )
 
 //go:embed all:frontend/dist
@@ -29,7 +29,7 @@ func main() {
 		},
 		Windows: application.WindowsOptions{
 			DisableQuitOnLastWindowClosed: true,
-			AdditionalBrowserArgs:         windowsAdditionalBrowserArgs,
+			AdditionalBrowserArgs:         chrome.WindowsAdditionalBrowserArgs,
 		},
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,
@@ -44,8 +44,8 @@ func main() {
 	wailsApp.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		st := app.GetSettings()
 		if win, ok := wailsApp.Window.GetByName(winNameMain); ok {
-			setupNativeWindow(win)
-			setNativeWindowTheme(win, string(st.Appearance.Theme))
+			chrome.SetupNativeWindow(win, trayIcon)
+			chrome.SetNativeWindowTheme(win, string(st.Appearance.Theme))
 		}
 	})
 
@@ -59,7 +59,7 @@ func main() {
 		st := app.GetSettings()
 		if st.Appearance.Theme == config.ThemeSystem {
 			for _, w := range wailsApp.Window.GetAll() {
-				setNativeWindowTheme(w, "system")
+				chrome.SetNativeWindowTheme(w, "system")
 			}
 			wailsApp.Event.Emit("theme:systemChanged", map[string]any{
 				"isDarkMode": isDark,
