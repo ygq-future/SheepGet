@@ -11,6 +11,7 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/hls"
+	"sheep-get/internal/intake"
 	"sheep-get/internal/task"
 )
 
@@ -139,38 +140,16 @@ func (e *blockingEngine) createdFromProbe() (*engine.ProbeResult, error) {
 	return e.createdProbe, e.createdErr
 }
 
-func (e *blockingEngine) FindDuplicateTask(context.Context, string) (*task.Task, error) {
-	e.enter("FindDuplicateTask")
-	return nil, nil
-}
-
 func (e *blockingEngine) FindDuplicateTaskWithVariant(context.Context, string, string) (*task.Task, error) {
 	e.enter("FindDuplicateTask")
 	return nil, nil
 }
 
-func (e *blockingEngine) AddTask(context.Context, string, string, string, int) (*task.Task, error) {
-	e.enter("AddTask")
-	return &task.Task{ID: "task_manual"}, nil
-}
-
-func (e *blockingEngine) AddTaskWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
-	e.enter("AddTaskWithHeaders")
-	return &task.Task{ID: "task_manual"}, nil
-}
 func (e *blockingEngine) AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
 	e.enter("AddTaskWithHeaders")
 	return &task.Task{ID: "task_manual", PageURL: pageURL, CategoryID: categoryID}, nil
 }
 
-func (e *blockingEngine) AddTaskFromProbe(_ context.Context, _, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, probeErr error) (*task.Task, error) {
-	e.enter("AddTaskFromProbe")
-	e.mu.Lock()
-	e.createdProbe = probe
-	e.createdErr = probeErr
-	e.mu.Unlock()
-	return &task.Task{ID: "task_manual"}, nil
-}
 func (e *blockingEngine) AddTaskFromProbeWithMetadata(_ context.Context, _, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
 	e.enter("AddTaskFromProbe")
 	e.mu.Lock()
@@ -180,18 +159,11 @@ func (e *blockingEngine) AddTaskFromProbeWithMetadata(_ context.Context, _, _, _
 	return &task.Task{ID: "task_manual", PageURL: pageURL, CategoryID: categoryID}, nil
 }
 
-func (e *blockingEngine) StartPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
-	e.enter("StartPreDownload")
-	return &task.Task{ID: "task_pre"}, nil
-}
-
-func (e *blockingEngine) StartPreDownloadWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
+// StartPreDownloadFromProbe 是预下载唯一的启动入口。用例按历史名字
+// StartPreDownloadWithHeaders 拦住它，断言的是「这条调用在锁外」。
+func (e *blockingEngine) StartPreDownloadFromProbe(_ context.Context, req engine.PreDownloadRequest) (*task.Task, error) {
 	e.enter("StartPreDownloadWithHeaders")
-	return &task.Task{ID: "task_pre"}, nil
-}
-func (e *blockingEngine) StartPreDownloadWithMetadata(context.Context, string, string, string, int, map[string]string, string, string) (*task.Task, error) {
-	e.enter("StartPreDownloadWithHeaders")
-	return &task.Task{ID: "task_pre"}, nil
+	return &task.Task{ID: "task_pre", URL: req.URL, Directory: req.Directory, Filename: req.Filename}, nil
 }
 
 func (e *blockingEngine) ConfirmPreDownload(_ context.Context, taskID, _, _ string, _ int) (*task.Task, error) {
@@ -208,16 +180,6 @@ func (e *blockingEngine) CancelPreDownload(_ context.Context, taskID string) err
 	e.cancelled = append(e.cancelled, taskID)
 	e.mu.Unlock()
 	return nil
-}
-
-func (e *blockingEngine) ResolveDuplicate(_ context.Context, taskID, _, _, _ string, _ int) (*task.Task, error) {
-	e.enter("ResolveDuplicate")
-	return &task.Task{ID: taskID}, nil
-}
-
-func (e *blockingEngine) ResolveDuplicateFromProbe(_ context.Context, taskID, _, _, _ string, _ int, _ *engine.ProbeResult) (*task.Task, error) {
-	e.enter("ResolveDuplicate")
-	return &task.Task{ID: taskID}, nil
 }
 
 func (e *blockingEngine) ResolveDuplicateFromProbeWithMetadata(_ context.Context, taskID, _, _, _ string, _ int, _ *engine.ProbeResult, categoryID string) (*task.Task, error) {
@@ -251,7 +213,7 @@ func (e *blockingEngine) SetTaskCategoryID(_ context.Context, _ string, _ string
 	return nil
 }
 
-func setupQueueWithEngine(t *testing.T, eng DownloadEngine, view WindowView, runOps windowOps) (*QueueController, string) {
+func setupQueueWithEngine(t *testing.T, eng intake.Engine, view WindowView, runOps windowOps) (*QueueController, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	settings := config.DefaultSettings(tmpDir, filepath.Join(tmpDir, "temp"))
@@ -461,7 +423,7 @@ func waitForProbe(t *testing.T, qc *QueueController) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if item, _ := qc.GetActive(); item != nil && item.probe != nil {
+		if item, _ := qc.GetActive(); item != nil && item.ProbeSettled() {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -469,9 +431,9 @@ func waitForProbe(t *testing.T, qc *QueueController) {
 	t.Fatal("登记时那次探测一直没有落地")
 }
 
-// 预下载启动也是联网调用（StartPreDownloadWithHeaders 内部会探测 URL）。它一旦挪出锁外，
-// 提交就可能撞上「任务已经在启动、但 PreDownloadTaskID 还是空的」这一刻：此时走「新建任务」
-// 会在同一链接上建出第二份。这一项正在启动预下载时，提交必须等它落地，再走确认预下载。
+// 预下载启动会建任务，同样必须在锁外。它一旦挪出锁外，提交就可能撞上「任务已经在启动、
+// 但 PreDownloadTaskID 还是空的」这一刻：此时走「新建任务」会在同一链接上建出第二份。
+// 这一项正在启动预下载时，提交必须等它落地，再走确认预下载。
 func TestQueueController_SubmitWaitsForPreDownloadStart(t *testing.T) {
 	ctx := context.Background()
 	eng := newBlockingEngine("ProbeURL", "StartPreDownloadWithHeaders")

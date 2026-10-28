@@ -9,17 +9,13 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
-	"sheep-get/internal/hls"
+	"sheep-get/internal/intake"
 	"sheep-get/internal/protocol"
 	"sheep-get/internal/task"
 	"strings"
 	"sync"
 	"time"
 )
-
-// ErrDuplicateChoiceRequired 表示这次提交没有携带动作，而当前局面必须由用户先选定一项
-// （目标位置已有成品文件，且策略没有给出默认动作）。
-var ErrDuplicateChoiceRequired = errors.New("duplicate action required before submitting")
 
 // ErrStaleFileInfoSubmission 表示这次提交针对的已经不是窗口当前显示的任务。
 // 提交只作用于当前项，界面重复提交时不能让上一项的落点作用到下一项上。
@@ -30,10 +26,6 @@ var ErrStaleFileInfoSubmission = errors.New("submission targets a task that is n
 // （与引擎里那些用户可见的错误一致），所以用中文。
 var ErrSubmitInProgress = errors.New("正在提交这一次下载，暂时无法取消")
 
-// ErrHLSVariantRequired 表示这条链接有多个清晰度而用户还没选定。界面据此把确认操作挡住；
-// 引擎里另有一道同样的把关，防止别的路径绕过它建出一条下不了的任务。
-var ErrHLSVariantRequired = errors.New("请先选择清晰度，再开始下载")
-
 // WindowView abstracts a native OS/Wails window.
 //
 // 它的方法可能在主线程被占住时长时间不返回（Wails 的窗口调用会同步派发回主线程等待执行），
@@ -43,39 +35,6 @@ type WindowView interface {
 	Hide()
 	Focus()
 	Emit(event string, data any)
-}
-
-// DownloadEngine abstracts download engine operations required by the window controller.
-type DownloadEngine interface {
-	// ProbeURL 探测链接元数据；headers 是这次请求的上下文（Referer/Cookie 等），交接过来的
-	// 链接常常只有带着它才探得准。
-	ProbeURL(ctx context.Context, urlStr string, headers map[string]string) (*engine.ProbeResult, error)
-	// ResolveHLSVariant 在探测出的清晰度里选定一个，给出这次下载的完整事实（清单、独立音轨、
-	// 时长、分片数与大小）。它只在用户选定或交接已带来选择时调用，是唯一会为「选中哪一版」
-	// 联网的地方。
-	ResolveHLSVariant(ctx context.Context, playlistURL, variantURI string, headers map[string]string) (*hls.Source, error)
-	FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error)
-	FindDuplicateTaskWithVariant(ctx context.Context, urlStr, variantURI string) (*task.Task, error)
-	AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
-	AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
-	AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error)
-	// AddTaskFromProbe 用登记时那次探测的结果建任务，不再联网。
-	AddTaskFromProbe(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *engine.ProbeResult, probeErr error) (*task.Task, error)
-	AddTaskFromProbeWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error)
-	StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error)
-	StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error)
-	StartPreDownloadWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error)
-	ConfirmPreDownload(ctx context.Context, taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error)
-	CancelPreDownload(ctx context.Context, taskID string) error
-	ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error)
-	ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult) (*task.Task, error)
-	ResolveDuplicateFromProbeWithMetadata(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult, categoryID string) (*task.Task, error)
-	// Occupancy 给出目标落点的占用判定（任务库快照由引擎提供）；排队项来源由队列自己补上，
-	// 因为「已经发给排队项的名字」只有队列知道。
-	Occupancy(ctx context.Context, reserved engine.Reserved) engine.Occupancy
-	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
-	SetTaskPageURL(ctx context.Context, taskID, pageURL string) error
-	SetTaskCategoryID(ctx context.Context, taskID, categoryID string) error
 }
 
 // SettingsProvider provides active application configuration.
@@ -105,59 +64,30 @@ type DownloadResponse struct {
 	TaskID    string `json:"taskId,omitempty"`
 }
 
-// FileInfoItem represents a single item waiting in the file info window queue.
+// FileInfoItem 是文件信息窗口里的一项：下载目标（名字、落点、分类、探测事实与裁决）加上
+// 这一项自己的生命周期状态。目标由 intake 决定，窗口不再维护第二份名字或落点。
 type FileInfoItem struct {
-	ID                string `json:"id"`
-	URL               string `json:"url"`
-	Filename          string `json:"filename"`
-	SuggestedFilename string `json:"suggestedFilename"`
-	Directory         string `json:"directory"`
-	CategoryID        string `json:"categoryId,omitempty"`
-	// CategoryDirectory 是命中分类的默认保存目录（后端按当前默认目录拼好）。界面判断
-	// “这条路径是否还是分类默认值”时拿它比较，不再自己拼相对子目录。
-	CategoryDirectory string     `json:"categoryDirectory"`
-	TotalBytes        int64      `json:"totalBytes"`
-	MimeType          string     `json:"mimeType"`
-	Resumable         bool       `json:"resumable"`
-	MaxConn           int        `json:"maxConn"`
-	PreDownload       bool       `json:"preDownload"`
-	PreDownloadTaskID string     `json:"preDownloadTaskId,omitempty"`
-	FileConflict      bool       `json:"fileConflict"`
-	DuplicateTask     *task.Task `json:"duplicateTask,omitempty"`
-	// DuplicateDecision 是这次重复的裁决结果：界面只渲染它给出的选项与默认项。
-	// 策略本身不下发给窗口，避免窗口把它当成第二份规则来源。
-	DuplicateDecision duplicate.Decision `json:"duplicateDecision"`
-	QueueIndex        int                `json:"queueIndex"`
-	QueueTotal        int                `json:"queueTotal"`
-	Headers           map[string]string  `json:"headers,omitempty"`
-	PageURL           string             `json:"pageUrl,omitempty"`
-	Probing           bool               `json:"probing"`
-	// Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。
-	Variants []hls.VariantOption `json:"variants,omitempty"`
-	// QualityLabel 是已选清晰度的展示名，为空表示还没选定（或这条链接不是清单）。
-	QualityLabel string `json:"qualityLabel,omitempty"`
-	// MediaDuration 是清单声明的时长（秒）；0 表示这份清单没给出时长。时长与大小都只来自
-	// 能证实的信息，读不到就留空由界面显示未知，不用别处的数字凑一个出来。
-	MediaDuration float64 `json:"mediaDuration,omitempty"`
+	intake.Target
 
-	// media 是已选定的来源。它就是这次下载要处理的东西，提交时随探测结果一起建任务。
-	// 与 Variants 分开：Variants 是给界面挑的选项，media 是已经做出的决定。
-	media *hls.Source
+	ID string `json:"id"`
+	// PreDownload 是这一项要不要在确认前先传起来；PreDownloadTaskID 是已经起好的那条任务。
+	PreDownload       bool   `json:"preDownload"`
+	PreDownloadTaskID string `json:"preDownloadTaskId,omitempty"`
+	QueueIndex        int    `json:"queueIndex"`
+	QueueTotal        int    `json:"queueTotal"`
+	// Probing 表示登记时那次探测还在路上，界面据此显示加载态。
+	Probing bool `json:"probing"`
 
 	// 下面这些字段描述这一项自己有没有「引擎调用在路上」，不下发给界面：
 	// submitting 表示提交的引擎调用还没回来；preDownloadStarting 与其完成信号一起表示
-	// 预下载正在启动（见 asyncProbeItem）。两者存在的理由都是同一个——引擎调用不能放在
+	// 预下载正在启动（见 StartPreDownload）。两者存在的理由都是同一个——引擎调用不能放在
 	// 队列锁里，于是锁一放开，这些中间状态就必须能被其他操作看见。
 	submitting           bool
 	preDownloadStarting  bool
 	preDownloadStartedCh chan struct{}
 	skipConfirm          bool
 
-	// probe 是登记时那次探测的原始结果，probeErr 是它的失败原因，probeDone 在探测
-	// 结束时关闭。提交建任务（AddTaskFromProbe）只认这一份结果，探测还在路上时就靠在
-	// probeDone 上等它——三者一起构成「提交是瞬时的」的前提。
-	probe       *engine.ProbeResult
-	probeErr    error
+	// probeDone 在探测结束时关闭，探测还在路上时提交靠在它上面等（见 beginSubmitItem）。
 	probeDone   chan struct{}
 	probeCancel context.CancelFunc
 }
@@ -178,9 +108,12 @@ type FileInfoSubmission struct {
 }
 
 // QueueController coordinates the single-instance FileInfo window and its FIFO queue.
+//
+// 它只管窗口里的顺序与每一项的中间状态：从链接到任务的判断（命名、HLS、落点、占用、
+// 裁决、提交）全在 intake 后面，窗口不再自己拼名字或直接调引擎。
 type QueueController struct {
 	mu         sync.Mutex
-	engine     DownloadEngine
+	intake     *intake.Intake
 	settings   SettingsProvider
 	windowView WindowView
 	// runOps 决定窗口副作用在哪里执行；生产实现异步执行，不会阻塞调用方（见 windowops.go）。
@@ -194,15 +127,15 @@ type QueueController struct {
 	onSubmitTask    func(t *task.Task)
 }
 
-func NewQueueController(eng DownloadEngine, settings SettingsProvider, winView WindowView) *QueueController {
+func NewQueueController(eng intake.Engine, settings SettingsProvider, winView WindowView) *QueueController {
 	return newQueueController(eng, settings, winView, newAsyncOps())
 }
 
 // newQueueController 允许调用方决定窗口副作用在哪里执行。生产代码只用 NewQueueController
 // （异步执行）；测试用同步执行器，以便在每次操作后确定地断言窗口调用。
-func newQueueController(eng DownloadEngine, settings SettingsProvider, winView WindowView, runOps windowOps) *QueueController {
+func newQueueController(eng intake.Engine, settings SettingsProvider, winView WindowView, runOps windowOps) *QueueController {
 	return &QueueController{
-		engine:      eng,
+		intake:      intake.New(eng, settings),
 		settings:    settings,
 		windowView:  winView,
 		runOps:      runOps,
@@ -352,13 +285,6 @@ func (qc *QueueController) reservedNamesLocked(exceptID string) engine.Reserved 
 	}
 }
 
-// occupancyLocked 组装这一项的占用判定：磁盘、任务库与队列里其它项已经占用的名字。
-// 正在处理的这一项不算占着自己的名字——窗口里的冲突提示回答的是「除了它自己，还有谁占着」。
-// 调用方必须持有队列锁：排队项来源就是从这里取的。
-func (qc *QueueController) occupancyLocked(ctx context.Context, exceptID string) engine.Occupancy {
-	return qc.engine.Occupancy(ctx, qc.reservedNamesLocked(exceptID))
-}
-
 // itemByIDLocked 按 ID 取队列项；不在队列里时返回 nil。
 func (qc *QueueController) itemByIDLocked(id string) *FileInfoItem {
 	if idx := qc.indexOfLocked(id); idx >= 0 {
@@ -367,7 +293,8 @@ func (qc *QueueController) itemByIDLocked(id string) *FileInfoItem {
 	return nil
 }
 
-// Enqueue adds a download request to the window queue or handles duplicate skip policy.
+// Enqueue 把一次请求登记进文件信息窗口队列：建议名字、落点、占用与重复裁决由 intake 一次
+// 给出，队列只负责顺序、探测的中间状态与窗口副作用。
 func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*DownloadResponse, error) {
 	qc.mu.Lock()
 	actions := newWindowActions(qc.windowView)
@@ -377,111 +304,40 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	defer qc.mu.Unlock()
 
 	activeSettings := qc.settings.Get()
-	maxConn := req.MaxConn
-	if maxConn <= 0 {
-		maxConn = activeSettings.Download.DefaultConnectionsPerTask
-	}
-
 	preDownload := activeSettings.Download.PreDownload
 	if req.PreDownload != nil {
 		preDownload = *req.PreDownload
 	}
 
-	policy := activeSettings.Download.DuplicateURLPolicy
-
-	// Fast local duplicate check without blocking on network probe
-	var dupTask *task.Task
-	if req.URL != "" {
-		dupTask, _ = qc.engine.FindDuplicateTaskWithVariant(ctx, req.URL, req.VariantURI)
-	}
-
-	filename := engine.CleanFilename(req.Filename)
-	if filename == "" && req.URL != "" {
-		filename = engine.URLFilename(req.URL)
-	}
-	if filename == "" && dupTask != nil && dupTask.Filename != "" {
-		filename = dupTask.Filename
-	}
-	if filename == "" && req.URL != "" {
-		filename = engine.DefaultFilename
-	}
-	// 如果是 HLS 链接，输出成品始终是 MP4：在入队时就定下建议名称与后缀，
-	// 避免在探测完成前的数秒内按 .m3u8 判定导致分类/目录发生跳变。
-	if req.VariantURI != "" || strings.HasSuffix(strings.ToLower(req.URL), ".m3u8") || strings.HasSuffix(strings.ToLower(filename), ".m3u8") {
-		filename = engine.HLSOutputName(req.URL, filename)
-	}
-	dir := req.Directory
-	categoryID := ""
-	categoryDirectory := ""
-	// 目录是这份请求自己给的、还是按分类裁出来的，决定探测补齐真名后要不要跟着重算落点。
-	dirFromCategory := req.Directory == ""
-	if filename != "" {
-		// 分类只决定目录；手动指定目录时仍然给出命中分类，供界面展示与"记住分类"使用。
-		cat, resolvedDir := activeSettings.Download.ResolveDestination(filename)
-		categoryID = cat.ID
-		categoryDirectory = resolvedDir
-		if dir == "" {
-			dir = resolvedDir
-		}
-	} else if dir == "" {
-		dir = activeSettings.Download.DefaultDirectory
-	}
-
-	conflict := false
-	suggested := ""
-	// 占用判定在登记时取一次，它同时给出冲突提示与序号副本名——两者必须是同一个答案。
-	occupancy := qc.occupancyLocked(ctx, "")
-	if filename != "" {
-		conflict = occupancy.Taken(dir, filename)
-		suggested = occupancy.Suggest(dir, filename)
-	}
-	// 重复链接该给哪些动作、默认哪个，只由后端裁决一次；界面不再推导策略含义。
-	decision := duplicate.Decide(duplicate.Facts{
-		Policy:              policy,
-		HasHistory:          dupTask != nil,
-		HistoryCompleted:    dupTask != nil && dupTask.Status == task.StatusCompleted,
-		DestinationOccupied: engine.DestinationOccupied(dir, filename, dupTask),
-	})
-
-	// 只有裁决确实要做「序号副本」时才预置编号名称。目标位置没有成品文件时既没有要避让的
-	// 文件、动作也不是副本，编号名称只会让界面显示的名字与实际落点不符。
-	if decision.Default == duplicate.ActionCopy && filename != "" {
-		filename = occupancy.NumberedCopy(dir, filename)
-		conflict = false
-	}
+	target := qc.intake.Begin(ctx, intake.Request{
+		URL:        req.URL,
+		Headers:    req.Headers,
+		Filename:   req.Filename,
+		Directory:  req.Directory,
+		PageURL:    req.PageURL,
+		VariantURI: req.VariantURI,
+		MaxConn:    req.MaxConn,
+		Mode:       intake.ModeWindow,
+	}, qc.reservedNamesLocked(""))
 
 	// 「跳过并显示完成」策略下立即唤起完成区域，且早于文件信息窗口夺焦，保持既有焦点顺序。
-	if decision.ShowCompleted && qc.onShowCompleted != nil {
+	if target.DuplicateDecision.ShowCompleted && qc.onShowCompleted != nil {
 		showCompleted := qc.onShowCompleted
-		completedTaskID := dupTask.ID
+		completedTaskID := target.DuplicateTask.ID
 		actions.add(func() { showCompleted(completedTaskID) })
 	}
 
 	qc.requestSeq++
 	item := &FileInfoItem{
-		ID:                fmt.Sprintf("req_%d", qc.requestSeq),
-		URL:               req.URL,
-		Filename:          filename,
-		SuggestedFilename: suggested,
-		Directory:         dir,
-		CategoryID:        categoryID,
-		CategoryDirectory: categoryDirectory,
-		TotalBytes:        -1,
-		MimeType:          "",
-		Resumable:         false,
-		MaxConn:           maxConn,
-		PreDownload:       preDownload,
-		FileConflict:      conflict,
-		DuplicateTask:     dupTask,
-		DuplicateDecision: decision,
-		Headers:           req.Headers,
-		PageURL:           req.PageURL,
-		Probing:           req.URL != "",
-		skipConfirm:       preDownload && activeSettings.Download.SkipFileInfoConfirm && req.URL != "",
+		Target:      target,
+		ID:          fmt.Sprintf("req_%d", qc.requestSeq),
+		PreDownload: preDownload,
+		Probing:     target.URL != "",
+		skipConfirm: preDownload && activeSettings.Download.SkipFileInfoConfirm && target.URL != "",
 	}
 	// 有链接就一定会探测：探测的完成信号在这里就先挂上，提交才知道该等谁。
 	var probeCtx context.Context
-	if req.URL != "" {
+	if target.URL != "" {
 		item.probeDone = make(chan struct{})
 		probeCtx, item.probeCancel = context.WithTimeout(context.Background(), 15*time.Second)
 	}
@@ -508,18 +364,8 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}
 
 	// Trigger background async probe if URL is present
-	if req.URL != "" {
-		go qc.asyncProbeItem(probeCtx, probeJob{
-			itemID:          item.ID,
-			url:             req.URL,
-			headers:         req.Headers,
-			dir:             dir,
-			dirFromCategory: dirFromCategory,
-			policy:          policy,
-			preDownload:     preDownload,
-			maxConn:         maxConn,
-			variantURI:      req.VariantURI,
-		})
+	if target.URL != "" {
+		go qc.asyncProbeItem(probeCtx, probeJob{itemID: item.ID, target: target})
 	}
 
 	return &DownloadResponse{
@@ -529,20 +375,11 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 	}, nil
 }
 
-// probeJob 是一次登记探测的全部输入。登记时定下的事实集中在这里，让「锁外探测」与
-// 「回锁内落地」两段共用同一份参数；这些参数共同描述「这一项是怎么登记进来的」。
+// probeJob 是一次登记探测的全部输入：登记那一刻的目标快照。锁外探测只读这份副本，
+// 探测期间不碰队列里的那一项。
 type probeJob struct {
-	itemID          string
-	url             string
-	headers         map[string]string
-	dir             string
-	dirFromCategory bool
-	policy          config.DuplicateURLPolicy
-	preDownload     bool
-	maxConn         int
-	// variantURI 是交接时已经选好的清晰度。有它时这一项不必再问一次：多清晰度的选择
-	// 已经发生在进入文件信息窗口之前。
-	variantURI string
+	itemID string
+	target intake.Target
 }
 
 func (qc *QueueController) asyncProbeItem(probeCtx context.Context, job probeJob) {
@@ -551,19 +388,9 @@ func (qc *QueueController) asyncProbeItem(probeCtx context.Context, job probeJob
 		probeCtx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 	}
-	// 带上这一项的请求上下文：防盗链或需要登录的链接，没有 Referer/Cookie 只会探出 403，
-	// 界面显示「未知大小」，而提交时还得为同一份元数据再付一次探测。
-	probe, probeErr := qc.engine.ProbeURL(probeCtx, job.url, job.headers)
-
-	// 交接已经带来清晰度：这里一次把它解析成这次下载的完整事实，窗口打开时显示的就是
-	// 「已选清晰度 + 大小 + 时长」，用户不必再选一遍。
-	if probeErr == nil && job.variantURI != "" && probe.HLS != nil {
-		if src, err := qc.engine.ResolveHLSVariant(probeCtx, job.url, job.variantURI, job.headers); err != nil {
-			probeErr = err
-		} else {
-			engine.ApplyHLSSelection(probe, src)
-		}
-	}
+	// 探测带上这一项的请求上下文（Referer/Cookie），交接已经带来清晰度时顺手把它解析成
+	// 这次下载的完整事实。两件事都在锁外。
+	probe, probeErr := qc.intake.Probe(probeCtx, job.target)
 
 	start := qc.applyProbeResult(job, probe, probeErr)
 	if start != nil {
@@ -581,14 +408,14 @@ func (qc *QueueController) checkAutoSubmit(itemID string) {
 	}
 
 	// 必须无探测错误，且探测结果非空
-	if targetItem.probeErr != nil || targetItem.probe == nil {
+	if !targetItem.Probed() {
 		qc.mu.Unlock()
 		qc.fallbackToShow(itemID)
 		return
 	}
 
-	// 如果是 HLS，必须已经选定清晰度（有 media）
-	if targetItem.probe.HLS != nil && targetItem.media == nil {
+	// 如果是 HLS，必须已经选定清晰度
+	if targetItem.NeedsVariantChoice() {
 		qc.mu.Unlock()
 		qc.fallbackToShow(itemID)
 		return
@@ -670,36 +497,23 @@ func (qc *QueueController) startPreDownload(start *preDownloadStart) {
 	if start == nil {
 		return
 	}
-	// 启动预下载同样会联网（StartPreDownloadWithHeaders 内部要探测 URL），因此和上面的探测
-	// 一样必须在锁外：锁被它握住的这段时间，队列的每个操作都要排队。
-	preTask, preErr := qc.engine.StartPreDownloadWithMetadata(context.Background(), start.url, start.dir, start.filename, start.maxConn, start.headers, start.item.PageURL, start.item.CategoryID)
+	// 启动预下载同样会建任务，因此和上面的探测一样必须在锁外：锁被它握住的这段时间，
+	// 队列的每个操作都要排队。名字、落点与请求上下文都取自这一项的目标快照。
+	preTask, preErr := qc.intake.StartPreDownload(context.Background(), start.target)
 	if preErr != nil {
 		preTask = nil
-	} else if preTask != nil {
-		if start.item.CategoryID != "" && preTask.CategoryID == "" {
-			preTask.CategoryID = start.item.CategoryID
-			_ = qc.engine.SetTaskCategoryID(context.Background(), preTask.ID, start.item.CategoryID)
-		}
-		if start.item.PageURL != "" && preTask.PageURL == "" {
-			preTask.PageURL = start.item.PageURL
-			_ = qc.engine.SetTaskPageURL(context.Background(), preTask.ID, start.item.PageURL)
-		}
 	}
 	if qc.finishPreDownloadStart(start, preTask) && preTask != nil {
 		// 启动期间这一项被取消了：把刚启动的任务收掉，否则它会一直跑在后台，
 		// 变成一份用户从未确认过的下载。
-		_ = qc.engine.CancelPreDownload(context.Background(), preTask.ID)
+		_ = qc.intake.CancelPreDownload(context.Background(), preTask.ID)
 	}
 }
 
 // preDownloadStart 是一次待启动的预下载：它在锁内被定下来，在锁外执行。
 type preDownloadStart struct {
-	item     *FileInfoItem
-	url      string
-	dir      string
-	filename string
-	maxConn  int
-	headers  map[string]string
+	item   *FileInfoItem
+	target intake.Target
 }
 
 // applyProbeResult 把探测结果落进队列项（锁内），并返回需要启动的预下载。
@@ -715,13 +529,10 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	if targetItem == nil {
 		return nil
 	}
-	reqURL, headers, dir, dirFromCategory := job.url, job.headers, job.dir, job.dirFromCategory
-	policy, preDownload, maxConn := job.policy, job.preDownload, job.maxConn
 
 	// 先把这次探测本身记下来并放行等待者，再谈别的：提交正是靠它建任务，而预下载启动失败
 	// 之类的原因都不该让提交一直等一个不会再有结果的信号。
-	targetItem.probe = probe
-	targetItem.probeErr = probeErr
+	ready := qc.intake.ApplyProbe(context.Background(), &targetItem.Target, probe, probeErr, qc.reservedNamesLocked(targetItem.ID))
 	targetItem.Probing = false
 	if targetItem.probeCancel != nil {
 		targetItem.probeCancel()
@@ -732,43 +543,7 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 		targetItem.probeDone = nil
 	}
 
-	if probe != nil {
-		targetItem.TotalBytes = probe.TotalBytes
-		targetItem.MimeType = probe.ContentType
-		targetItem.Resumable = probe.Resumable
-		applyHLSFacts(targetItem, probe)
-		if probe.DuplicateTask != nil {
-			// 若当前项已选定清晰度且是 HLS，则需要同清晰度才视为重复
-			targetItem.DuplicateTask = probe.DuplicateTask
-			if targetItem.media != nil && targetItem.media.Variant.URI != "" {
-				dup, _ := qc.engine.FindDuplicateTaskWithVariant(context.Background(), reqURL, targetItem.media.Variant.URI)
-				targetItem.DuplicateTask = dup
-			}
-		}
-		if probe.Filename != "" && (targetItem.Filename == engine.DefaultFilename || targetItem.Filename == engine.URLFilename(reqURL)) {
-			targetItem.Filename = probe.Filename
-			// 真名补齐后必须按它重算命中分类与保存目录：登记时只能拿 URL 猜名字，而真实后缀
-			// 常常只存在于响应头（例如 GitHub 资产链接的路径里只有一个 GUID，没有后缀）。
-			// 分类规则只在后端裁决一次，这里复用同一处实现；用户自己指定过目录时不改动它。
-			if dirFromCategory {
-				cat, resolvedDir := qc.settings.Get().Download.ResolveDestination(targetItem.Filename)
-				targetItem.CategoryID = cat.ID
-				targetItem.Directory = resolvedDir
-				targetItem.CategoryDirectory = resolvedDir
-				dir = resolvedDir
-			}
-		}
-		if probe.HLS != nil && len(probe.HLS.Variants) > 1 && probe.HLS.Media != nil {
-			targetItem.Filename = engine.HLSVariantFilename(targetItem.Filename, probe.HLS.Media.Variant)
-			if dirFromCategory {
-				cat, resolvedDir := qc.settings.Get().Download.ResolveDestination(targetItem.Filename)
-				targetItem.CategoryID = cat.ID
-				targetItem.Directory = resolvedDir
-				targetItem.CategoryDirectory = resolvedDir
-				dir = resolvedDir
-			}
-		}
-	} else {
+	if probe == nil {
 		// 探测连兜底文件名都没给（引擎没做出任何结论）：这一项保持登记时的样子，
 		// 也不去启动预下载，但必须通知前端结束 Probing 加载动画，避免界面一直转圈。
 		itemCopy := *targetItem
@@ -778,44 +553,18 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 		return nil
 	}
 
-	occupancy := qc.occupancyLocked(context.Background(), targetItem.ID)
-	targetItem.SuggestedFilename = occupancy.Suggest(dir, targetItem.Filename)
-	targetItem.FileConflict = occupancy.Taken(dir, targetItem.Filename)
-
-	// 探测补齐了历史任务与目标位置的现状，重新裁决一次，使界面刷新后的选项与事实一致。
-	decision := duplicate.Decide(duplicate.Facts{
-		Policy:              policy,
-		HasHistory:          targetItem.DuplicateTask != nil,
-		HistoryCompleted:    targetItem.DuplicateTask != nil && targetItem.DuplicateTask.Status == task.StatusCompleted,
-		DestinationOccupied: engine.DestinationOccupied(dir, targetItem.Filename, targetItem.DuplicateTask),
-	})
-	targetItem.DuplicateDecision = decision
-
-	if decision.Default == duplicate.ActionCopy {
-		targetItem.Filename = occupancy.NumberedCopy(dir, targetItem.Filename)
-		targetItem.FileConflict = false
-	}
-
-	if decision.ShowCompleted && qc.onShowCompleted != nil {
+	if targetItem.DuplicateDecision.ShowCompleted && qc.onShowCompleted != nil {
 		showCompleted := qc.onShowCompleted
 		completedTaskID := targetItem.DuplicateTask.ID
 		actions.add(func() { showCompleted(completedTaskID) })
 	}
-
+	// PreDownloadTaskID 还是空的：此刻直接提交会在同一链接上建出第二份任务。
 	var start *preDownloadStart
-	canPreDownload := preDownload && !targetItem.FileConflict && targetItem.DuplicateTask == nil && targetItem.PreDownloadTaskID == "" && !targetItem.preDownloadStarting
-	if canPreDownload && (targetItem.probe == nil || targetItem.probe.HLS == nil || targetItem.probe.HLS.Media != nil) {
-		// PreDownloadTaskID 还是空的，直接提交会在同一链接上建出第二份任务。
+	canPreDownload := ready && targetItem.PreDownload && targetItem.PreDownloadTaskID == "" && !targetItem.preDownloadStarting
+	if canPreDownload {
 		targetItem.preDownloadStarting = true
 		targetItem.preDownloadStartedCh = make(chan struct{})
-		start = &preDownloadStart{
-			item:     targetItem,
-			url:      reqURL,
-			dir:      dir,
-			filename: targetItem.Filename,
-			maxConn:  maxConn,
-			headers:  headers,
-		}
+		start = &preDownloadStart{item: targetItem, target: targetItem.Target}
 	}
 
 	itemCopy := *targetItem
@@ -826,32 +575,12 @@ func (qc *QueueController) applyProbeResult(job probeJob, probe *engine.ProbeRes
 	return start
 }
 
-// applyHLSFacts 把探测出的 HLS 事实落进队列项：可选清晰度、已选定的那一版，以及它的
-// 大小与时长。大小取自选定的版本而不是清单自己——清单的字节数不是这次下载的大小。
-func applyHLSFacts(item *FileInfoItem, probe *engine.ProbeResult) {
-	if item == nil || probe == nil || probe.HLS == nil {
-		return
-	}
-	item.Variants = probe.HLS.Options
-	src := probe.HLS.Media
-	if src == nil {
-		return
-	}
-	item.media = src
-	item.QualityLabel = src.Variant.Label()
-	item.MediaDuration = src.Duration
-	item.TotalBytes = src.TotalBytes
-}
-
 // hlsSelection 是一次清晰度选择的快照：锁内取走，锁外用来联网。
 type hlsSelection struct {
 	// url 是这一次选择要解析的清单地址，由界面把当前链接显式传进来：手输链接时队列项里
 	// 没有 URL（登记时是空的），不传就会拿到空地址。
-	url     string
-	headers map[string]string
-	// probe 是手上已有的探测结果。为空表示这条链接是手动输入的，登记时没探过，
-	// 需要先补一次探测才知道有哪些清晰度可选。
-	probe *engine.ProbeResult
+	url    string
+	target intake.Target
 }
 
 // SelectHLSVariant 记下用户在文件信息窗口里选定的清晰度，并把这一版的事实取回来。
@@ -864,32 +593,10 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 		return err
 	}
 
-	if job.probe == nil {
-		// 手动输入的链接在登记时没有探测过，这里补一次：既是为了拿到可选清晰度，
-		// 也是为了让提交能沿用这份结果，不再为同一份元数据多付一次请求。
-		probe, probeErr := qc.engine.ProbeURL(ctx, job.url, job.headers)
-		if probeErr != nil {
-			return probeErr
-		}
-		if probe == nil || probe.HLS == nil {
-			return errors.New("这个链接不是 HLS 清单，没有清晰度可选")
-		}
-		job.probe = probe
-	} else if job.probe.HLS == nil {
-		// 探测已经回来且确认不是清单：这个链接根本没有清晰度这一说，直接拒绝，
-		// 不必再为它发起一次「选定清晰度」的解析。
-		return errors.New("这个链接不是 HLS 清单，没有清晰度可选")
-	}
-
-	src, err := qc.engine.ResolveHLSVariant(ctx, job.url, variantURI, job.headers)
+	selection, err := qc.intake.SelectVariant(ctx, job.target, job.url, variantURI)
 	if err != nil {
 		return err
 	}
-	if src == nil {
-		return errors.New("所选清晰度解析失败，请重试")
-	}
-
-	engine.ApplyHLSSelection(job.probe, src)
 
 	qc.mu.Lock()
 	actions := newWindowActions(qc.windowView)
@@ -900,39 +607,15 @@ func (qc *QueueController) SelectHLSVariant(ctx context.Context, requestID, urlS
 	if item == nil {
 		return ErrStaleFileInfoSubmission
 	}
-	item.probe = job.probe
-	item.probeErr = nil
 	item.Probing = false
-	applyHLSFacts(item, job.probe)
+	ready := qc.intake.ApplyVariant(context.Background(), &item.Target, selection, qc.reservedNamesLocked(item.ID))
 
-	if job.probe != nil && job.probe.HLS != nil && len(job.probe.HLS.Variants) > 1 {
-		item.Filename = engine.HLSVariantFilename(item.Filename, src.Variant)
-		occupancy := qc.occupancyLocked(ctx, item.ID)
-		item.SuggestedFilename = occupancy.Suggest(item.Directory, item.Filename)
-		item.FileConflict = occupancy.Taken(item.Directory, item.Filename)
-	}
-	// 选定清晰度后重新核算该变体的重复任务与裁决结果
-	dupTask, _ := qc.engine.FindDuplicateTaskWithVariant(ctx, job.url, variantURI)
-	item.DuplicateTask = dupTask
-	policy := qc.settings.Get().Download.DuplicateURLPolicy
-	item.DuplicateDecision = duplicate.Decide(duplicate.Facts{
-		Policy:              policy,
-		HasHistory:          dupTask != nil,
-		HistoryCompleted:    dupTask != nil && dupTask.Status == task.StatusCompleted,
-		DestinationOccupied: engine.DestinationOccupied(item.Directory, item.Filename, dupTask),
-	})
 	var start *preDownloadStart
-	if item.PreDownload && !item.FileConflict && item.DuplicateTask == nil && item.PreDownloadTaskID == "" && !item.preDownloadStarting {
+	if ready && item.PreDownload && item.PreDownloadTaskID == "" && !item.preDownloadStarting {
+		// PreDownloadTaskID 还是空的：此刻直接提交会在同一链接上建出第二份任务。
 		item.preDownloadStarting = true
 		item.preDownloadStartedCh = make(chan struct{})
-		start = &preDownloadStart{
-			item:     item,
-			url:      job.url,
-			dir:      item.Directory,
-			filename: item.Filename,
-			maxConn:  item.MaxConn,
-			headers:  job.headers,
-		}
+		start = &preDownloadStart{item: item, target: item.Target}
 	}
 
 	itemCopy := *item
@@ -960,7 +643,7 @@ func (qc *QueueController) beginHLSSelection(ctx context.Context, requestID, url
 			qc.mu.Unlock()
 			return nil, errors.New("缺少下载链接，无法选择清晰度")
 		}
-		if item.probe == nil && item.probeErr == nil {
+		if !item.ProbeSettled() {
 			// 登记时那次探测还没回来。等它落地，否则这里补出来的元数据会盖掉它，
 			// 而它才是提交要复用的那一份。
 			if done := item.probeDone; done != nil {
@@ -974,12 +657,7 @@ func (qc *QueueController) beginHLSSelection(ctx context.Context, requestID, url
 			}
 		}
 
-		// 探测结果只在链接没被改过时才算数：用户改过链接，手上这份元数据已经不属于它了。
-		probe := item.probe
-		if probe != nil && probe.URL != urlStr {
-			probe = nil
-		}
-		job := &hlsSelection{url: urlStr, headers: item.Headers, probe: probe}
+		job := &hlsSelection{url: urlStr, target: item.Target}
 		qc.mu.Unlock()
 		return job, nil
 	}
@@ -1050,7 +728,7 @@ func (qc *QueueController) submitItem(ctx context.Context, itemID string, sub Fi
 		return nil, err
 	}
 
-	resTask, err := qc.runSubmit(ctx, plan)
+	result, err := qc.intake.Submit(ctx, plan.target, plan.choice)
 
 	qc.mu.Lock()
 	actions := newWindowActions(qc.windowView)
@@ -1058,23 +736,17 @@ func (qc *QueueController) submitItem(ctx context.Context, itemID string, sub Fi
 	defer actions.run(qc.runOps)
 	defer qc.mu.Unlock()
 
-	plan.apply()
+	// 锁外算出的裁决无论成败都要写回：提交失败时界面刷新看到的也必须是这一份事实。
+	plan.item.DuplicateDecision = result.Decision
 	plan.item.submitting = false
 
 	if err != nil {
 		return nil, err
 	}
-	if resTask != nil {
-		if plan.categoryID != "" && resTask.CategoryID != plan.categoryID {
-			resTask.CategoryID = plan.categoryID
-			_ = qc.engine.SetTaskCategoryID(ctx, resTask.ID, plan.categoryID)
-		}
-		if plan.item.PageURL != "" && resTask.PageURL == "" {
-			resTask.PageURL = plan.item.PageURL
-			_ = qc.engine.SetTaskPageURL(ctx, resTask.ID, plan.item.PageURL)
-		}
+	if result.Task != nil {
 		if qc.onSubmitTask != nil {
 			onSubmit := qc.onSubmitTask
+			resTask := result.Task
 			actions.add(func() { onSubmit(resTask) })
 		}
 	}
@@ -1087,40 +759,17 @@ func (qc *QueueController) submitItem(ctx context.Context, itemID string, sub Fi
 		qc.advanceQueueLocked(actions)
 	}
 
-	return resTask, nil
+	return result.Task, nil
 }
 
-// submitPlan 是提交穿过锁的一次快照：锁内取事实，锁外调引擎，回来后按 ID 落地。
+// submitPlan 是提交穿过锁的一次快照：锁内取事实，锁外交给 intake，回来后按 ID 落地。
 type submitPlan struct {
-	item       *FileInfoItem
-	url        string
-	directory  string
-	filename   string
-	maxConn    int
-	categoryID string
-	headers    map[string]string
-	policy     config.DuplicateURLPolicy
-	sub        FileInfoSubmission
-	preTaskID  string
-	// probe 是登记时那次探测的结果，提交用它建任务、不再自己联网（见 runSubmit）。
-	// 它是空的就说明这次提交无从复用：链接是新输入的，或者用户改过链接（那份元数据
-	// 已经不属于这个链接了），只能退回让引擎自己探一次。
-	probe    *engine.ProbeResult
-	probeErr error
-
-	duplicateTask *task.Task
-	decision      duplicate.Decision
+	item   *FileInfoItem
+	target intake.Target
+	choice intake.Choice
 }
 
-// apply 把锁外算出的裁决写回这一项，界面刷新时看到的是与事实一致的结果。
-func (p *submitPlan) apply() {
-	if p.duplicateTask != nil {
-		p.item.DuplicateTask = p.duplicateTask
-	}
-	p.item.DuplicateDecision = p.decision
-}
-
-// beginSubmit 在锁内确认这一项可以提交，标出「提交在路上」，并取走这次提交需要的事实。
+// beginSubmitItem 在锁内确认这一项可以提交，标出「提交在路上」，并取走这次提交需要的事实。
 func (qc *QueueController) beginSubmitItem(ctx context.Context, itemID string, sub FileInfoSubmission) (*submitPlan, error) {
 	for {
 		qc.mu.Lock()
@@ -1130,7 +779,7 @@ func (qc *QueueController) beginSubmitItem(ctx context.Context, itemID string, s
 			qc.mu.Unlock()
 			return nil, ErrStaleFileInfoSubmission
 		}
-		if active.probe == nil && active.probeErr == nil {
+		if !active.ProbeSettled() {
 			// 登记时发起的那次探测还没回来：提交只认它的结果，自己再探一次就是同一份元数据
 			// 付两次请求往返。窗口弹出到用户点确认之间通常早就跑完了，这里补的是极短的时间窗。
 			if done := active.probeDone; done != nil {
@@ -1161,73 +810,22 @@ func (qc *QueueController) beginSubmitItem(ctx context.Context, itemID string, s
 		}
 		active.submitting = true
 
-		catID := sub.CategoryID
-		if catID == "" {
-			catID = active.CategoryID
-		}
-		finalFilename := sub.Filename
-		if (finalFilename == "" || finalFilename == engine.DefaultFilename || finalFilename == engine.URLFilename(sub.URL)) && active.Filename != "" {
-			finalFilename = active.Filename
-		}
-		if catID == "" && qc.settings != nil {
-			cat, _ := qc.settings.Get().Download.ResolveDestination(finalFilename)
-			catID = cat.ID
-		}
-
 		plan := &submitPlan{
-			item:          active,
-			url:           sub.URL,
-			directory:     sub.Directory,
-			filename:      finalFilename,
-			categoryID:    catID,
-			maxConn:       sub.MaxConn,
-			headers:       active.Headers,
-			policy:        qc.settings.Get().Download.DuplicateURLPolicy,
-			sub:           sub,
-			preTaskID:     active.PreDownloadTaskID,
-			duplicateTask: active.DuplicateTask,
-		}
-		// 探测结果只在链接没被改过时才算数：用户改过链接，手上这份元数据已经不属于它了。
-		if active.probe != nil && active.probe.URL == sub.URL {
-			plan.probe, plan.probeErr = active.probe, active.probeErr
+			item:   active,
+			target: active.Target,
+			choice: intake.Choice{
+				URL:         sub.URL,
+				Filename:    sub.Filename,
+				Directory:   sub.Directory,
+				CategoryID:  sub.CategoryID,
+				MaxConn:     sub.MaxConn,
+				Action:      sub.Action,
+				ReuseTaskID: sub.ReuseTaskID,
+				PreTaskID:   active.PreDownloadTaskID,
+			},
 		}
 		qc.mu.Unlock()
 		return plan, nil
-	}
-}
-
-// runSubmit 在锁外完成这次提交的引擎调用；它只读快照，不碰队列状态。
-func (qc *QueueController) runSubmit(ctx context.Context, plan *submitPlan) (*task.Task, error) {
-	// 用户可能改过目录或文件名，因此按最终落点重新裁决，而不是沿用登记时的结果。
-	// 策略取当前设置：它只影响默认动作，而用户已选定动作时默认动作不会被使用。
-	plan.decision = duplicate.Decide(duplicate.Facts{
-		Policy:              plan.policy,
-		HasHistory:          plan.duplicateTask != nil,
-		HistoryCompleted:    plan.duplicateTask != nil && plan.duplicateTask.Status == task.StatusCompleted,
-		DestinationOccupied: engine.DestinationOccupied(plan.directory, plan.filename, plan.duplicateTask),
-	})
-
-	action := plan.sub.Action
-	if action == "" {
-		action = plan.decision.Default
-	}
-
-	switch {
-	case action == duplicate.ActionReuse && plan.sub.ReuseTaskID != "":
-		return qc.engine.ReuseExistingFile(ctx, plan.sub.ReuseTaskID, plan.directory, plan.filename)
-	case plan.duplicateTask != nil:
-		if action == "" {
-			// 局面需要用户先决定怎么处理，界面不能在没有选择的情况下提交。
-			return nil, ErrDuplicateChoiceRequired
-		}
-		return qc.engine.ResolveDuplicateFromProbeWithMetadata(ctx, plan.duplicateTask.ID, string(action), plan.directory, plan.filename, plan.maxConn, plan.probe, plan.categoryID)
-	case plan.preTaskID != "":
-		return qc.engine.ConfirmPreDownload(ctx, plan.preTaskID, plan.directory, plan.filename, plan.maxConn)
-	case plan.probe != nil:
-		// 登记时那次探测已经给出结论：直接拿它建任务，提交因此不联网、瞬时返回。
-		return qc.engine.AddTaskFromProbeWithMetadata(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers, plan.probe, plan.probeErr, plan.item.PageURL, plan.categoryID)
-	default:
-		return qc.engine.AddTaskWithMetadata(ctx, plan.url, plan.directory, plan.filename, plan.maxConn, plan.headers, plan.item.PageURL, plan.categoryID)
 	}
 }
 
@@ -1259,7 +857,7 @@ func (qc *QueueController) CancelCurrent(ctx context.Context) error {
 		active.probeCancel = nil
 	}
 	if active.PreDownloadTaskID != "" {
-		_ = qc.engine.CancelPreDownload(ctx, active.PreDownloadTaskID)
+		_ = qc.intake.CancelPreDownload(ctx, active.PreDownloadTaskID)
 	}
 
 	// Remove cancelled item from queue

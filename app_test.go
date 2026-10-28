@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2029,5 +2030,80 @@ func TestApp_CachedAppUpdate(t *testing.T) {
 	cached := app.GetCachedAppUpdate()
 	if cached == nil || !cached.HasUpdate || cached.LatestVersion != "1.1.0" {
 		t.Fatalf("expected cached update to report 1.1.0 with HasUpdate=true, got: %v", cached)
+	}
+}
+
+// newHLSVariantServer 提供一份有两个清晰度的点播清单：主清单指向 720p 与 1080p，
+// 各有一份只含一个分片的媒体清单。直下载入口要真的读清单、解析清晰度、问分片大小。
+func newHLSVariantServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	const segment = "segment-bytes"
+	playlist := func(w http.ResponseWriter, body string) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = io.WriteString(w, body)
+	}
+	media := "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nseg0.ts\n#EXT-X-ENDLIST\n"
+	segmentHandler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(segment)))
+		_, _ = io.WriteString(w, segment)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/master.m3u8", func(w http.ResponseWriter, _ *http.Request) {
+		playlist(w, "#EXTM3U\n#EXT-X-VERSION:3\n"+
+			"#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\nv720/index.m3u8\n"+
+			"#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nv1080/index.m3u8\n")
+	})
+	mux.HandleFunc("/v720/index.m3u8", func(w http.ResponseWriter, _ *http.Request) { playlist(w, media) })
+	mux.HandleFunc("/v1080/index.m3u8", func(w http.ResponseWriter, _ *http.Request) { playlist(w, media) })
+	mux.HandleFunc("/v720/seg0.ts", segmentHandler)
+	mux.HandleFunc("/v1080/seg0.ts", segmentHandler)
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// 同一条清单的两个清晰度是两个下载目标：直下载入口必须和文件信息窗口用同一套按清晰度
+// 判定的重复查找，否则第二次请求会被当成第一次的重复链接，只留下一条任务。
+func TestApp_DirectDownloadKeepsVariantsAsSeparateTasks(t *testing.T) {
+	app, store, _ := newTestApp(t)
+	// 任务停在队列里即可：这里断言的是入口建出了哪几条任务，不是传输本身。
+	app.manager.SetMaxActiveTasks(0)
+	srv := newHLSVariantServer(t)
+
+	ctx := context.Background()
+	low, err := app.directDownload(ctx, window.DownloadRequest{
+		URL:        srv.URL + "/master.m3u8",
+		VariantURI: srv.URL + "/v720/index.m3u8",
+	})
+	if err != nil {
+		t.Fatalf("720p direct download failed: %v", err)
+	}
+	high, err := app.directDownload(ctx, window.DownloadRequest{
+		URL:        srv.URL + "/master.m3u8",
+		VariantURI: srv.URL + "/v1080/index.m3u8",
+	})
+	if err != nil {
+		t.Fatalf("1080p direct download failed: %v", err)
+	}
+
+	if low.TaskID == high.TaskID {
+		t.Fatalf("两个清晰度落到了同一条任务 %q 上", low.TaskID)
+	}
+	if low.Filename != "master_720p.mp4" || high.Filename != "master_1080p.mp4" {
+		t.Errorf("filenames = %q/%q, want master_720p.mp4 and master_1080p.mp4", low.Filename, high.Filename)
+	}
+
+	for _, want := range []struct {
+		id      string
+		variant string
+	}{{low.TaskID, srv.URL + "/v720/index.m3u8"}, {high.TaskID, srv.URL + "/v1080/index.m3u8"}} {
+		saved, err := store.Get(ctx, want.id)
+		if err != nil {
+			t.Fatalf("task %s missing from the store: %v", want.id, err)
+		}
+		if saved.Media == nil || saved.Media.Variant.URI != want.variant {
+			t.Errorf("task %s media = %+v, want variant %q", want.id, saved.Media, want.variant)
+		}
 	}
 }

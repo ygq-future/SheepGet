@@ -2,7 +2,6 @@ package window
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -12,16 +11,13 @@ import (
 	"sheep-get/internal/task"
 )
 
-// hlsProbeEngine 是一个只为 HLS 清晰度选择服务的轻量引擎：其余方法要么返回默认值，要么
-// 直接报错，只有 ProbeURL / ResolveHLSVariant / AddTaskFromProbe 三个是真正被选清晰度
-// 这条链路用到的。
+// hlsProbeEngine 是一个只为 HLS 清晰度选择服务的轻量引擎：只有真正跑在这条链路上的
+// 方法有实现，其余返回零值。
 type hlsProbeEngine struct {
 	// probe 是 ProbeURL 要返回的结果；交给测试逐个设置。
 	probe *engine.ProbeResult
 	// resolve 是 ResolveHLSVariant 要返回的来源；交给测试逐个设置。
 	resolve *hls.Source
-	// resolveErr 让测试模拟「选中的版本解析失败」。
-	resolveErr error
 	// resolvedURI 记录最后一次被要求解析的清晰度地址，供断言选的是哪一个。
 	resolvedURI        string
 	createdProbe       *engine.ProbeResult
@@ -35,11 +31,7 @@ func (e *hlsProbeEngine) ProbeURL(context.Context, string, map[string]string) (*
 
 func (e *hlsProbeEngine) ResolveHLSVariant(_ context.Context, _, variantURI string, _ map[string]string) (*hls.Source, error) {
 	e.resolvedURI = variantURI
-	return e.resolve, e.resolveErr
-}
-
-func (e *hlsProbeEngine) FindDuplicateTask(context.Context, string) (*task.Task, error) {
-	return e.duplicateTask, nil
+	return e.resolve, nil
 }
 
 func (e *hlsProbeEngine) FindDuplicateTaskWithVariant(_ context.Context, _, variantURI string) (*task.Task, error) {
@@ -51,37 +43,18 @@ func (e *hlsProbeEngine) FindDuplicateTaskWithVariant(_ context.Context, _, vari
 	return e.duplicateTask, nil
 }
 
-func (e *hlsProbeEngine) AddTask(context.Context, string, string, string, int) (*task.Task, error) {
-	return nil, errors.New("AddTask should not be called in HLS selection tests")
+func (e *hlsProbeEngine) AddTaskWithMetadata(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, pageURL, categoryID string) (*task.Task, error) {
+	return &task.Task{ID: "task_created", URL: urlStr, PageURL: pageURL, CategoryID: categoryID}, nil
 }
 
-func (e *hlsProbeEngine) AddTaskWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
-	return nil, errors.New("AddTaskWithHeaders should not be called in HLS selection tests")
-}
-func (e *hlsProbeEngine) AddTaskWithMetadata(context.Context, string, string, string, int, map[string]string, string, string) (*task.Task, error) {
-	return nil, errors.New("AddTaskWithMetadata should not be called in HLS selection tests")
-}
-
-func (e *hlsProbeEngine) AddTaskFromProbe(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, _ error) (*task.Task, error) {
-	e.createdProbe = probe
-	return &task.Task{ID: "task_created", URL: urlStr}, nil
-}
 func (e *hlsProbeEngine) AddTaskFromProbeWithMetadata(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, _ error, pageURL, categoryID string) (*task.Task, error) {
 	e.createdProbe = probe
 	return &task.Task{ID: "task_created", URL: urlStr, PageURL: pageURL, CategoryID: categoryID}, nil
 }
 
-func (e *hlsProbeEngine) StartPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
-	return nil, nil
-}
-
-func (e *hlsProbeEngine) StartPreDownloadWithHeaders(context.Context, string, string, string, int, map[string]string) (*task.Task, error) {
+func (e *hlsProbeEngine) StartPreDownloadFromProbe(_ context.Context, req engine.PreDownloadRequest) (*task.Task, error) {
 	e.preDownloadStarted = true
-	return &task.Task{ID: "task_pre"}, nil
-}
-func (e *hlsProbeEngine) StartPreDownloadWithMetadata(context.Context, string, string, string, int, map[string]string, string, string) (*task.Task, error) {
-	e.preDownloadStarted = true
-	return &task.Task{ID: "task_pre"}, nil
+	return &task.Task{ID: "task_pre", URL: req.URL}, nil
 }
 
 func (e *hlsProbeEngine) ConfirmPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
@@ -90,15 +63,6 @@ func (e *hlsProbeEngine) ConfirmPreDownload(context.Context, string, string, str
 
 func (e *hlsProbeEngine) CancelPreDownload(context.Context, string) error {
 	return nil
-}
-
-func (e *hlsProbeEngine) ResolveDuplicate(context.Context, string, string, string, string, int) (*task.Task, error) {
-	return nil, nil
-}
-
-func (e *hlsProbeEngine) ResolveDuplicateFromProbe(_ context.Context, _ string, _ string, _ string, _ string, _ int, probe *engine.ProbeResult) (*task.Task, error) {
-	e.createdProbe = probe
-	return &task.Task{ID: "task_duplicate_resolved"}, nil
 }
 
 func (e *hlsProbeEngine) ResolveDuplicateFromProbeWithMetadata(_ context.Context, _ string, _ string, _ string, _ string, _ int, probe *engine.ProbeResult, categoryID string) (*task.Task, error) {

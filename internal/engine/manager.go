@@ -724,11 +724,6 @@ func (m *Manager) Occupancy(ctx context.Context, reserved Reserved) Occupancy {
 	return Occupancy{Tasks: existingList, Reserved: reserved}
 }
 
-// FindDuplicateTask finds an existing task with matching urlStr from local store without network probe.
-func (m *Manager) FindDuplicateTask(ctx context.Context, urlStr string) (*task.Task, error) {
-	return m.FindDuplicateTaskWithVariant(ctx, urlStr, "")
-}
-
 // FindDuplicateTaskWithVariant 在本地存储中查找匹配的已有任务。
 // 当 variantURI 不为空（HLS 视频多清晰度）时，仅匹配同清晰度变体的历史任务；
 // 若历史任务与待下载任务为不同清晰度规格，则判定为不同下载目标，不构成重复任务。
@@ -1145,12 +1140,15 @@ func (m *Manager) AddTaskFromProbeWithMetadata(ctx context.Context, urlStr, dir,
 // createTask 是两条建任务路径的共同实现：先挡住重复链接，再按探测结果落成一条任务。
 // 探测失败时仍然建一条可见的失败任务（A03），而不是什么都不留下。
 func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, maxConn int, creds credentials.RequestCredentials, probe *ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
-	// Check duplicate URL in existing tasks
-	existingList, _ := m.store.List(ctx)
-	for _, ext := range existingList {
-		if ext.URL == urlStr && ext.Status != task.StatusCompleted {
-			return nil, fmt.Errorf("该下载链接已存在于任务列表中（状态：%s），请勿重复添加", ext.Status)
-		}
+	// 挡住重复链接：同一条清单的不同清晰度是不同的下载目标，因此这里和别的入口用同一套判定
+	// （FindDuplicateTaskWithVariant），不另写一份「只看 URL」的口径——那会把第二个清晰度
+	// 当成重复链接拒绝掉。
+	variantURI := ""
+	if probe != nil && probe.HLS != nil && probe.HLS.Media != nil {
+		variantURI = probe.HLS.Media.Variant.URI
+	}
+	if dup, _ := m.FindDuplicateTaskWithVariant(ctx, urlStr, variantURI); dup != nil && dup.Status != task.StatusCompleted {
+		return nil, fmt.Errorf("该下载链接已存在于任务列表中（状态：%s），请勿重复添加", dup.Status)
 	}
 
 	now := time.Now()

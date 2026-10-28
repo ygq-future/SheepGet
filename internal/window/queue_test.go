@@ -11,6 +11,7 @@ import (
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
+	"sheep-get/internal/intake"
 	"sheep-get/internal/task"
 	"sync"
 	"testing"
@@ -972,8 +973,8 @@ func TestQueueController_DestinationOccupiedRequiresUserChoice(t *testing.T) {
 		Directory: active.Directory,
 		MaxConn:   4,
 	})
-	if !errors.Is(err, ErrDuplicateChoiceRequired) {
-		t.Fatalf("err = %v, want %v", err, ErrDuplicateChoiceRequired)
+	if !errors.Is(err, intake.ErrChoiceRequired) {
+		t.Fatalf("err = %v, want %v", err, intake.ErrChoiceRequired)
 	}
 
 	// 用户随后选「继续覆盖」：历史任务已完成且成品就在磁盘上，因此是覆盖重下。

@@ -90,12 +90,17 @@ export class DownloadResponse {
 }
 
 /**
- * FileInfoItem represents a single item waiting in the file info window queue.
+ * FileInfoItem 是文件信息窗口里的一项：下载目标（名字、落点、分类、探测事实与裁决）加上
+ * 这一项自己的生命周期状态。目标由 intake 决定，窗口不再维护第二份名字或落点。
  */
 export class FileInfoItem {
-    "id": string;
     "url": string;
     "filename": string;
+
+    /**
+     * SuggestedFilename 是原名被占用时第一个可用的序号副本名；冲突提示与「使用序号」
+     * 因此出自同一次占用判定。
+     */
     "suggestedFilename": string;
     "directory": string;
     "categoryId"?: string;
@@ -105,12 +110,16 @@ export class FileInfoItem {
      * “这条路径是否还是分类默认值”时拿它比较，不再自己拼相对子目录。
      */
     "categoryDirectory": string;
+    "maxConn": number;
+    "headers"?: { [_ in string]?: string };
+    "pageUrl"?: string;
     "totalBytes": number;
     "mimeType": string;
     "resumable": boolean;
-    "maxConn": number;
-    "preDownload": boolean;
-    "preDownloadTaskId"?: string;
+
+    /**
+     * FileConflict 报告目标位置已有同名文件（不包含这一项自己）。
+     */
     "fileConflict": boolean;
     "duplicateTask"?: task$0.Task | null;
 
@@ -119,11 +128,6 @@ export class FileInfoItem {
      * 策略本身不下发给窗口，避免窗口把它当成第二份规则来源。
      */
     "duplicateDecision": duplicate$0.Decision;
-    "queueIndex": number;
-    "queueTotal": number;
-    "headers"?: { [_ in string]?: string };
-    "pageUrl"?: string;
-    "probing": boolean;
 
     /**
      * Variants 多于一项时构成一次选择：界面必须先选定才能确认下载。
@@ -140,12 +144,23 @@ export class FileInfoItem {
      * 能证实的信息，读不到就留空由界面显示未知，不用别处的数字凑一个出来。
      */
     "mediaDuration"?: number;
+    "id": string;
+
+    /**
+     * PreDownload 是这一项要不要在确认前先传起来；PreDownloadTaskID 是已经起好的那条任务。
+     */
+    "preDownload": boolean;
+    "preDownloadTaskId"?: string;
+    "queueIndex": number;
+    "queueTotal": number;
+
+    /**
+     * Probing 表示登记时那次探测还在路上，界面据此显示加载态。
+     */
+    "probing": boolean;
 
     /** Creates a new FileInfoItem instance. */
     constructor($$source: Partial<FileInfoItem> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
         if (!("url" in $$source)) {
             this["url"] = "";
         }
@@ -161,6 +176,9 @@ export class FileInfoItem {
         if (!("categoryDirectory" in $$source)) {
             this["categoryDirectory"] = "";
         }
+        if (!("maxConn" in $$source)) {
+            this["maxConn"] = 0;
+        }
         if (!("totalBytes" in $$source)) {
             this["totalBytes"] = 0;
         }
@@ -170,17 +188,17 @@ export class FileInfoItem {
         if (!("resumable" in $$source)) {
             this["resumable"] = false;
         }
-        if (!("maxConn" in $$source)) {
-            this["maxConn"] = 0;
-        }
-        if (!("preDownload" in $$source)) {
-            this["preDownload"] = false;
-        }
         if (!("fileConflict" in $$source)) {
             this["fileConflict"] = false;
         }
         if (!("duplicateDecision" in $$source)) {
             this["duplicateDecision"] = (new duplicate$0.Decision());
+        }
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("preDownload" in $$source)) {
+            this["preDownload"] = false;
         }
         if (!("queueIndex" in $$source)) {
             this["queueIndex"] = 0;
@@ -199,22 +217,22 @@ export class FileInfoItem {
      * Creates a new FileInfoItem instance from a string or object.
      */
     static createFrom($$source: any = {}): FileInfoItem {
-        const $$createField14_0 = $$createType2;
-        const $$createField15_0 = $$createType3;
-        const $$createField18_0 = $$createType0;
-        const $$createField21_0 = $$createType5;
+        const $$createField7_0 = $$createType0;
+        const $$createField13_0 = $$createType2;
+        const $$createField14_0 = $$createType3;
+        const $$createField15_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("headers" in $$parsedSource) {
+            $$parsedSource["headers"] = $$createField7_0($$parsedSource["headers"]);
+        }
         if ("duplicateTask" in $$parsedSource) {
-            $$parsedSource["duplicateTask"] = $$createField14_0($$parsedSource["duplicateTask"]);
+            $$parsedSource["duplicateTask"] = $$createField13_0($$parsedSource["duplicateTask"]);
         }
         if ("duplicateDecision" in $$parsedSource) {
-            $$parsedSource["duplicateDecision"] = $$createField15_0($$parsedSource["duplicateDecision"]);
-        }
-        if ("headers" in $$parsedSource) {
-            $$parsedSource["headers"] = $$createField18_0($$parsedSource["headers"]);
+            $$parsedSource["duplicateDecision"] = $$createField14_0($$parsedSource["duplicateDecision"]);
         }
         if ("variants" in $$parsedSource) {
-            $$parsedSource["variants"] = $$createField21_0($$parsedSource["variants"]);
+            $$parsedSource["variants"] = $$createField15_0($$parsedSource["variants"]);
         }
         return new FileInfoItem($$parsedSource as Partial<FileInfoItem>);
     }
