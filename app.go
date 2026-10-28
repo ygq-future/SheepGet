@@ -462,6 +462,24 @@ func (a *App) SetCategoryDirectory(targetCategoryID, directory string) error {
 	return err
 }
 
+// ResetBuiltinCategoryExtensions restores one builtin category's preset takeover extensions.
+// 保存子目录与其他分类都不动，只回滚这一类的后缀规则。
+func (a *App) ResetBuiltinCategoryExtensions(targetCategoryID string) (bool, error) {
+	if a.settingsApply == nil || a.settings == nil {
+		return false, fmt.Errorf("settings service not initialized")
+	}
+	current := a.settings.Get()
+	updatedDownload, changed := current.Download.ResetBuiltinCategoryExtensions(targetCategoryID)
+	if !changed {
+		return false, nil
+	}
+	current.Download = updatedDownload
+	if _, err := a.settingsApply.Update(current); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // PauseTask pauses an active or queued task
 func (a *App) PauseTask(id string) error {
 	return a.manager.Pause(a.ctx, id)

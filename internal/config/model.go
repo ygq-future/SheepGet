@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sheep-get/internal/protocol"
+	"slices"
 	"strings"
 )
 
@@ -980,4 +981,38 @@ func (d DownloadConfig) SetCategoryDirectory(targetCategoryID, dir string) (Down
 	}
 
 	return d, false
+}
+
+// ResetBuiltinCategoryExtensions restores one builtin category's takeover extensions to its
+// preset list. 保存子目录和其他分类都属于用户配置，重置接管类型时保持不变。
+// Returns the updated DownloadConfig and whether any changes were made.
+func (d DownloadConfig) ResetBuiltinCategoryExtensions(targetCategoryID string) (DownloadConfig, bool) {
+	preset, ok := builtinPresetExtensions(targetCategoryID)
+	if !ok {
+		return d, false
+	}
+	for i := range d.BuiltinCategories {
+		if d.BuiltinCategories[i].ID != targetCategoryID {
+			continue
+		}
+		if slices.Equal(NormalizeExtensions(d.BuiltinCategories[i].Extensions), preset) {
+			return d, false
+		}
+		d.BuiltinCategories[i].Extensions = preset
+		return d, true
+	}
+	return d, false
+}
+
+// builtinPresetExtensions returns the preset takeover extensions for a builtin category ID.
+func builtinPresetExtensions(id string) ([]string, bool) {
+	if id == "" {
+		return nil, false
+	}
+	for _, cat := range DefaultBuiltinCategories("") {
+		if cat.ID == id {
+			return cat.Extensions, true
+		}
+	}
+	return nil, false
 }

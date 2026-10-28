@@ -616,6 +616,80 @@ func TestSettings_SetCategoryDirectory(t *testing.T) {
 	}
 }
 
+func TestResetBuiltinCategoryExtensions(t *testing.T) {
+	s := DefaultSettings("/dl", "/tmp")
+	s.Download.CustomCategories = []CategoryConfig{
+		{ID: "custom-docs", Name: "文档", Directory: "Docs", Extensions: []string{"md"}},
+	}
+	findCategory := func(download DownloadConfig, id string) (CategoryConfig, bool) {
+		for _, cat := range download.BuiltinCategories {
+			if cat.ID == id {
+				return cat, true
+			}
+		}
+		return CategoryConfig{}, false
+	}
+
+	// 1. 已是预置后缀时重置不产生写入。
+	if _, changed := s.Download.ResetBuiltinCategoryExtensions("builtin-archive"); changed {
+		t.Fatal("expected no change when the category already uses preset extensions")
+	}
+
+	// 2. 只回滚目标分类的后缀：目录与其他分类都保持用户配置。
+	mutated := s.Download
+	for i := range mutated.BuiltinCategories {
+		switch mutated.BuiltinCategories[i].ID {
+		case "builtin-archive":
+			mutated.BuiltinCategories[i].Directory = "zip"
+			mutated.BuiltinCategories[i].Extensions = []string{"zip", "zst"}
+		case "builtin-video":
+			mutated.BuiltinCategories[i].Directory = "video"
+			mutated.BuiltinCategories[i].Extensions = []string{"mkv", "webm"}
+		}
+	}
+
+	updated, changed := mutated.ResetBuiltinCategoryExtensions("builtin-archive")
+	if !changed {
+		t.Fatal("expected changed=true after mutating archive extensions")
+	}
+	archive, ok := findCategory(updated, "builtin-archive")
+	if !ok {
+		t.Fatal("builtin-archive missing after reset")
+	}
+	if archive.Directory != "zip" {
+		t.Errorf("reset must keep the category directory, got %q", archive.Directory)
+	}
+	wantArchive := []string{"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "iso"}
+	if len(archive.Extensions) != len(wantArchive) {
+		t.Fatalf("archive extensions = %v, want %v", archive.Extensions, wantArchive)
+	}
+	for i := range wantArchive {
+		if archive.Extensions[i] != wantArchive[i] {
+			t.Fatalf("archive extensions = %v, want %v", archive.Extensions, wantArchive)
+		}
+	}
+	video, ok := findCategory(updated, "builtin-video")
+	if !ok {
+		t.Fatal("builtin-video missing after archive reset")
+	}
+	if video.Directory != "video" || len(video.Extensions) != 2 || video.Extensions[1] != "webm" {
+		t.Errorf("reset must not touch other categories, got %+v", video)
+	}
+	if len(updated.CustomCategories) != 1 || updated.CustomCategories[0].Name != "文档" {
+		t.Errorf("reset must leave custom categories untouched, got %+v", updated.CustomCategories)
+	}
+
+	// 3. 重置是幂等的。
+	if _, changed := updated.ResetBuiltinCategoryExtensions("builtin-archive"); changed {
+		t.Error("expected no change when resetting an already-default category")
+	}
+
+	// 4. 未知分类不产生改动。
+	if _, changed := updated.ResetBuiltinCategoryExtensions("missing"); changed {
+		t.Error("expected no change for an unknown category")
+	}
+}
+
 func TestSiteMatchesExcluded(t *testing.T) {
 	excluded := []string{
 		"example.com",

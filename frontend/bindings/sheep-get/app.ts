@@ -318,6 +318,14 @@ export function ProbeURL(urlStr: string): $CancellablePromise<engine$0.ProbeResu
 }
 
 /**
+ * ResetBuiltinCategoryExtensions restores one builtin category's preset takeover extensions.
+ * 保存子目录与其他分类都不动，只回滚这一类的后缀规则。
+ */
+export function ResetBuiltinCategoryExtensions(targetCategoryID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(988543757, targetCategoryID);
+}
+
+/**
  * ResolveCategoryDestination resolves the save directory for an explicit category choice.
  * 界面切换分类时用它取落点：分类目录的相对子目录由后端拼装，界面不再自行 join。
  */

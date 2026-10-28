@@ -817,6 +817,83 @@ func TestApp_SetCategoryDirectory(t *testing.T) {
 	}
 }
 
+func TestApp_ResetBuiltinCategoryExtensions(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	// 用户给两个内置分类各自配置了目录与后缀，并保留一个自定义分类。
+	if err := app.SetCategoryDirectory("builtin-archive", "zip"); err != nil {
+		t.Fatalf("SetCategoryDirectory failed: %v", err)
+	}
+	if err := app.SetCategoryDirectory("builtin-video", "video"); err != nil {
+		t.Fatalf("SetCategoryDirectory failed: %v", err)
+	}
+	if err := app.AssignExtensionToCategory("zst", "builtin-archive"); err != nil {
+		t.Fatalf("AssignExtensionToCategory failed: %v", err)
+	}
+	if err := app.AssignExtensionToCategory("webm", "builtin-video"); err != nil {
+		t.Fatalf("AssignExtensionToCategory failed: %v", err)
+	}
+	current := app.GetSettings()
+	current.Download.CustomCategories = []config.CategoryConfig{
+		{ID: "custom-docs", Name: "工作文档", Directory: "Docs", Extensions: []string{"md"}},
+	}
+	if _, err := app.UpdateSettings(current); err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+
+	changed, err := app.ResetBuiltinCategoryExtensions("builtin-archive")
+	if err != nil {
+		t.Fatalf("ResetBuiltinCategoryExtensions failed: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true after adding an archive extension")
+	}
+
+	got := app.GetSettings()
+	archiveFound, videoFound := false, false
+	for _, cat := range got.Download.BuiltinCategories {
+		switch cat.ID {
+		case "builtin-archive":
+			archiveFound = true
+			if cat.Directory != "zip" {
+				t.Errorf("reset must keep the archive directory, got %q", cat.Directory)
+			}
+			if len(cat.Extensions) != 9 || cat.Extensions[8] != "iso" {
+				t.Errorf("archive extensions = %v, want preset list", cat.Extensions)
+			}
+		case "builtin-video":
+			videoFound = true
+			if cat.Directory != "video" {
+				t.Errorf("reset must keep the video directory, got %q", cat.Directory)
+			}
+			hasWebm := false
+			for _, ext := range cat.Extensions {
+				if ext == "webm" {
+					hasWebm = true
+				}
+			}
+			if !hasWebm {
+				t.Errorf("reset must not touch other categories, got %v", cat.Extensions)
+			}
+		}
+	}
+	if !archiveFound || !videoFound {
+		t.Fatalf("expected archive and video categories, got %+v", got.Download.BuiltinCategories)
+	}
+	if len(got.Download.CustomCategories) != 1 || got.Download.CustomCategories[0].Name != "工作文档" {
+		t.Errorf("reset must leave custom categories untouched, got %+v", got.Download.CustomCategories)
+	}
+
+	// 已是预置后缀时再次重置不产生改动，也不报错。
+	changed, err = app.ResetBuiltinCategoryExtensions("builtin-archive")
+	if err != nil {
+		t.Fatalf("second ResetBuiltinCategoryExtensions failed: %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false when the category is already at presets")
+	}
+}
+
 func TestApp_CheckURLFilesExist_CrossDirectoryReuse(t *testing.T) {
 	app, store, tmpDir := newTestApp(t)
 	ctx := context.Background()

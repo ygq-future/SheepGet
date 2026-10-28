@@ -14,6 +14,7 @@ import {
   OpenFolder,
   PrepareExtensionPage,
   RestartServer,
+  ResetBuiltinCategoryExtensions,
   SelectDirectory,
   ValidateDirectory,
   CheckDirectoryHasFiles,
@@ -35,6 +36,7 @@ import {
   Trash2,
   GripVertical,
   X,
+  RotateCcw,
   Sliders,
   Pipette,
   FolderOpen,
@@ -496,6 +498,7 @@ export function SettingsPanel({
   const [catNameDrafts, setCatNameDrafts] = useState<Record<string, string>>({});
   const [addingExtCatId, setAddingExtCatId] = useState<string | null>(null);
   const [newExtVal, setNewExtVal] = useState('');
+  const [resettingExtCatId, setResettingExtCatId] = useState<string | null>(null);
   const reorderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [reorderedCategories, setReorderedCategories] = useState<
     configModels.CategoryConfig[] | null
@@ -1366,6 +1369,24 @@ export function SettingsPanel({
     }
     setAddingExtCatId(null);
     setNewExtVal('');
+  };
+
+  // 每个内置分类单独回滚接管后缀：保存子目录与其他分类都属于用户配置，不在这里改动。
+  const handleResetCategoryExtensions = async (catId: string) => {
+    if (resettingExtCatId) return;
+    setResettingExtCatId(catId);
+    try {
+      const changed = await ResetBuiltinCategoryExtensions(catId);
+      showToast(
+        changed ? '该分类的接管类型已恢复默认' : '该分类当前已是默认接管类型',
+        changed ? 'success' : 'info',
+        changed ? '重置完成' : '无需重置',
+      );
+    } catch (err) {
+      showToast(`重置接管类型失败: ${String(err)}`, 'error');
+    } finally {
+      setResettingExtCatId(null);
+    }
   };
 
   const handleOpenExtensionFolder = async () => {
@@ -2382,6 +2403,19 @@ export function SettingsPanel({
                             <Badge variant={isFallback ? 'warning' : 'outline'}>
                               {isFallback ? '默认兜底' : '内置'}
                             </Badge>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => void handleResetCategoryExtensions(cat.id)}
+                              disabled={resettingExtCatId === cat.id}
+                              title="恢复该分类的默认后缀规则；保存子目录保持不变"
+                              className="h-6 gap-1 px-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                            >
+                              <RotateCcw
+                                className={`h-3 w-3 ${resettingExtCatId === cat.id ? 'animate-spin' : ''}`}
+                              />
+                              <span>重置接管类型</span>
+                            </Button>
                           </div>
 
                           <div className="flex max-w-md min-w-0 flex-1 items-center justify-end gap-1.5">
