@@ -30,21 +30,17 @@ var ErrNotPlaylist = errors.New("这个链接不是 HLS 清单，没有清晰度
 var ErrVariantResolution = errors.New("所选清晰度解析失败，请重试")
 
 // Engine 是 intake 需要的全部引擎能力：探测与清晰度解析会联网，占用与重复查询只读本地
-// 任务库，其余方法把一次决定落成任务、预下载或复用。
+// 任务库，其余动作各只有一个入口——建任务、处理重复链接、确认预下载、复用成品。
 type Engine interface {
 	ProbeURL(ctx context.Context, urlStr string, headers map[string]string) (*engine.ProbeResult, error)
 	ResolveHLSVariant(ctx context.Context, playlistURL, variantURI string, headers map[string]string) (*hls.Source, error)
 	FindDuplicateTaskWithVariant(ctx context.Context, urlStr, variantURI string) (*task.Task, error)
 	Occupancy(ctx context.Context, reserved engine.Reserved) engine.Occupancy
-	AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error)
-	AddTaskFromProbeWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error)
-	ResolveDuplicateFromProbeWithMetadata(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult, categoryID string) (*task.Task, error)
-	ConfirmPreDownload(ctx context.Context, taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error)
-	ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error)
-	StartPreDownloadFromProbe(ctx context.Context, req engine.PreDownloadRequest) (*task.Task, error)
+	CreateTask(ctx context.Context, req engine.CreateRequest) (*task.Task, error)
+	ResolveDuplicate(ctx context.Context, req engine.DuplicateRequest) (*task.Task, error)
+	ConfirmPreDownload(ctx context.Context, req engine.ConfirmRequest) (*task.Task, error)
+	ReuseExistingFile(ctx context.Context, req engine.ReuseRequest) (*task.Task, error)
 	CancelPreDownload(ctx context.Context, taskID string) error
-	SetTaskPageURL(ctx context.Context, taskID, pageURL string) error
-	SetTaskCategoryID(ctx context.Context, taskID, categoryID string) error
 }
 
 // SettingsProvider 提供当前生效的配置。落点规则、重复策略与默认并发都从这里取一次。
@@ -381,10 +377,22 @@ func (in *Intake) ApplyVariant(ctx context.Context, t *Target, sel *VariantSelec
 	return in.preDownloadReady(t)
 }
 
-// StartPreDownload 按目标已有的事实建一条预下载任务：名字、落点与请求上下文都取自目标，
-// 探测结果直接沿用，不再为同一份元数据多付一次请求。联网，调用方必须在锁外调用。
+// StartPreDownload 按目标已有的事实建一条预下载任务：名字、落点、请求上下文与来源元数据
+// 都取自目标，探测结果直接沿用，不再为同一份元数据多付一次请求。联网，调用方必须在锁外调用。
 func (in *Intake) StartPreDownload(ctx context.Context, t Target) (*task.Task, error) {
-	req := engine.PreDownloadRequest{
+	probe := t.probe
+	if t.probeErr != nil {
+		// 探测失败时不把结果当成成功事实递下去：让引擎自己再探一次，由它按失败原因留下
+		// 一条看得见的失败任务（A03），而不是把一次 403 变成一次「正常排队」。
+		probe = nil
+	}
+	return in.eng.CreateTask(ctx, in.createRequest(t, probe))
+}
+
+// createRequest 把目标的既定事实翻成一次建任务请求。probe 是调用方已经确认属于这次链接的
+// 探测结果；nil 表示由引擎自己探一次。
+func (in *Intake) createRequest(t Target, probe *engine.ProbeResult) engine.CreateRequest {
+	req := engine.CreateRequest{
 		URL:        t.URL,
 		Directory:  t.Directory,
 		Filename:   t.Filename,
@@ -393,17 +401,10 @@ func (in *Intake) StartPreDownload(ctx context.Context, t Target) (*task.Task, e
 		PageURL:    t.PageURL,
 		CategoryID: t.CategoryID,
 	}
-	// 探测失败时不把结果当成成功事实递下去：让引擎自己再探一次，由它按失败原因留下
-	// 一条看得见的失败任务（A03），而不是把一次 403 变成一次「正常排队」。
-	if t.probeErr == nil {
-		req.Probe = t.probe
+	if probe != nil {
+		req.Probe, req.ProbeErr = probe, t.probeErr
 	}
-	preTask, err := in.eng.StartPreDownloadFromProbe(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	in.adoptMetadata(ctx, preTask, t.PageURL, t.CategoryID)
-	return preTask, nil
+	return req
 }
 
 // CancelPreDownload 收掉一条预下载任务。
@@ -437,27 +438,43 @@ func (in *Intake) Submit(ctx context.Context, t Target, choice Choice) (Result, 
 	)
 	switch {
 	case action == duplicate.ActionReuse && choice.ReuseTaskID != "":
-		created, err = in.eng.ReuseExistingFile(ctx, choice.ReuseTaskID, t.Directory, t.Filename)
+		created, err = in.eng.ReuseExistingFile(ctx, engine.ReuseRequest{
+			TaskID:     choice.ReuseTaskID,
+			Directory:  t.Directory,
+			Filename:   t.Filename,
+			PageURL:    t.PageURL,
+			CategoryID: t.CategoryID,
+		})
 	case t.DuplicateTask != nil:
 		if action == "" {
 			// 局面需要用户先决定怎么处理；界面不能在没有选择的情况下提交。
 			return res, ErrChoiceRequired
 		}
-		created, err = in.eng.ResolveDuplicateFromProbeWithMetadata(ctx, t.DuplicateTask.ID, string(action), t.Directory, t.Filename, t.MaxConn, probe, t.CategoryID)
+		created, err = in.eng.ResolveDuplicate(ctx, engine.DuplicateRequest{
+			TaskID:     t.DuplicateTask.ID,
+			Action:     action,
+			Directory:  t.Directory,
+			Filename:   t.Filename,
+			MaxConn:    t.MaxConn,
+			CategoryID: t.CategoryID,
+			Probe:      probe,
+		})
 	case choice.PreTaskID != "":
-		created, err = in.eng.ConfirmPreDownload(ctx, choice.PreTaskID, t.Directory, t.Filename, t.MaxConn)
-	case probe != nil:
-		created, err = in.eng.AddTaskFromProbeWithMetadata(ctx, t.URL, t.Directory, t.Filename, t.MaxConn, t.Headers, probe, t.probeErr, t.PageURL, t.CategoryID)
+		created, err = in.eng.ConfirmPreDownload(ctx, engine.ConfirmRequest{
+			TaskID:     choice.PreTaskID,
+			Directory:  t.Directory,
+			Filename:   t.Filename,
+			MaxConn:    t.MaxConn,
+			PageURL:    t.PageURL,
+			CategoryID: t.CategoryID,
+		})
 	default:
-		created, err = in.eng.AddTaskWithMetadata(ctx, t.URL, t.Directory, t.Filename, t.MaxConn, t.Headers, t.PageURL, t.CategoryID)
+		created, err = in.eng.CreateTask(ctx, in.createRequest(t, probe))
 	}
 	if err != nil {
 		return res, err
 	}
 	res.Task = created
-	// 确认预下载与复用成品这两条出口不接受页面地址与分类：建出来的任务缺这两项时补上，
-	// 否则「下载来源」与「记住的分类」会在列表里丢掉。
-	in.adoptMetadata(ctx, created, t.PageURL, t.CategoryID)
 	return res, nil
 }
 
@@ -482,22 +499,6 @@ func (in *Intake) applyChoice(t *Target, st config.Settings, choice Choice) {
 	if t.CategoryID == "" && t.Filename != "" {
 		cat, _ := st.Download.ResolveDestination(t.Filename)
 		t.CategoryID = cat.ID
-	}
-}
-
-// adoptMetadata 把页面地址与分类补到任务上。这两个字段不在确认预下载与复用成品的入参里，
-// 缺了就补一次，避免同一条下载在不同出口上丢掉「来源」与「分类」。
-func (in *Intake) adoptMetadata(ctx context.Context, t *task.Task, pageURL, categoryID string) {
-	if t == nil {
-		return
-	}
-	if categoryID != "" && t.CategoryID != categoryID {
-		t.CategoryID = categoryID
-		_ = in.eng.SetTaskCategoryID(ctx, t.ID, categoryID)
-	}
-	if pageURL != "" && t.PageURL == "" {
-		t.PageURL = pageURL
-		_ = in.eng.SetTaskPageURL(ctx, t.ID, pageURL)
 	}
 }
 

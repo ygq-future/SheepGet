@@ -19,10 +19,12 @@ type hlsProbeEngine struct {
 	// resolve 是 ResolveHLSVariant 要返回的来源；交给测试逐个设置。
 	resolve *hls.Source
 	// resolvedURI 记录最后一次被要求解析的清晰度地址，供断言选的是哪一个。
-	resolvedURI        string
-	createdProbe       *engine.ProbeResult
-	preDownloadStarted bool
-	duplicateTask      *task.Task
+	resolvedURI  string
+	createdProbe *engine.ProbeResult
+	// createCalls 记录建任务被调用的次数：预下载与提交走同一个入口，测试只能按次数判断
+	// 「选定清晰度之后才开始建任务」。
+	createCalls   int
+	duplicateTask *task.Task
 }
 
 func (e *hlsProbeEngine) ProbeURL(context.Context, string, map[string]string) (*engine.ProbeResult, error) {
@@ -43,21 +45,13 @@ func (e *hlsProbeEngine) FindDuplicateTaskWithVariant(_ context.Context, _, vari
 	return e.duplicateTask, nil
 }
 
-func (e *hlsProbeEngine) AddTaskWithMetadata(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, pageURL, categoryID string) (*task.Task, error) {
-	return &task.Task{ID: "task_created", URL: urlStr, PageURL: pageURL, CategoryID: categoryID}, nil
+func (e *hlsProbeEngine) CreateTask(_ context.Context, req engine.CreateRequest) (*task.Task, error) {
+	e.createCalls++
+	e.createdProbe = req.Probe
+	return &task.Task{ID: "task_created", URL: req.URL, PageURL: req.PageURL, CategoryID: req.CategoryID}, nil
 }
 
-func (e *hlsProbeEngine) AddTaskFromProbeWithMetadata(_ context.Context, urlStr, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, _ error, pageURL, categoryID string) (*task.Task, error) {
-	e.createdProbe = probe
-	return &task.Task{ID: "task_created", URL: urlStr, PageURL: pageURL, CategoryID: categoryID}, nil
-}
-
-func (e *hlsProbeEngine) StartPreDownloadFromProbe(_ context.Context, req engine.PreDownloadRequest) (*task.Task, error) {
-	e.preDownloadStarted = true
-	return &task.Task{ID: "task_pre", URL: req.URL}, nil
-}
-
-func (e *hlsProbeEngine) ConfirmPreDownload(context.Context, string, string, string, int) (*task.Task, error) {
+func (e *hlsProbeEngine) ConfirmPreDownload(context.Context, engine.ConfirmRequest) (*task.Task, error) {
 	return nil, nil
 }
 
@@ -65,24 +59,17 @@ func (e *hlsProbeEngine) CancelPreDownload(context.Context, string) error {
 	return nil
 }
 
-func (e *hlsProbeEngine) ResolveDuplicateFromProbeWithMetadata(_ context.Context, _ string, _ string, _ string, _ string, _ int, probe *engine.ProbeResult, categoryID string) (*task.Task, error) {
-	e.createdProbe = probe
-	return &task.Task{ID: "task_duplicate_resolved", CategoryID: categoryID}, nil
+func (e *hlsProbeEngine) ResolveDuplicate(_ context.Context, req engine.DuplicateRequest) (*task.Task, error) {
+	e.createdProbe = req.Probe
+	return &task.Task{ID: "task_duplicate_resolved", CategoryID: req.CategoryID}, nil
 }
 
 func (e *hlsProbeEngine) Occupancy(_ context.Context, reserved engine.Reserved) engine.Occupancy {
 	return engine.Occupancy{Reserved: reserved}
 }
 
-func (e *hlsProbeEngine) ReuseExistingFile(context.Context, string, string, string) (*task.Task, error) {
+func (e *hlsProbeEngine) ReuseExistingFile(context.Context, engine.ReuseRequest) (*task.Task, error) {
 	return nil, nil
-}
-
-func (e *hlsProbeEngine) SetTaskPageURL(context.Context, string, string) error {
-	return nil
-}
-func (e *hlsProbeEngine) SetTaskCategoryID(context.Context, string, string) error {
-	return nil
 }
 
 // twoVariantProbe 构造一份有两个清晰度的 HLS 探测结果，供选择类测试复用。
@@ -183,7 +170,7 @@ func TestQueueController_SelectHLSVariant_SubmitCarriesSelectedSource(t *testing
 	}
 
 	if eng.createdProbe == nil {
-		t.Fatalf("expected submit to use AddTaskFromProbe with a probe")
+		t.Fatalf("expected submit to create the task with the selected variant")
 	}
 	if eng.createdProbe.HLS == nil || eng.createdProbe.HLS.Media == nil {
 		t.Fatalf("expected the submitted probe to carry the selected HLS source")
@@ -358,7 +345,7 @@ func TestQueueController_SelectHLSVariant_StartsPreDownloadWhenEnabled(t *testin
 		t.Fatalf("enqueue failed: %v", err)
 	}
 
-	if eng.preDownloadStarted {
+	if eng.createCalls != 0 {
 		t.Fatal("未选定清晰度前不应该启动提前下载")
 	}
 
@@ -368,7 +355,7 @@ func TestQueueController_SelectHLSVariant_StartsPreDownloadWhenEnabled(t *testin
 
 	// 等待异步启动落地
 	deadline := time.After(2 * time.Second)
-	for !eng.preDownloadStarted {
+	for eng.createCalls == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("选定清晰度后应该触发提前下载，但在 2s 内未被调用")

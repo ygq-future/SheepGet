@@ -658,7 +658,7 @@ func TestApp_CheckURLFilesExist_ReadOnlySuggestion_AllMissing(t *testing.T) {
 	}
 
 	// When user resolves with "copy" strategy, stale copies 1-5 are deleted and new task is created
-	newTask, err := app.manager.ResolveDuplicate(ctx, "t_base", "copy", tmpDir, "item.zip", 2)
+	newTask, err := app.manager.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: "t_base", Action: duplicate.ActionCopy, Directory: tmpDir, Filename: "item.zip", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("ResolveDuplicate copy failed: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestApp_CheckURLFilesExist_ReadOnlySuggestion_HoleMissing(t *testing.T) {
 	}
 
 	// Confirm download with copy strategy: copy 3 is removed, new task is item (3).zip
-	newTask, err := app.manager.ResolveDuplicate(ctx, "t_base", "copy", tmpDir, "item.zip", 2)
+	newTask, err := app.manager.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: "t_base", Action: duplicate.ActionCopy, Directory: tmpDir, Filename: "item.zip", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("ResolveDuplicate copy failed: %v", err)
 	}
@@ -858,7 +858,7 @@ func TestApp_CheckURLFilesExist_CrossDirectoryReuse(t *testing.T) {
 	}
 
 	// 2. Perform ReuseExistingFile
-	reusedTask, err := app.manager.ReuseExistingFile(context.Background(), oldTask.ID, dirNew, "reuse_target.bin")
+	reusedTask, err := app.manager.ReuseExistingFile(context.Background(), engine.ReuseRequest{TaskID: oldTask.ID, Directory: dirNew, Filename: "reuse_target.bin"})
 	if err != nil {
 		t.Fatalf("ReuseExistingFile failed: %v", err)
 	}

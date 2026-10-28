@@ -81,15 +81,15 @@ func TestManager_QueueAndConcurrency(t *testing.T) {
 	ctx := context.Background()
 
 	// Add 3 tasks: 1 and 2 should run, 3 should wait in queue
-	t1, err := mgr.AddTask(ctx, ts.URL+"/file1", tmpDir, "t1.bin", 2)
+	t1, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/file1", Directory: tmpDir, Filename: "t1.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("add t1 failed: %v", err)
 	}
-	t2, err := mgr.AddTask(ctx, ts.URL+"/file2", tmpDir, "t2.bin", 2)
+	t2, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/file2", Directory: tmpDir, Filename: "t2.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("add t2 failed: %v", err)
 	}
-	t3, err := mgr.AddTask(ctx, ts.URL+"/file3", tmpDir, "t3.bin", 2)
+	t3, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/file3", Directory: tmpDir, Filename: "t3.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("add t3 failed: %v", err)
 	}
@@ -134,9 +134,9 @@ func TestManager_ImmediateErrorKeepsTask(t *testing.T) {
 
 	ctx := context.Background()
 	// Non-existent server URL
-	t1, err := mgr.AddTask(ctx, "http://127.0.0.1:54321/nonexistent.bin", tmpDir, "error.bin", 2)
+	t1, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: "http://127.0.0.1:54321/nonexistent.bin", Directory: tmpDir, Filename: "error.bin", MaxConn: 2})
 	if err != nil {
-		t.Fatalf("AddTask should not fail outright, got err: %v", err)
+		t.Fatalf("CreateTask should not fail outright, got err: %v", err)
 	}
 	if t1.Status != task.StatusError {
 		t.Fatalf("expected task to be in StatusError, got %v", t1.Status)
@@ -170,9 +170,12 @@ func TestManager_ProbeTimeoutFallsBackToQueuedTask(t *testing.T) {
 	targetURL := "https://example.com/slow-to-probe.apk"
 
 	// 模拟预探测超时
-	t1, err := mgr.AddTaskFromProbe(ctx, targetURL, tmpDir, "slow.apk", 2, nil, nil, context.DeadlineExceeded)
+	t1, err := mgr.CreateTask(ctx, engine.CreateRequest{
+		URL: targetURL, Directory: tmpDir, Filename: "slow.apk", MaxConn: 2,
+		ProbeErr: context.DeadlineExceeded,
+	})
 	if err != nil {
-		t.Fatalf("AddTaskFromProbe should not fail on timeout, got: %v", err)
+		t.Fatalf("CreateTask should not fail on timeout, got: %v", err)
 	}
 	if t1.Status != task.StatusQueued {
 		t.Fatalf("expected task to be in StatusQueued on probe timeout fallback, got %v (errorMsg: %q)", t1.Status, t1.ErrorMsg)
@@ -197,9 +200,9 @@ func TestManager_RetryContractByFailurePhase(t *testing.T) {
 	ctx := context.Background()
 
 	// 传输阶段失败：不能按处理失败重试。
-	transferFailed, err := mgr.AddTask(ctx, "http://127.0.0.1:54321/nonexistent.bin", tmpDir, "t.bin", 2)
+	transferFailed, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: "http://127.0.0.1:54321/nonexistent.bin", Directory: tmpDir, Filename: "t.bin", MaxConn: 2})
 	if err != nil {
-		t.Fatalf("AddTask should not fail outright, got err: %v", err)
+		t.Fatalf("CreateTask should not fail outright, got err: %v", err)
 	}
 	if err := mgr.RetryProcessing(ctx, transferFailed.ID); !errors.Is(err, engine.ErrNotProcessingFailure) {
 		t.Fatalf("expected ErrNotProcessingFailure, got %v", err)
@@ -251,13 +254,13 @@ func TestManager_DuplicateURLDetection(t *testing.T) {
 	defer mgr.Close()
 
 	ctx := context.Background()
-	_, err := mgr.AddTask(ctx, "http://127.0.0.1:54321/dup.bin", tmpDir, "dup.bin", 2)
+	_, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: "http://127.0.0.1:54321/dup.bin", Directory: tmpDir, Filename: "dup.bin", MaxConn: 2})
 	if err != nil {
-		t.Fatalf("first AddTask failed: %v", err)
+		t.Fatalf("first CreateTask failed: %v", err)
 	}
 
 	// Second add with same URL should be rejected
-	_, err = mgr.AddTask(ctx, "http://127.0.0.1:54321/dup.bin", tmpDir, "dup2.bin", 2)
+	_, err = mgr.CreateTask(ctx, engine.CreateRequest{URL: "http://127.0.0.1:54321/dup.bin", Directory: tmpDir, Filename: "dup2.bin", MaxConn: 2})
 	if err == nil || !strings.Contains(err.Error(), "已存在") {
 		t.Fatalf("expected duplicate URL error, got %v", err)
 	}
@@ -274,7 +277,10 @@ func TestManager_PageURL_PreservedThroughoutDownload(t *testing.T) {
 	const expectedPageURL = "https://example.com/source-page.html"
 	const expectedCatID = "builtin-archive"
 
-	created, err := mgr.AddTaskWithMetadata(ctx, ts.URL+"/test.zip", tmpDir, "test.zip", 2, nil, expectedPageURL, expectedCatID)
+	created, err := mgr.CreateTask(ctx, engine.CreateRequest{
+		URL: ts.URL + "/test.zip", Directory: tmpDir, Filename: "test.zip", MaxConn: 2,
+		PageURL: expectedPageURL, CategoryID: expectedCatID,
+	})
 	if err != nil {
 		t.Fatalf("failed to add task: %v", err)
 	}

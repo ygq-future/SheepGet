@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"sheep-get/internal/duplicate"
 	"sheep-get/internal/engine"
 	"sheep-get/internal/hls"
 	"sheep-get/internal/task"
@@ -375,7 +376,7 @@ func TestManager_NumberedCopy_CleanMissingCopies_ScenarioAllMissing(t *testing.T
 	}
 
 	// 2. When user confirms download with "copy" strategy (ResolveDuplicate), it cleans stale copies and creates copy (1)
-	newTask, err := mgr.ResolveDuplicate(ctx, baseTask.ID, "copy", tmpDir, "item.zip", 2)
+	newTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: baseTask.ID, Action: duplicate.ActionCopy, Directory: tmpDir, Filename: "item.zip", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("ResolveDuplicate copy failed: %v", err)
 	}
@@ -445,7 +446,7 @@ func TestManager_NumberedCopy_CleanMissingCopies_ScenarioHoleMissing(t *testing.
 	}
 
 	// 2. When user confirms download with "copy" strategy, copy_3 is deleted and new task is item (3).zip
-	newTask, err := mgr.ResolveDuplicate(ctx, baseTask.ID, "copy", tmpDir, "item.zip", 2)
+	newTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: baseTask.ID, Action: duplicate.ActionCopy, Directory: tmpDir, Filename: "item.zip", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("ResolveDuplicate copy failed: %v", err)
 	}
@@ -488,7 +489,7 @@ func TestManager_ResolveDuplicate_RedownloadCleansOldTask(t *testing.T) {
 	_ = store.Save(ctx, oldTask)
 
 	// When user resolves with "redownload", the old task should be deleted and a new task created
-	newTask, err := mgr.ResolveDuplicate(ctx, oldTask.ID, "redownload", tmpDir, "file.bin", 2)
+	newTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: oldTask.ID, Action: duplicate.ActionRedownload, Directory: tmpDir, Filename: "file.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("ResolveDuplicate redownload failed: %v", err)
 	}
@@ -551,7 +552,9 @@ func TestManager_ResolveDuplicate_PreservesHLSMedia(t *testing.T) {
 		},
 	}
 
-	newTask, err := mgr.ResolveDuplicateFromProbe(ctx, oldTask.ID, "redownload", tmpDir, "video.mp4", 2, newProbe)
+	newTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{
+		TaskID: oldTask.ID, Action: duplicate.ActionRedownload, Directory: tmpDir, Filename: "video.mp4", MaxConn: 2, Probe: newProbe,
+	})
 	if err != nil {
 		t.Fatalf("ResolveDuplicateFromProbe failed: %v", err)
 	}
@@ -586,7 +589,7 @@ func TestManager_ResolveDuplicate_UpdatesCategoryID(t *testing.T) {
 	}
 	_ = store.Save(ctx, oldTask)
 	// 1. Copy with explicit CategoryID "custom-video" (old task remains)
-	copyTask, err := mgr.ResolveDuplicateFromProbeWithMetadata(ctx, oldTask.ID, "copy", tmpDir, "stream.mp4", 2, nil, "custom-video")
+	copyTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: oldTask.ID, Action: duplicate.ActionCopy, Directory: tmpDir, Filename: "stream.mp4", MaxConn: 2, CategoryID: "custom-video"})
 	if err != nil {
 		t.Fatalf("ResolveDuplicateFromProbeWithMetadata copy failed: %v", err)
 	}
@@ -595,7 +598,7 @@ func TestManager_ResolveDuplicate_UpdatesCategoryID(t *testing.T) {
 	}
 
 	// 2. Redownload with explicit CategoryID "builtin-video" (replaces old task)
-	newTask, err := mgr.ResolveDuplicateFromProbeWithMetadata(ctx, oldTask.ID, "redownload", tmpDir, "stream.mp4", 2, nil, "builtin-video")
+	newTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: oldTask.ID, Action: duplicate.ActionRedownload, Directory: tmpDir, Filename: "stream.mp4", MaxConn: 2, CategoryID: "builtin-video"})
 	if err != nil {
 		t.Fatalf("ResolveDuplicateFromProbeWithMetadata redownload failed: %v", err)
 	}
@@ -631,7 +634,7 @@ func TestManager_ProbeURLAndDuplicateDetection(t *testing.T) {
 		t.Errorf("expected probed metadata for file.bin (%d bytes), got %s (%d bytes)", len(payload), result.Filename, result.TotalBytes)
 	}
 
-	createdTask, err := mgr.AddTask(ctx, ts.URL+"/file.bin", t.TempDir(), "file.bin", 2)
+	createdTask, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/file.bin", Directory: t.TempDir(), Filename: "file.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("AddTask failed: %v", err)
 	}
@@ -652,14 +655,14 @@ func TestManager_ResolveDuplicateTask(t *testing.T) {
 	store, mgr, ts := newTestManager(t, payload, 0, "")
 	ctx := context.Background()
 
-	task1, err := mgr.AddTask(ctx, ts.URL+"/dup.bin", tmpDir, "dup.bin", 2)
+	task1, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/dup.bin", Directory: tmpDir, Filename: "dup.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("failed to add task: %v", err)
 	}
 	_ = mgr.Pause(ctx, task1.ID)
 	waitForStatus(t, store, task1.ID, 3*time.Second, task.StatusPaused, task.StatusCompleted)
 
-	continuedTask, err := mgr.ResolveDuplicate(ctx, task1.ID, "continue", tmpDir, "dup.bin", 2)
+	continuedTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: task1.ID, Action: duplicate.ActionContinue, Directory: tmpDir, Filename: "dup.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("resolve duplicate 'continue' failed: %v", err)
 	}
@@ -667,7 +670,7 @@ func TestManager_ResolveDuplicateTask(t *testing.T) {
 		t.Errorf("expected continue to reuse task %s, got %s", task1.ID, continuedTask.ID)
 	}
 
-	copyTask, err := mgr.ResolveDuplicate(ctx, task1.ID, "copy", tmpDir, "dup.bin", 2)
+	copyTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: task1.ID, Action: duplicate.ActionCopy, Directory: tmpDir, Filename: "dup.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("resolve duplicate 'copy' failed: %v", err)
 	}
@@ -678,7 +681,7 @@ func TestManager_ResolveDuplicateTask(t *testing.T) {
 		t.Errorf("expected filename dup (1).bin, got %s", copyTask.Filename)
 	}
 
-	redownloadedTask, err := mgr.ResolveDuplicate(ctx, task1.ID, "redownload", tmpDir, "dup.bin", 2)
+	redownloadedTask, err := mgr.ResolveDuplicate(ctx, engine.DuplicateRequest{TaskID: task1.ID, Action: duplicate.ActionRedownload, Directory: tmpDir, Filename: "dup.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("resolve duplicate 'redownload' failed: %v", err)
 	}
@@ -696,7 +699,7 @@ func TestManager_PreDownload_CancelInProgress(t *testing.T) {
 	ctx := context.Background()
 
 	tmpDir := t.TempDir()
-	preTask, err := mgr.StartPreDownload(ctx, ts.URL+"/large.bin", tmpDir, "large.bin", 2)
+	preTask, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/large.bin", Directory: tmpDir, Filename: "large.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("StartPreDownload failed: %v", err)
 	}
@@ -726,13 +729,13 @@ func TestManager_PreDownload_ConfirmWithRenameAndDirChange(t *testing.T) {
 	store, mgr, ts := newTestManager(t, payload, 0, "")
 	ctx := context.Background()
 
-	preTask, err := mgr.StartPreDownload(ctx, ts.URL+"/file.txt", tmpDir, "file.txt", 2)
+	preTask, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/file.txt", Directory: tmpDir, Filename: "file.txt", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("StartPreDownload failed: %v", err)
 	}
 	waitForStatus(t, store, preTask.ID, 3*time.Second, task.StatusCompleted)
 
-	confirmedTask, err := mgr.ConfirmPreDownload(ctx, preTask.ID, subDir, "renamed.txt", 4)
+	confirmedTask, err := mgr.ConfirmPreDownload(ctx, engine.ConfirmRequest{TaskID: preTask.ID, Directory: subDir, Filename: "renamed.txt", MaxConn: 4})
 	if err != nil {
 		t.Fatalf("ConfirmPreDownload failed: %v", err)
 	}
@@ -763,7 +766,7 @@ func TestManager_PreDownload_ConfirmWhileDownloading(t *testing.T) {
 	store, mgr, ts := newTestManager(t, payload, 5*time.Millisecond, "")
 	ctx := context.Background()
 
-	preTask, err := mgr.StartPreDownload(ctx, ts.URL+"/slow.bin", tmpDir, "slow.bin", 2)
+	preTask, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/slow.bin", Directory: tmpDir, Filename: "slow.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("StartPreDownload failed: %v", err)
 	}
@@ -774,7 +777,7 @@ func TestManager_PreDownload_ConfirmWhileDownloading(t *testing.T) {
 		t.Fatalf("expected in-flight downloading, got %v", inFlight.Status)
 	}
 
-	confirmedTask, err := mgr.ConfirmPreDownload(ctx, preTask.ID, subDir, "confirmed.bin", 2)
+	confirmedTask, err := mgr.ConfirmPreDownload(ctx, engine.ConfirmRequest{TaskID: preTask.ID, Directory: subDir, Filename: "confirmed.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("ConfirmPreDownload failed: %v", err)
 	}
@@ -805,7 +808,7 @@ func TestManager_PreDownload_CompletedThenCancel(t *testing.T) {
 	store, mgr, ts := newTestManager(t, payload, 0, "")
 	ctx := context.Background()
 
-	preTask, err := mgr.StartPreDownload(ctx, ts.URL+"/done.bin", tmpDir, "done.bin", 2)
+	preTask, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/done.bin", Directory: tmpDir, Filename: "done.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("StartPreDownload failed: %v", err)
 	}
@@ -1086,9 +1089,11 @@ func TestManager_ProbeAndCreateTaskWithFinalURL(t *testing.T) {
 		t.Fatalf("expected probe.FinalURL %s, got %s", expectedFinalURL, probe.FinalURL)
 	}
 
-	created, err := mgr.AddTaskFromProbeWithMetadata(ctx, redirectServer.URL+"/entry", tmpDir, "final-file.zip", 4, nil, probe, nil, "", "")
+	created, err := mgr.CreateTask(ctx, engine.CreateRequest{
+		URL: redirectServer.URL + "/entry", Directory: tmpDir, Filename: "final-file.zip", MaxConn: 4, Probe: probe,
+	})
 	if err != nil {
-		t.Fatalf("AddTaskFromProbe failed: %v", err)
+		t.Fatalf("CreateTask failed: %v", err)
 	}
 	if created.FinalURL != expectedFinalURL {
 		t.Fatalf("expected created task FinalURL %s, got %s", expectedFinalURL, created.FinalURL)
@@ -1101,5 +1106,80 @@ func TestManager_ProbeAndCreateTaskWithFinalURL(t *testing.T) {
 	}
 	if loaded.FinalURL != expectedFinalURL {
 		t.Fatalf("expected loaded task FinalURL %s, got %s", expectedFinalURL, loaded.FinalURL)
+	}
+}
+
+// 确认预下载不再让调用方建好任务之后再补一次写：来源页面与分类随确认请求一起落盘，
+// 列表里的「下载来源」与分类归属因此不会在确认这条出口上丢掉。
+func TestManager_ConfirmPreDownload_AdoptsMetadata(t *testing.T) {
+	store, mgr, _ := newTestManager(t, []byte("pre-download metadata"), 0, "")
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	preTask, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: "https://example.com/pre.bin", Directory: dir, Filename: "pre.bin", MaxConn: 2})
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	confirmed, err := mgr.ConfirmPreDownload(ctx, engine.ConfirmRequest{
+		TaskID: preTask.ID, Directory: dir, Filename: "pre.bin", MaxConn: 2,
+		PageURL: "https://example.com/source", CategoryID: "builtin-file",
+	})
+	if err != nil {
+		t.Fatalf("ConfirmPreDownload failed: %v", err)
+	}
+
+	if confirmed.PageURL != "https://example.com/source" || confirmed.CategoryID != "builtin-file" {
+		t.Fatalf("confirmed metadata = (%q, %q), want the request's", confirmed.PageURL, confirmed.CategoryID)
+	}
+	stored, err := store.Get(ctx, preTask.ID)
+	if err != nil {
+		t.Fatalf("failed to read the task back: %v", err)
+	}
+	if stored.PageURL != "https://example.com/source" || stored.CategoryID != "builtin-file" {
+		t.Fatalf("stored metadata = (%q, %q), want the request's", stored.PageURL, stored.CategoryID)
+	}
+}
+
+// 复用别处的成品同样是「这次下载」的出口：来源页面与分类跟着这次选择走，
+// 不会停在来源任务当初记下的那一处。
+func TestManager_ReuseExistingFile_AdoptsMetadata(t *testing.T) {
+	store, mgr, _ := newTestManager(t, []byte("unused"), 0, "")
+	ctx := context.Background()
+	const (
+		name    = "reuse.bin"
+		taskID  = "task_reuse_source"
+		payload = "reuse payload"
+	)
+
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, name), []byte(payload), 0o644); err != nil {
+		t.Fatalf("failed to seed the source file: %v", err)
+	}
+	if err := store.Save(ctx, &task.Task{
+		ID: taskID, URL: "https://example.com/reuse.bin", Filename: name, Directory: srcDir,
+		PageURL: "https://page.example/old", CategoryID: "builtin-file",
+		Status: task.StatusCompleted, TotalBytes: int64(len(payload)), Downloaded: int64(len(payload)),
+	}); err != nil {
+		t.Fatalf("failed to seed the completed task: %v", err)
+	}
+
+	dstDir := t.TempDir()
+	reused, err := mgr.ReuseExistingFile(ctx, engine.ReuseRequest{
+		TaskID: taskID, Directory: dstDir, Filename: name,
+		PageURL: "https://page.example/new", CategoryID: "custom-bin",
+	})
+	if err != nil {
+		t.Fatalf("ReuseExistingFile failed: %v", err)
+	}
+	if reused.PageURL != "https://page.example/new" || reused.CategoryID != "custom-bin" {
+		t.Fatalf("reused metadata = (%q, %q), want the request's", reused.PageURL, reused.CategoryID)
+	}
+	stored, err := store.Get(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to read the task back: %v", err)
+	}
+	if stored.PageURL != "https://page.example/new" || stored.CategoryID != "custom-bin" {
+		t.Fatalf("stored metadata = (%q, %q), want the request's", stored.PageURL, stored.CategoryID)
 	}
 }

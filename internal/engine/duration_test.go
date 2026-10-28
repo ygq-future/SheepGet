@@ -194,7 +194,7 @@ func TestCompletedTaskGetsDurationFromLocalFile(t *testing.T) {
 	defer mgr.Close()
 
 	ctx := context.Background()
-	created, err := mgr.AddTask(ctx, ts.URL+"/clip.mp4", tmpDir, "clip.mp4", 2)
+	created, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/clip.mp4", Directory: tmpDir, Filename: "clip.mp4", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("add task failed: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestCompletedTaskKeepsZeroDurationForNonMedia(t *testing.T) {
 	defer mgr.Close()
 
 	ctx := context.Background()
-	created, err := mgr.AddTask(ctx, ts.URL+"/setup.exe", tmpDir, "setup.exe", 2)
+	created, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/setup.exe", Directory: tmpDir, Filename: "setup.exe", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("add task failed: %v", err)
 	}

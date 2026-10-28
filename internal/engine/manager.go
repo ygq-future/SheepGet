@@ -17,6 +17,7 @@ import (
 
 	"sheep-get/internal/config"
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/duplicate"
 	"sheep-get/internal/hls"
 	"sheep-get/internal/logging"
 	"sheep-get/internal/mediainfo"
@@ -425,24 +426,32 @@ func (m *Manager) ProbeMediaDuration(ctx context.Context, urlStr, filename strin
 	return m.downloader.ProbeMediaDuration(ctx, urlStr, filename, credentials.New(headers), totalBytes)
 }
 
-// ResolveDuplicate resolves a duplicate task with strategy "continue", "redownload", "copy", or "show_completed".
-func (m *Manager) ResolveDuplicate(ctx context.Context, taskID, strategy, dir, filename string, maxConn int) (*task.Task, error) {
-	return m.ResolveDuplicateFromProbeWithMetadata(ctx, taskID, strategy, dir, filename, maxConn, nil, "")
+// DuplicateRequest 是按用户选定的动作处理一次重复链接的输入。
+type DuplicateRequest struct {
+	// TaskID 是那条同一 URL 的历史任务：续传落在它身上，覆盖与副本由它复制出来。
+	TaskID string
+	Action duplicate.Action
+	// Directory 与 Filename 是这次下载最终要落的位置，为空时沿用历史任务的。
+	Directory string
+	Filename  string
+	MaxConn   int
+	// CategoryID 为空时沿用历史任务的分类。
+	CategoryID string
+	// Probe 是当次选定的探测事实（HLS 清晰度与大小）；为 nil 时沿用历史任务的。
+	Probe *ProbeResult
 }
 
-// ResolveDuplicateFromProbe 支持在重新下载或副本保存时应用当次选定的探测事实（如 HLS 清晰度与大小）。
-func (m *Manager) ResolveDuplicateFromProbe(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *ProbeResult) (*task.Task, error) {
-	return m.ResolveDuplicateFromProbeWithMetadata(ctx, taskID, strategy, dir, filename, maxConn, probe, "")
-}
-
-// ResolveDuplicateFromProbeWithMetadata 支持在重新下载或副本保存时应用当次选定的探测事实（如 HLS 清晰度与大小）及目标分类。
-func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, taskID, strategy, dir, filename string, maxConn int, probe *ProbeResult, categoryID string) (*task.Task, error) {
+// ResolveDuplicate 按动作处理一次重复链接：续传、覆盖重下、另存序号副本，或只把历史任务
+// 交回界面（show_completed）。动作取值与 duplicate.Action 一一对应，不必再翻译一次。
+func (m *Manager) ResolveDuplicate(ctx context.Context, req DuplicateRequest) (*task.Task, error) {
+	taskID, dir, filename, maxConn := req.TaskID, req.Directory, req.Filename, req.MaxConn
+	probe, categoryID := req.Probe, req.CategoryID
 	t, err := m.store.Get(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
-	switch strategy {
-	case "continue":
+	switch req.Action {
+	case duplicate.ActionContinue:
 		// 续传沿用同一位置的既有分片，因此清理也按该位置进行：同链接的失效残留记录
 		// （同落点、或同名但文件已不在磁盘上）一样要收掉，否则它们会一直挂在任务列表里。
 		m.cleanStaleDuplicateRecords(ctx, taskID, t.URL, t.Directory, t.Filename)
@@ -453,7 +462,7 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		}
 		return t, nil
 
-	case "redownload":
+	case duplicate.ActionRedownload:
 		if filename == "" {
 			filename = t.Filename
 		}
@@ -517,7 +526,7 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		m.notify(newTask)
 		m.schedule()
 		return newTask, nil
-	case "copy":
+	case duplicate.ActionCopy:
 		if filename == "" {
 			filename = t.Filename
 		}
@@ -575,11 +584,11 @@ func (m *Manager) ResolveDuplicateFromProbeWithMetadata(ctx context.Context, tas
 		m.schedule()
 		return newTask, nil
 
-	case "show_completed":
+	case duplicate.ActionShowCompleted:
 		return t, nil
 
 	default:
-		return nil, fmt.Errorf("unknown duplicate strategy: %s", strategy)
+		return nil, fmt.Errorf("unknown duplicate strategy: %s", req.Action)
 	}
 }
 
@@ -606,9 +615,21 @@ func (m *Manager) cleanStaleDuplicateRecords(ctx context.Context, excludeID, url
 	}
 }
 
+// ReuseRequest 是「把别处已有的同一份成品移到目标位置」的输入。
+type ReuseRequest struct {
+	// TaskID 是那条已完成的来源任务：成品从它的落点搬到这次选择的落点。
+	TaskID    string
+	Directory string
+	Filename  string
+	// PageURL 与 CategoryID 是这次选择的来源页面与分类；为空时沿用来源任务的。
+	PageURL    string
+	CategoryID string
+}
+
 // ReuseExistingFile moves an existing identical file from another directory to targetDir/targetFilename,
 // cleans any duplicate stale tasks whose files do not exist, and registers/updates the file as a completed task.
-func (m *Manager) ReuseExistingFile(ctx context.Context, taskID, targetDir, targetFilename string) (*task.Task, error) {
+func (m *Manager) ReuseExistingFile(ctx context.Context, req ReuseRequest) (*task.Task, error) {
+	taskID, targetDir, targetFilename := req.TaskID, req.Directory, req.Filename
 	t, err := m.store.Get(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("task not found: %w", err)
@@ -660,6 +681,14 @@ func (m *Manager) ReuseExistingFile(ctx context.Context, taskID, targetDir, targ
 	t.Status = task.StatusCompleted
 	t.Downloaded = t.TotalBytes
 	t.ErrorMsg = ""
+	// 复用是「这次下载」的另一个出口：来源页面与分类同样要跟着这次选择走，
+	// 否则列表里的来源会停留在上一处。
+	if req.PageURL != "" {
+		t.PageURL = req.PageURL
+	}
+	if req.CategoryID != "" {
+		t.CategoryID = req.CategoryID
+	}
 	t.UpdatedAt = time.Now()
 
 	if err := m.store.Save(ctx, t); err != nil {
@@ -756,57 +785,21 @@ func (m *Manager) FindDuplicateTaskWithVariant(ctx context.Context, urlStr, vari
 	return nil, nil
 }
 
-// PreDownloadRequest 是启动一次提前下载的输入。
-type PreDownloadRequest struct {
-	URL        string
+// ConfirmRequest 是确认一条预下载任务的输入：最终落点、并发数与来源元数据。
+// 页面地址与分类随确认一起写回，任务不必在建好之后再补一次。
+type ConfirmRequest struct {
+	TaskID     string
 	Directory  string
 	Filename   string
 	MaxConn    int
-	Headers    map[string]string
 	PageURL    string
 	CategoryID string
-	// Probe 是登记时已经完成的探测结果（HLS 链接还带着选定清晰度后的来源）。
-	// 为 nil 时自己探一次。
-	Probe *ProbeResult
-}
-
-// StartPreDownloadFromProbe creates a task that begins transferring while the file info dialog is
-// still open.
-//
-// 它接受一份现成的探测结果：HLS 链接的清晰度是在打开对话框之前选定的，那份事实必须原样
-// 传给任务，否则提前下载下来的会是另一个版本（Ticket 07：提前下载使用已选版本）。
-func (m *Manager) StartPreDownloadFromProbe(ctx context.Context, req PreDownloadRequest) (*task.Task, error) {
-	creds := credentials.New(req.Headers)
-	probe := req.Probe
-	var probeErr error
-	if probe == nil {
-		probe, probeErr = m.probeResource(ctx, req.URL, creds)
-	}
-	return m.createTask(ctx, req.URL, req.Directory, req.Filename, req.MaxConn, creds, probe, probeErr, req.PageURL, req.CategoryID)
-}
-
-// StartPreDownload creates a pre-download task without request context.
-func (m *Manager) StartPreDownload(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error) {
-	return m.StartPreDownloadFromProbe(ctx, PreDownloadRequest{
-		URL: urlStr, Directory: dir, Filename: filename, MaxConn: maxConn,
-	})
-}
-
-// StartPreDownloadWithHeaders creates a pre-download task with optional request headers.
-func (m *Manager) StartPreDownloadWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
-	return m.StartPreDownloadWithMetadata(ctx, urlStr, dir, filename, maxConn, headers, "", "")
-}
-
-// StartPreDownloadWithMetadata creates a pre-download task with optional request headers and task metadata.
-func (m *Manager) StartPreDownloadWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
-	return m.StartPreDownloadFromProbe(ctx, PreDownloadRequest{
-		URL: urlStr, Directory: dir, Filename: filename, MaxConn: maxConn, Headers: headers, PageURL: pageURL, CategoryID: categoryID,
-	})
 }
 
 // ConfirmPreDownload finalizes the save directory, filename and connection count of a task whose
 // file info dialog was still open, moving any in-progress data to the confirmed destination.
-func (m *Manager) ConfirmPreDownload(ctx context.Context, taskID, finalDir, finalFilename string, maxConn int) (*task.Task, error) {
+func (m *Manager) ConfirmPreDownload(ctx context.Context, req ConfirmRequest) (*task.Task, error) {
+	taskID, finalDir, finalFilename, maxConn := req.TaskID, req.Directory, req.Filename, req.MaxConn
 	t, err := m.store.Get(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("task not found: %w", err)
@@ -876,6 +869,14 @@ func (m *Manager) ConfirmPreDownload(ctx context.Context, taskID, finalDir, fina
 
 	if maxConn > 0 {
 		t.MaxConcurrency = maxConn
+	}
+	// 来源页面与分类随确认一起落盘：它们决定列表里的「下载来源」与后续分类归属，
+	// 不该由调用方在建好任务之后再补一次写。
+	if req.PageURL != "" {
+		t.PageURL = req.PageURL
+	}
+	if req.CategoryID != "" {
+		t.CategoryID = req.CategoryID
 	}
 	t.UpdatedAt = time.Now()
 	if err := m.store.Save(ctx, t); err != nil {
@@ -1106,40 +1107,40 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 	return t, nil
 }
 
-// AddTask probes the URL, checks duplicates, creates a task in queued or paused state, and triggers queue scheduling.
-func (m *Manager) AddTask(ctx context.Context, urlStr, dir, filename string, maxConn int) (*task.Task, error) {
-	return m.AddTaskWithHeaders(ctx, urlStr, dir, filename, maxConn, nil)
+// CreateRequest 是建立一条任务的全部输入：链接、落点、请求上下文、来源元数据，以及调用方
+// 可能已经拿到的那份探测事实。变体收在这里，入口不必在「带不带 Headers / 带不带探测结果」
+// 的几层包装之间挑一个。
+type CreateRequest struct {
+	URL        string
+	Directory  string
+	Filename   string
+	MaxConn    int
+	Headers    map[string]string
+	PageURL    string
+	CategoryID string
+	// Probe 是调用方已经得到的探测事实：文件信息窗口在登记时探到的那一份，HLS 链接还带着
+	// 选定清晰度的来源。为 nil 时引擎自己探一次——手输链接与直下载入口都走这条。
+	//
+	// 提前下载同样是它：对话框开着时开始传输并不需要引擎换一套规则，只是调用方更早地
+	// 把同一份目标交进来。
+	Probe *ProbeResult
+	// ProbeErr 是那次探测的失败原因。它随结果一起递进来，引擎据此决定降级排队还是留下
+	// 一条看得见的失败任务（A03）。
+	ProbeErr error
 }
 
-// AddTaskWithHeaders creates a task carrying optional request headers context.
-func (m *Manager) AddTaskWithHeaders(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string) (*task.Task, error) {
-	return m.AddTaskWithMetadata(ctx, urlStr, dir, filename, maxConn, headers, "", "")
-}
-
-// AddTaskWithMetadata creates a task carrying optional request headers and metadata.
-func (m *Manager) AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
-	creds := credentials.New(headers)
-	probe, probeErr := m.probeResource(ctx, urlStr, creds)
-	return m.createTask(ctx, urlStr, dir, filename, maxConn, creds, probe, probeErr, pageURL, categoryID)
-}
-
-// AddTaskFromProbe 用一次已经完成的探测结果建任务，自己不再联网。
-//
-// 文件信息窗口靠它做到「提交瞬时」：链接在登记那一刻就已经探过一次（用户读对话框的这段时间
-// 足够它跑完），提交只是把手上已有的事实落成任务，不必为同一份元数据再付一次请求往返
-// （真实探测会重试三次，还带一次 HEAD 兜底）。
-func (m *Manager) AddTaskFromProbe(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *ProbeResult, probeErr error) (*task.Task, error) {
-	return m.AddTaskFromProbeWithMetadata(ctx, urlStr, dir, filename, maxConn, headers, probe, probeErr, "", "")
-}
-
-// AddTaskFromProbeWithMetadata 用已完成的探测结果和元数据直接建任务。
-func (m *Manager) AddTaskFromProbeWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, probe *ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
-	return m.createTask(ctx, urlStr, dir, filename, maxConn, credentials.New(headers), probe, probeErr, pageURL, categoryID)
-}
-
-// createTask 是两条建任务路径的共同实现：先挡住重复链接，再按探测结果落成一条任务。
+// CreateTask 建一条任务：先挡住重复链接，再按探测事实落成一条任务并交给调度。
 // 探测失败时仍然建一条可见的失败任务（A03），而不是什么都不留下。
-func (m *Manager) createTask(ctx context.Context, urlStr, dir, filename string, maxConn int, creds credentials.RequestCredentials, probe *ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
+func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task, error) {
+	urlStr, dir, filename, maxConn := req.URL, req.Directory, req.Filename, req.MaxConn
+	pageURL, categoryID := req.PageURL, req.CategoryID
+	creds := credentials.New(req.Headers)
+	probe, probeErr := req.Probe, req.ProbeErr
+	// 手输链接与直下载入口没有现成的探测结果：这里替它们探一次。探测结果与失败原因
+	// 都只在「什么都没给」时才去取，调用方手上的事实一律原样使用。
+	if probe == nil && probeErr == nil {
+		probe, probeErr = m.probeResource(ctx, urlStr, creds)
+	}
 	// 挡住重复链接：同一条清单的不同清晰度是不同的下载目标，因此这里和别的入口用同一套判定
 	// （FindDuplicateTaskWithVariant），不另写一份「只看 URL」的口径——那会把第二个清晰度
 	// 当成重复链接拒绝掉。
@@ -1695,32 +1696,4 @@ func (m *Manager) Close() {
 	m.activeTasks = make(map[string]context.CancelFunc)
 	m.mu.Unlock()
 	m.wg.Wait()
-}
-
-// SetTaskPageURL updates and persists the PageURL for the specified task.
-func (m *Manager) SetTaskPageURL(ctx context.Context, taskID, pageURL string) error {
-	t, err := m.store.Get(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	t.PageURL = pageURL
-	if err := m.store.Save(ctx, t); err != nil {
-		return err
-	}
-	m.notify(t)
-	return nil
-}
-
-// SetTaskCategoryID updates and persists the CategoryID for the specified task.
-func (m *Manager) SetTaskCategoryID(ctx context.Context, taskID, categoryID string) error {
-	t, err := m.store.Get(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	t.CategoryID = categoryID
-	if err := m.store.Save(ctx, t); err != nil {
-		return err
-	}
-	m.notify(t)
-	return nil
 }

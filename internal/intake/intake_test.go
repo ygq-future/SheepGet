@@ -25,7 +25,6 @@ type fakeEngine struct {
 	duplicate  *task.Task
 	occupancy  engine.Occupancy
 	reserved   engine.Reserved
-	preTask    *task.Task
 	created    *task.Task
 	reusedTask *task.Task
 
@@ -44,18 +43,19 @@ type fakeEngine struct {
 	createdProbe    *engine.ProbeResult
 	createdProbeErr error
 	reusedID        string
+	reusedPageURL   string
+	reusedCategory  string
 	// duplicateVariantLookup 记录历史任务查找用的清晰度：清晰度是否参与判定，只能从这里看出来。
 	duplicateVariantLookup string
 	duplicateID            string
-	duplicateAction        string
+	duplicateAction        duplicate.Action
 	duplicateProbe         *engine.ProbeResult
 	confirmedID            string
 	confirmedDir           string
 	confirmedName          string
-	preRequest             *engine.PreDownloadRequest
+	confirmedPageURL       string
+	confirmedCategory      string
 	cancelled              []string
-	categoryFixups         map[string]string
-	pageURLFixups          []string
 }
 
 func (f *fakeEngine) ProbeURL(_ context.Context, urlStr string, headers map[string]string) (*engine.ProbeResult, error) {
@@ -83,74 +83,46 @@ func (f *fakeEngine) Occupancy(_ context.Context, reserved engine.Reserved) engi
 	return occ
 }
 
-func (f *fakeEngine) AddTaskWithMetadata(_ context.Context, urlStr, dir, filename string, maxConn int, _ map[string]string, pageURL, categoryID string) (*task.Task, error) {
-	f.createdURL, f.createdDir, f.createdFilename, f.createdMaxConn = urlStr, dir, filename, maxConn
-	f.createdPageURL, f.createdCategory = pageURL, categoryID
+func (f *fakeEngine) CreateTask(_ context.Context, req engine.CreateRequest) (*task.Task, error) {
+	f.createdURL, f.createdDir, f.createdFilename, f.createdMaxConn = req.URL, req.Directory, req.Filename, req.MaxConn
+	f.createdPageURL, f.createdCategory = req.PageURL, req.CategoryID
+	f.createdProbe, f.createdProbeErr = req.Probe, req.ProbeErr
 	if f.created == nil {
 		f.created = &task.Task{ID: "task_new"}
 	}
 	return f.created, nil
 }
 
-func (f *fakeEngine) AddTaskFromProbeWithMetadata(_ context.Context, urlStr, dir, filename string, maxConn int, _ map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
-	f.createdURL, f.createdDir, f.createdFilename, f.createdMaxConn = urlStr, dir, filename, maxConn
-	f.createdPageURL, f.createdCategory = pageURL, categoryID
-	f.createdProbe, f.createdProbeErr = probe, probeErr
-	if f.created == nil {
-		f.created = &task.Task{ID: "task_probe"}
-	}
-	return f.created, nil
-}
-
-func (f *fakeEngine) ResolveDuplicateFromProbeWithMetadata(_ context.Context, taskID, strategy, dir, filename string, maxConn int, probe *engine.ProbeResult, categoryID string) (*task.Task, error) {
-	f.duplicateID, f.duplicateAction, f.duplicateProbe = taskID, strategy, probe
-	f.createdDir, f.createdFilename, f.createdMaxConn, f.createdCategory = dir, filename, maxConn, categoryID
+func (f *fakeEngine) ResolveDuplicate(_ context.Context, req engine.DuplicateRequest) (*task.Task, error) {
+	f.duplicateID, f.duplicateAction, f.duplicateProbe = req.TaskID, req.Action, req.Probe
+	f.createdDir, f.createdFilename, f.createdMaxConn, f.createdCategory = req.Directory, req.Filename, req.MaxConn, req.CategoryID
 	if f.created == nil {
 		f.created = &task.Task{ID: "task_dup"}
 	}
 	return f.created, nil
 }
 
-func (f *fakeEngine) ConfirmPreDownload(_ context.Context, taskID, finalDir, finalFilename string, _ int) (*task.Task, error) {
-	f.confirmedID, f.confirmedDir, f.confirmedName = taskID, finalDir, finalFilename
+func (f *fakeEngine) ConfirmPreDownload(_ context.Context, req engine.ConfirmRequest) (*task.Task, error) {
+	f.confirmedID, f.confirmedDir, f.confirmedName = req.TaskID, req.Directory, req.Filename
+	f.confirmedPageURL, f.confirmedCategory = req.PageURL, req.CategoryID
 	if f.created == nil {
-		f.created = &task.Task{ID: taskID}
+		f.created = &task.Task{ID: req.TaskID}
 	}
 	return f.created, nil
 }
 
-func (f *fakeEngine) ReuseExistingFile(_ context.Context, taskID, targetDir, targetFilename string) (*task.Task, error) {
-	f.reusedID = taskID
-	f.createdDir, f.createdFilename = targetDir, targetFilename
+func (f *fakeEngine) ReuseExistingFile(_ context.Context, req engine.ReuseRequest) (*task.Task, error) {
+	f.reusedID = req.TaskID
+	f.reusedPageURL, f.reusedCategory = req.PageURL, req.CategoryID
+	f.createdDir, f.createdFilename = req.Directory, req.Filename
 	if f.reusedTask == nil {
-		f.reusedTask = &task.Task{ID: taskID, Status: task.StatusCompleted}
+		f.reusedTask = &task.Task{ID: req.TaskID, Status: task.StatusCompleted}
 	}
 	return f.reusedTask, nil
 }
 
-func (f *fakeEngine) StartPreDownloadFromProbe(_ context.Context, req engine.PreDownloadRequest) (*task.Task, error) {
-	f.preRequest = &req
-	if f.preTask == nil {
-		f.preTask = &task.Task{ID: "task_pre"}
-	}
-	return f.preTask, nil
-}
-
 func (f *fakeEngine) CancelPreDownload(_ context.Context, taskID string) error {
 	f.cancelled = append(f.cancelled, taskID)
-	return nil
-}
-
-func (f *fakeEngine) SetTaskCategoryID(_ context.Context, taskID, categoryID string) error {
-	if f.categoryFixups == nil {
-		f.categoryFixups = map[string]string{}
-	}
-	f.categoryFixups[taskID] = categoryID
-	return nil
-}
-
-func (f *fakeEngine) SetTaskPageURL(_ context.Context, taskID, pageURL string) error {
-	f.pageURLFixups = append(f.pageURLFixups, taskID+"="+pageURL)
 	return nil
 }
 
@@ -566,7 +538,7 @@ func TestSubmit_DirectModeContinuesUnfinishedHistory(t *testing.T) {
 		t.Fatalf("submit failed: %v", err)
 	}
 
-	if eng.duplicateAction != string(duplicate.ActionContinue) || eng.duplicateID != "task_partial" {
+	if eng.duplicateAction != duplicate.ActionContinue || eng.duplicateID != "task_partial" {
 		t.Errorf("resolved duplicate as (%q, %q), want continue on task_partial", eng.duplicateID, eng.duplicateAction)
 	}
 	if result.Task == nil || result.Task.ID != eng.created.ID {
@@ -657,10 +629,9 @@ func TestSubmit_RecomputesDecisionForFinalDestination(t *testing.T) {
 	}
 }
 
-func TestSubmit_ConfirmsPreDownloadAndAdoptsMetadata(t *testing.T) {
+func TestSubmit_ConfirmsPreDownloadWithMetadata(t *testing.T) {
 	in, eng, tmpDir := newFixture(t, config.DuplicatePolicyPrompt)
 	targetURL := "https://example.com/pre.bin"
-	eng.preTask = &task.Task{ID: "task_pre"}
 
 	target := in.Begin(context.Background(), intake.Request{
 		URL: targetURL, Directory: tmpDir, PageURL: "https://page.example/",
@@ -674,11 +645,41 @@ func TestSubmit_ConfirmsPreDownloadAndAdoptsMetadata(t *testing.T) {
 	if eng.confirmedID != "task_pre" {
 		t.Errorf("confirmed %q, want task_pre", eng.confirmedID)
 	}
-	if eng.pageURLFixups == nil {
-		t.Fatal("the page URL was dropped when confirming the pre-download")
+	if eng.confirmedPageURL != "https://page.example/" {
+		t.Errorf("confirmed page URL = %q, want the source page", eng.confirmedPageURL)
 	}
-	if eng.categoryFixups["task_pre"] != "builtin-file" {
-		t.Errorf("category fixup = %q, want builtin-file", eng.categoryFixups["task_pre"])
+	if eng.confirmedCategory != "builtin-file" {
+		t.Errorf("confirmed category = %q, want builtin-file", eng.confirmedCategory)
+	}
+}
+
+// 复用别处成品是提交的第四条出口：落点是这次选的，来源页面与分类同样跟着这次选择走。
+func TestSubmit_ReusesExistingFileWithMetadata(t *testing.T) {
+	in, eng, tmpDir := newFixture(t, config.DuplicatePolicyPrompt)
+	targetURL := "https://example.com/reuse.bin"
+
+	target := in.Begin(context.Background(), intake.Request{
+		URL: targetURL, Directory: tmpDir, PageURL: "https://page.example/",
+	}, nil)
+	in.ApplyProbe(context.Background(), &target, &engine.ProbeResult{URL: targetURL, Filename: "reuse.bin"}, nil, nil)
+
+	if _, err := in.Submit(context.Background(), target, intake.Choice{
+		Action: duplicate.ActionReuse, ReuseTaskID: "task_done", MaxConn: 3,
+	}); err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+
+	if eng.reusedID != "task_done" {
+		t.Errorf("reused task = %q, want task_done", eng.reusedID)
+	}
+	if eng.reusedPageURL != "https://page.example/" {
+		t.Errorf("reused page URL = %q, want the source page", eng.reusedPageURL)
+	}
+	if eng.reusedCategory != "builtin-file" {
+		t.Errorf("reused category = %q, want builtin-file", eng.reusedCategory)
+	}
+	if eng.createdDir != tmpDir || eng.createdFilename != "reuse.bin" {
+		t.Errorf("reused destination = %q/%q, want the target's", eng.createdDir, eng.createdFilename)
 	}
 }
 
@@ -693,14 +694,11 @@ func TestStartPreDownload_ReusesRegistrationProbe(t *testing.T) {
 		t.Fatalf("start pre-download failed: %v", err)
 	}
 
-	if eng.preRequest == nil {
-		t.Fatal("pre-download request never reached the engine")
-	}
-	if eng.preRequest.Probe != probe {
+	if eng.createdProbe != probe {
 		t.Error("pre-download re-probed instead of reusing the registration probe")
 	}
-	if eng.preRequest.Directory != tmpDir || eng.preRequest.Filename != "pre.bin" {
-		t.Errorf("pre-download destination = %q/%q, want the target's", eng.preRequest.Directory, eng.preRequest.Filename)
+	if eng.createdDir != tmpDir || eng.createdFilename != "pre.bin" {
+		t.Errorf("pre-download destination = %q/%q, want the target's", eng.createdDir, eng.createdFilename)
 	}
 }
 
@@ -716,7 +714,7 @@ func TestStartPreDownload_OmitsFailedProbe(t *testing.T) {
 		t.Fatalf("start pre-download failed: %v", err)
 	}
 
-	if eng.preRequest == nil || eng.preRequest.Probe != nil {
-		t.Fatalf("pre-download probe = %+v, want none so the engine re-probes", eng.preRequest)
+	if eng.createdProbe != nil {
+		t.Fatalf("pre-download probe = %+v, want none so the engine re-probes", eng.createdProbe)
 	}
 }

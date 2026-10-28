@@ -700,9 +700,9 @@ func (qc *QueueController) finishPreDownloadStart(start *preDownloadStart, preTa
 // 兜底，HTTP 客户端没有超时），锁被它握住时读当前项、取消、下一次交接全都排在后面，
 // 交接会在 2.5 秒上限处静默失败。
 //
-// 交接过来的链接在登记时就已经探过一次，提交直接用那次结果建任务（AddTaskFromProbe），
-// 因此寻常的提交根本不联网、瞬时返回；只有用户改过链接、或链接是手输的（没有任何探测
-// 结果）才退回让引擎自己探。
+// 交接过来的链接在登记时就已经探过一次，提交直接用那次结果建任务（`engine.CreateTask`
+// 的 Probe），因此寻常的提交根本不联网、瞬时返回；只有用户改过链接、或链接是手输的
+// （没有任何探测结果）才退回让引擎自己探。
 func (qc *QueueController) Submit(ctx context.Context, sub FileInfoSubmission) (*task.Task, error) {
 	qc.mu.Lock()
 	if len(qc.items) == 0 {

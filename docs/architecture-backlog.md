@@ -16,7 +16,7 @@
 | 1 | 目标落点只由一个 interface 给出 | 强 | 小 | 已完成（2026-10-28） |
 | 2 | 直下载入口与文件信息窗口共用 intake | 强 | 中 | 已完成（2026-10-28） |
 | 3 | 设置变更走一条应用路径 | 值得探索 | 小—中 | 已完成（2026-10-28） |
-| 4 | 收敛建任务阶梯 | 强 | 小—中 | 待办 |
+| 4 | 收敛建任务阶梯 | 强 | 小—中 | 已完成（2026-10-28） |
 
 ---
 
@@ -90,12 +90,26 @@
 
 ## 4. 收敛建任务阶梯
 
-- **状态**：待办
-- **问题**：建任务、预下载、重复裁决各有多层同义入口（`AddTask` → `WithHeaders` → `WithMetadata` → `FromProbe` → `FromProbeWithMetadata` 等），调用方必须知道该挑哪一层。序 2 之后窗口不再直接依赖这阶梯（改由 `intake.Engine` 的 13 个方法承载），但阶梯本身仍在：新增一个任务字段仍要在多层包装之间挑位置。
+- **状态**：已完成（2026-10-28），门禁通过，未提交
+- **问题**：建任务、预下载、重复裁决各有多层同义入口（`AddTask` → `WithHeaders` → `WithMetadata` → `FromProbe` → `FromProbeWithMetadata` 等），调用方必须知道该挑哪一层。序 2 之后窗口不再直接依赖这阶梯（改由 `intake.Engine` 的方法承载），但阶梯本身仍在：新增一个任务字段仍要在多层包装之间挑位置。
 - **证据**：`internal/engine/manager.go:429-439`、`:794-809`、`:1115-1143`（12 个薄包装）；`internal/intake/intake.go` 的 `Engine` 接口（序 2 之后 intake 需要的引擎能力）。
 - **范围**：每个动作只留一个入口，变体收进请求结构（引擎里已有 `PreDownloadRequest` 这一先例）；阶梯退回实现内部。不改任务契约与 UI。
 - **验收**：`intake.Engine` 的必需方法显著减少（一次建任务、一次预下载、一次重复裁决即可覆盖三处调用）；测试的假引擎不再需要逐个复写全部变体；前端无改动。
 - **触发条件**：下一次给任务增加字段或新的元数据来源——那正是阶梯会再长一层的时候。
+- **实际改动**：
+  - 引擎侧每个动作只剩一个入口，变体全部收进请求结构：`CreateRequest`（链接、落点、请求上下文、页面地址、分类、`Probe`/`ProbeErr`）→ `CreateTask`；`DuplicateRequest`（历史任务、`duplicate.Action`、最终落点、并发、分类、当次探测）→ `ResolveDuplicate`；`ConfirmRequest` → `ConfirmPreDownload`；`ReuseRequest` → `ReuseExistingFile`。
+  - 提前下载不再另有一套规则：`StartPreDownload*` 的四个包装与 `PreDownloadRequest` 一并删除，对话框开着时开始传输就是「更早地把同一份 `CreateRequest` 交进来」；`AddTask*` 的五层包装同样删除，`createTask` 的内联实现成为 `CreateTask` 的唯一实现。
+  - 页面地址与分类不再由调用方建好任务后再补写：确认预下载与复用成品各自在自己的请求里接收并落盘，`SetTaskPageURL`／`SetTaskCategoryID` 与 intake 的 `adoptMetadata` 一并删除（两个 setter 因此没有调用方）。
+  - `intake.Engine` 从 13 个方法收到 9 个：`CreateTask`、`ResolveDuplicate`、`ConfirmPreDownload`、`ReuseExistingFile` 取代原先 4 个建任务/预下载/裁决方法（`AddTaskWithMetadata`、`AddTaskFromProbeWithMetadata`、`ResolveDuplicateFromProbeWithMetadata`、`StartPreDownloadFromProbe`）与 2 个事后补写方法（`SetTaskPageURL`、`SetTaskCategoryID`），余下 5 个是只读查询与取消预下载。intake 内部只保留一处请求构造（`createRequest`），预下载与提交共用。
+- **验证**（实际执行）：
+  - `go test -count=1 ./...`：27 个包、512 项通过。新增 3 项：确认预下载与复用成品各自把请求里的来源页面与分类写进存储；intake 的复用出口把最终落点与来源元数据一并交给引擎。
+  - 用例效力：窗口用例 `SubmitReusesRegistrationProbe` 现在按 `CreateTask` 调用次数（=1）与登记时那份探测结果的指针断言「提交没有另起一次探测」；`SubmitWaitsForPreDownloadStart` 按建任务次数断言提交确认的是启动出来的那一份而不是另建一份——合并入口之后，这两处只能靠次数与入参区分。
+  - 前端无改动：`bun run typecheck` 与 `bun run test` 13 个文件、116 项通过；Wails 绑定未变（`Engine` 方法不经过 App 绑定）。
+  - `node scripts/quality-gate.mjs` 全绿。
+- **未做**：没有把 `Occupancy` 与 `FindDuplicateTaskWithVariant` 合并成一个查询（两者来源不同：一个是本地快照，一个是按清晰度匹配的历史任务）；没有在原生窗口里逐项点击验收（本机无法自动驱动 Wails 窗口）。
+- **行为变化**：
+  - 复用成品时，来源页面以这次请求为准（此前只在目标任务没有来源页面时才补写），分类同样跟着这次选择走。
+  - 确认预下载时页面地址与分类随同一次落盘写入，不再多一次读改写与广播。
 
 ---
 

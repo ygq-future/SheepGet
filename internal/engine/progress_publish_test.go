@@ -89,7 +89,7 @@ func TestManager_EventPayloadIsPrivateCopy(t *testing.T) {
 	mgr.AddListener(listener)
 
 	ctx := context.Background()
-	if _, err := mgr.AddTaskWithHeaders(ctx, ts.URL+"/big.bin", tmpDir, "big.bin", 4, nil); err != nil {
+	if _, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/big.bin", Directory: tmpDir, Filename: "big.bin", MaxConn: 4}); err != nil {
 		t.Fatalf("failed to add task: %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestManager_AccumulatesElapsedNanoOnlyWhileRunning(t *testing.T) {
 	defer mgr.Close()
 
 	ctx := context.Background()
-	created, err := mgr.AddTaskWithHeaders(ctx, ts.URL+"/big.bin", tmpDir, "big.bin", 2, nil)
+	created, err := mgr.CreateTask(ctx, engine.CreateRequest{URL: ts.URL + "/big.bin", Directory: tmpDir, Filename: "big.bin", MaxConn: 2})
 	if err != nil {
 		t.Fatalf("failed to add task: %v", err)
 	}

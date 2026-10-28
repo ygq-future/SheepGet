@@ -3,6 +3,7 @@ package window
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -36,6 +37,7 @@ type blockingEngine struct {
 	probeHeaders map[string]string
 	createdProbe *engine.ProbeResult
 	createdErr   error
+	created      []string
 }
 
 func newBlockingEngine(blocked ...string) *blockingEngine {
@@ -88,15 +90,17 @@ func (e *blockingEngine) release(name string) {
 	}
 }
 
-func (e *blockingEngine) called(name string) bool {
+// callCount 返回某个方法被调用的次数：合并入口之后，区分「提交另建了一份任务」只能靠次数。
+func (e *blockingEngine) callCount(name string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	n := 0
 	for _, c := range e.calls {
 		if c == name {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 func (e *blockingEngine) cancelledIDs() []string {
@@ -145,33 +149,31 @@ func (e *blockingEngine) FindDuplicateTaskWithVariant(context.Context, string, s
 	return nil, nil
 }
 
-func (e *blockingEngine) AddTaskWithMetadata(ctx context.Context, urlStr, dir, filename string, maxConn int, headers map[string]string, pageURL, categoryID string) (*task.Task, error) {
-	e.enter("AddTaskWithHeaders")
-	return &task.Task{ID: "task_manual", PageURL: pageURL, CategoryID: categoryID}, nil
-}
-
-func (e *blockingEngine) AddTaskFromProbeWithMetadata(_ context.Context, _, _, _ string, _ int, _ map[string]string, probe *engine.ProbeResult, probeErr error, pageURL, categoryID string) (*task.Task, error) {
-	e.enter("AddTaskFromProbe")
+func (e *blockingEngine) CreateTask(_ context.Context, req engine.CreateRequest) (*task.Task, error) {
+	e.enter("CreateTask")
 	e.mu.Lock()
-	e.createdProbe = probe
-	e.createdErr = probeErr
+	e.createdProbe = req.Probe
+	e.createdErr = req.ProbeErr
+	e.created = append(e.created, fmt.Sprintf("task_created_%d", len(e.created)+1))
+	id := e.created[len(e.created)-1]
 	e.mu.Unlock()
-	return &task.Task{ID: "task_manual", PageURL: pageURL, CategoryID: categoryID}, nil
+	return &task.Task{ID: id, PageURL: req.PageURL, CategoryID: req.CategoryID}, nil
 }
 
-// StartPreDownloadFromProbe 是预下载唯一的启动入口。用例按历史名字
-// StartPreDownloadWithHeaders 拦住它，断言的是「这条调用在锁外」。
-func (e *blockingEngine) StartPreDownloadFromProbe(_ context.Context, req engine.PreDownloadRequest) (*task.Task, error) {
-	e.enter("StartPreDownloadWithHeaders")
-	return &task.Task{ID: "task_pre", URL: req.URL, Directory: req.Directory, Filename: req.Filename}, nil
+// createdTaskIDs 按发生顺序返回每次建任务给出的 ID：预下载与提交都走同一个入口之后，
+// 「确认的是不是启动出来的那一份」只能按 ID 对齐。
+func (e *blockingEngine) createdTaskIDs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.created...)
 }
 
-func (e *blockingEngine) ConfirmPreDownload(_ context.Context, taskID, _, _ string, _ int) (*task.Task, error) {
+func (e *blockingEngine) ConfirmPreDownload(_ context.Context, req engine.ConfirmRequest) (*task.Task, error) {
 	e.enter("ConfirmPreDownload")
 	e.mu.Lock()
-	e.confirmed = taskID
+	e.confirmed = req.TaskID
 	e.mu.Unlock()
-	return &task.Task{ID: taskID}, nil
+	return &task.Task{ID: req.TaskID}, nil
 }
 
 func (e *blockingEngine) CancelPreDownload(_ context.Context, taskID string) error {
@@ -182,9 +184,9 @@ func (e *blockingEngine) CancelPreDownload(_ context.Context, taskID string) err
 	return nil
 }
 
-func (e *blockingEngine) ResolveDuplicateFromProbeWithMetadata(_ context.Context, taskID, _, _, _ string, _ int, _ *engine.ProbeResult, categoryID string) (*task.Task, error) {
+func (e *blockingEngine) ResolveDuplicate(_ context.Context, req engine.DuplicateRequest) (*task.Task, error) {
 	e.enter("ResolveDuplicate")
-	return &task.Task{ID: taskID, CategoryID: categoryID}, nil
+	return &task.Task{ID: req.TaskID, CategoryID: req.CategoryID}, nil
 }
 
 // Occupancy 在真实引擎里要读一次任务库；这里给一份空快照（没有任务记录），命名只剩磁盘与
@@ -194,23 +196,14 @@ func (e *blockingEngine) Occupancy(_ context.Context, reserved engine.Reserved) 
 	return engine.Occupancy{Reserved: reserved}
 }
 
-func (e *blockingEngine) ReuseExistingFile(_ context.Context, taskID, _, _ string) (*task.Task, error) {
+func (e *blockingEngine) ReuseExistingFile(_ context.Context, req engine.ReuseRequest) (*task.Task, error) {
 	e.enter("ReuseExistingFile")
-	return &task.Task{ID: taskID}, nil
+	return &task.Task{ID: req.TaskID}, nil
 }
 
 func (e *blockingEngine) ResolveHLSVariant(_ context.Context, _, _ string, _ map[string]string) (*hls.Source, error) {
 	e.enter("ResolveHLSVariant")
 	return nil, errors.New("not configured in test")
-}
-
-func (e *blockingEngine) SetTaskPageURL(_ context.Context, _ string, _ string) error {
-	e.enter("SetTaskPageURL")
-	return nil
-}
-func (e *blockingEngine) SetTaskCategoryID(_ context.Context, _ string, _ string) error {
-	e.enter("SetTaskCategoryID")
-	return nil
 }
 
 func setupQueueWithEngine(t *testing.T, eng intake.Engine, view WindowView, runOps windowOps) (*QueueController, string) {
@@ -258,7 +251,7 @@ func hasItem(items []*FileInfoItem, id string) bool {
 // 等它把 2.5 秒的交接预算耗光。
 func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T) {
 	ctx := context.Background()
-	eng := newBlockingEngine("AddTaskWithHeaders")
+	eng := newBlockingEngine("CreateTask")
 	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
 
 	// 不带链接的登记不会触发后台探测，这里要控制的只有提交这条路径。
@@ -279,7 +272,7 @@ func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T
 		submitted <- err
 	}()
 
-	eng.waitFor(t, "AddTaskWithHeaders")
+	eng.waitFor(t, "CreateTask")
 	assertQueueResponsive(t, qc, ctx, tmpDir)
 
 	// 提交中这一项不能被取消：要么让它走完，要么明确告诉用户「正在提交」。
@@ -288,7 +281,7 @@ func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T
 		t.Fatalf("cancelling a submission in progress = %v, want ErrSubmitInProgress", err)
 	}
 
-	eng.release("AddTaskWithHeaders")
+	eng.release("CreateTask")
 	select {
 	case err := <-submitted:
 		if err != nil {
@@ -307,7 +300,7 @@ func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T
 // 建任务：整个提交过程不再有第二次探测，这正是「提交是瞬时的」的由来。
 func TestQueueController_SubmitReusesRegistrationProbe(t *testing.T) {
 	ctx := context.Background()
-	eng := newBlockingEngine("AddTaskFromProbe")
+	eng := newBlockingEngine("CreateTask")
 	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
 
 	headers := map[string]string{"Referer": "https://example.com/page"}
@@ -337,10 +330,10 @@ func TestQueueController_SubmitReusesRegistrationProbe(t *testing.T) {
 		submitted <- err
 	}()
 
-	eng.waitFor(t, "AddTaskFromProbe")
+	eng.waitFor(t, "CreateTask")
 	assertQueueResponsive(t, qc, ctx, tmpDir)
 
-	eng.release("AddTaskFromProbe")
+	eng.release("CreateTask")
 	select {
 	case err := <-submitted:
 		if err != nil {
@@ -360,15 +353,15 @@ func TestQueueController_SubmitReusesRegistrationProbe(t *testing.T) {
 	if probe == nil || probe.TotalBytes != 1024 {
 		t.Fatalf("建任务用的探测结果 = %+v，应当是登记时探到的那一份", probe)
 	}
-	if eng.called("AddTaskWithHeaders") {
-		t.Fatal("提交绕过了手上的探测结果，又联网探了一次")
+	if got := eng.callCount("CreateTask"); got != 1 {
+		t.Fatalf("建任务被调用 %d 次，提交应当只把登记时那份探测结果落成任务", got)
 	}
 }
 
 // 用户点得比探测快：登记时的探测还在路上时，提交要等它出结果，而不是另起一次探测。
 func TestQueueController_SubmitWaitsForProbeInFlight(t *testing.T) {
 	ctx := context.Background()
-	eng := newBlockingEngine("ProbeURL", "AddTaskFromProbe")
+	eng := newBlockingEngine("ProbeURL", "CreateTask")
 	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
 
 	reg, err := qc.Enqueue(ctx, DownloadRequest{
@@ -402,8 +395,8 @@ func TestQueueController_SubmitWaitsForProbeInFlight(t *testing.T) {
 	assertQueueResponsive(t, qc, ctx, tmpDir)
 
 	eng.release("ProbeURL")
-	eng.waitFor(t, "AddTaskFromProbe")
-	eng.release("AddTaskFromProbe")
+	eng.waitFor(t, "CreateTask")
+	eng.release("CreateTask")
 	select {
 	case err := <-submitted:
 		if err != nil {
@@ -436,7 +429,7 @@ func waitForProbe(t *testing.T, qc *QueueController) {
 // 这一项正在启动预下载时，提交必须等它落地，再走确认预下载。
 func TestQueueController_SubmitWaitsForPreDownloadStart(t *testing.T) {
 	ctx := context.Background()
-	eng := newBlockingEngine("ProbeURL", "StartPreDownloadWithHeaders")
+	eng := newBlockingEngine("ProbeURL", "CreateTask")
 	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
 
 	preDownload := true
@@ -450,7 +443,7 @@ func TestQueueController_SubmitWaitsForPreDownloadStart(t *testing.T) {
 	}
 
 	eng.release("ProbeURL")
-	eng.waitFor(t, "StartPreDownloadWithHeaders")
+	eng.waitFor(t, "CreateTask")
 
 	submitted := make(chan error, 1)
 	go func() {
@@ -472,7 +465,7 @@ func TestQueueController_SubmitWaitsForPreDownloadStart(t *testing.T) {
 	default:
 	}
 
-	eng.release("StartPreDownloadWithHeaders")
+	eng.release("CreateTask")
 	select {
 	case err := <-submitted:
 		if err != nil {
@@ -482,11 +475,15 @@ func TestQueueController_SubmitWaitsForPreDownloadStart(t *testing.T) {
 		t.Fatal("submit never returned after the pre-download start was released")
 	}
 
-	if eng.called("AddTaskWithHeaders") {
-		t.Fatal("提交另建了一份任务，而不是确认已经在跑的预下载")
+	if got := eng.callCount("CreateTask"); got != 1 {
+		t.Fatalf("建任务被调用 %d 次，提交应当确认已经在跑的预下载而不是另建一份", got)
 	}
-	if got := eng.confirmedTaskID(); got != "task_pre" {
-		t.Fatalf("confirmed pre-download task = %q, want task_pre", got)
+	ids := eng.createdTaskIDs()
+	if len(ids) != 1 {
+		t.Fatalf("created task IDs = %v, want exactly the pre-download", ids)
+	}
+	if got := eng.confirmedTaskID(); got != ids[0] {
+		t.Fatalf("confirmed pre-download task = %q, want %q", got, ids[0])
 	}
 }
 
@@ -494,7 +491,7 @@ func TestQueueController_SubmitWaitsForPreDownloadStart(t *testing.T) {
 // 那就是一份用户从未确认过的下载。启动完成后发现这一项已经不在队列里，就该把它收掉。
 func TestQueueController_CancelDuringPreDownloadStartLeavesNoTask(t *testing.T) {
 	ctx := context.Background()
-	eng := newBlockingEngine("ProbeURL", "StartPreDownloadWithHeaders")
+	eng := newBlockingEngine("ProbeURL", "CreateTask")
 	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
 
 	preDownload := true
@@ -507,7 +504,7 @@ func TestQueueController_CancelDuringPreDownloadStartLeavesNoTask(t *testing.T) 
 	}
 
 	eng.release("ProbeURL")
-	eng.waitFor(t, "StartPreDownloadWithHeaders")
+	eng.waitFor(t, "CreateTask")
 
 	cancelled := make(chan error, 1)
 	go func() { cancelled <- qc.CancelCurrent(ctx) }()
@@ -523,13 +520,14 @@ func TestQueueController_CancelDuringPreDownloadStartLeavesNoTask(t *testing.T) 
 		t.Fatalf("queue length after cancel = %d, want 0", got)
 	}
 
-	eng.release("StartPreDownloadWithHeaders")
+	eng.release("CreateTask")
 
 	deadline := time.After(2 * time.Second)
 	for {
 		if ids := eng.cancelledIDs(); len(ids) > 0 {
-			if ids[0] != "task_pre" {
-				t.Fatalf("cancelled pre-download = %q, want task_pre", ids[0])
+			created := eng.createdTaskIDs()
+			if len(created) != 1 || ids[0] != created[0] {
+				t.Fatalf("cancelled pre-download = %q, want the task it started (%v)", ids[0], created)
 			}
 			break
 		}
