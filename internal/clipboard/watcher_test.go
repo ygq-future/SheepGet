@@ -191,9 +191,8 @@ func TestWatcher_StartStopAndSettingsUpdate(t *testing.T) {
 	updateEnabled := func(enabled bool) {
 		stMu.Lock()
 		st.Clipboard.Enabled = enabled
-		snapshot := st
 		stMu.Unlock()
-		w.OnSettingsUpdated(&snapshot)
+		w.SetEnabled(enabled)
 	}
 
 	w = clipboard.NewWatcher(mockClip, readSettings, func(urlStr string) {

@@ -96,11 +96,16 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 2})
 	t.Cleanup(mgr.Close)
 
+	tempDir := filepath.Join(tmpDir, "temp")
+	// 生产环境的临时目录由存储层建好；测试里同样先建出来，让「分片落在临时目录」这条
+	// 规则和真实运行一致。
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
 	settingsSvc := config.NewSettingsService(
 		filepath.Join(tmpDir, "config.json"),
 		tmpDir,
-		filepath.Join(tmpDir, "temp"),
-		nil,
+		tempDir,
 	)
 	app := &App{
 		manager:  mgr,
@@ -115,6 +120,8 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	adapter := &loopbackServerAdapter{app: app}
 	loopbackSrv := server.NewServer(filepath.Join(tmpDir, "session.json"), adapter, adapter)
 	app.loopbackServer = loopbackSrv
+	// 每个测试各起一个环回服务：结束时关掉，别让后面的用例在同一端口段里耗尽顺延范围。
+	t.Cleanup(func() { _ = loopbackSrv.Stop() })
 	// 无头测试里宿主窗口不存在，注册表的宿主适配器会如实说「没有窗口」；
 	// 窗口策略本身由 internal/windowing 的用例覆盖。
 	app.declareWindows(&windowsHost{app: app})
@@ -124,6 +131,10 @@ func newTestApp(t *testing.T) (*App, task.TaskStore, string) {
 	}
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
+	// 与 NewApp 一样接上设置应用路径：启动推送、保存设置与重启端口都走同一处实现。
+	if err := app.wireSettingsApply(); err != nil {
+		t.Fatalf("wireSettingsApply failed: %v", err)
+	}
 	app.startup(context.Background())
 	return app, store, tmpDir
 }
@@ -317,8 +328,11 @@ func TestApp_PreDownloadCancelKeepsPausedTask(t *testing.T) {
 	if tasks[0].Status != task.StatusPaused {
 		t.Errorf("expected a paused task after cancel, got %s", tasks[0].Status)
 	}
-	if _, statErr := os.Stat(filepath.Join(tmpDir, "flow.bin.sheepget")); statErr != nil {
-		t.Errorf("partial data should be kept for a later resume: %v", statErr)
+	// 分片落在引擎配置的临时目录里：位置由引擎给出，测试只确认它真的还在磁盘上。
+	if partPath := app.manager.GetPartPath(tasks[0]); partPath != "" {
+		if _, statErr := os.Stat(partPath); statErr != nil {
+			t.Errorf("partial data should be kept for a later resume: %v", statErr)
+		}
 	}
 }
 
@@ -1012,7 +1026,7 @@ func TestApp_Startup_MigratesEmptyCategoryID(t *testing.T) {
 
 	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 2})
 	t.Cleanup(mgr.Close)
-	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir, nil)
+	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir)
 
 	app := &App{
 		manager:  mgr,
@@ -1078,7 +1092,7 @@ func TestApp_Startup_CorrectsMismatchedBuiltinFileCategory(t *testing.T) {
 
 	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{MaxActiveTasks: 2})
 	t.Cleanup(mgr.Close)
-	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir, nil)
+	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir)
 
 	app := &App{
 		manager:  mgr,
@@ -1464,6 +1478,102 @@ func TestApp_ServerPortManagement(t *testing.T) {
 	}
 	if app.GetSettings().General.ServerPort != targetPort {
 		t.Errorf("expected settings General.ServerPort %d, got %d", targetPort, app.GetSettings().General.ServerPort)
+	}
+}
+
+// 保存设置时改了端口：服务迁过去、设置记下新端口、Skill 文件跟着指向可连的那一个。
+func TestApp_UpdateSettingsMovesTheLoopbackPort(t *testing.T) {
+	app, _, tmpDir := newTestApp(t)
+	previousPort := app.GetServerStatus().Port
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to pick a free port: %v", err)
+	}
+	targetPort := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	st := app.GetSettings()
+	st.General.ServerPort = targetPort
+	saved, err := app.UpdateSettings(st)
+	if err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+	if saved.General.ServerPort != targetPort {
+		t.Errorf("expected the saved port %d, got %d", targetPort, saved.General.ServerPort)
+	}
+	if app.GetServerStatus().Port != targetPort {
+		t.Errorf("expected the server to listen on %d, got %d", targetPort, app.GetServerStatus().Port)
+	}
+	if previousPort == targetPort {
+		t.Fatalf("test picked the port the server was already on")
+	}
+
+	skillFile := filepath.Join(tmpDir, "skills", "sheep-get", "SKILL.md")
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("failed to read SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(data), strconv.Itoa(targetPort)) {
+		t.Errorf("expected SKILL.md to point at port %d, content:\n%s", targetPort, string(data))
+	}
+}
+
+// 端口切不过去时设置不落盘、运行状态不变：磁盘与运行状态不会各说一套。
+func TestApp_UpdateSettingsKeepsSettingsWhenThePortCannotMove(t *testing.T) {
+	app, _, _ := newTestApp(t)
+	previousPort := app.GetServerStatus().Port
+
+	// 把顺延范围整段占满（默认端口 + 顺延 5 个），再要求切到这段的第一格。
+	var occupied []net.Listener
+	for port := 65530; port <= 65535; port++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			occupied = append(occupied, ln)
+		}
+	}
+	t.Cleanup(func() {
+		for _, ln := range occupied {
+			_ = ln.Close()
+		}
+	})
+	if len(occupied) != 6 {
+		t.Fatalf("expected the whole fallback range to be occupied, got %d listeners", len(occupied))
+	}
+
+	st := app.GetSettings()
+	st.General.ServerPort = 65530
+	if _, err := app.UpdateSettings(st); err == nil {
+		t.Fatal("expected the port change to fail")
+	}
+	if app.GetSettings().General.ServerPort != previousPort {
+		t.Errorf("expected the stored port to stay %d, got %d", previousPort, app.GetSettings().General.ServerPort)
+	}
+	if app.GetServerStatus().Port != previousPort || !app.GetServerStatus().Running {
+		t.Errorf("expected the server to keep running on %d, got %+v", previousPort, app.GetServerStatus())
+	}
+}
+
+// 运行日志开关是设置里的一条变更：打开后日志出口真的接上，关掉后回到丢弃。
+func TestApp_UpdateSettingsAppliesTheLoggingSwitch(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	st := app.GetSettings()
+	st.General.EnableLogging = true
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+	if app.log().Path() == "" {
+		t.Fatal("expected the log file to be opened when logging is enabled")
+	}
+
+	st = app.GetSettings()
+	st.General.EnableLogging = false
+	if _, err := app.UpdateSettings(st); err != nil {
+		t.Fatalf("UpdateSettings failed: %v", err)
+	}
+	if path := app.log().Path(); path != "" {
+		t.Errorf("expected logging to be detached, still writing %s", path)
 	}
 }
 
@@ -1902,13 +2012,11 @@ func TestApp_DirectDownloadViaHTTPAndAPIKey(t *testing.T) {
 		t.Fatalf("UpdateSettings failed: %v", err)
 	}
 
-	// 2. 启动环回 HTTP 服务
-	if err := app.loopbackServer.Start(); err != nil {
-		t.Fatalf("loopbackServer.Start failed: %v", err)
-	}
-	defer func() { _ = app.loopbackServer.Stop() }()
-
+	// 2. 环回 HTTP 服务在应用启动时已经起来，这里直接用它的端口
 	port := app.loopbackServer.Port()
+	if port <= 0 {
+		t.Fatal("expected the loopback server to be running")
+	}
 	urlEndpoint := fmt.Sprintf("http://127.0.0.1:%d%s", port, protocol.PathTasks)
 
 	// 3. 发送 POST /api/v1/tasks 请求

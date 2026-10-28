@@ -145,12 +145,10 @@ func (w *Watcher) IsRunning() bool {
 	return w.running
 }
 
-// OnSettingsUpdated adapts the watcher's running state when settings change.
-func (w *Watcher) OnSettingsUpdated(s *config.Settings) {
-	if s == nil {
-		return
-	}
-	if s.Clipboard.Enabled {
+// SetEnabled 让监视跟着开关走：打开就开始轮询，关闭就停下。开关由设置应用路径按变更推送，
+// 监视本身不需要知道整份设置。
+func (w *Watcher) SetEnabled(enabled bool) {
+	if enabled {
 		w.Start()
 	} else {
 		w.Stop()

@@ -13,6 +13,7 @@ import (
 	"sheep-get/internal/credentials"
 	"sheep-get/internal/intake"
 	"sheep-get/internal/server"
+	"sheep-get/internal/settingsapply"
 	"sheep-get/internal/window"
 )
 
@@ -59,24 +60,14 @@ func (a *loopbackServerAdapter) GetTakeoverSync() server.TakeoverConfigSync {
 	return a.app.getTakeoverSync()
 }
 
-func takeoverSyncFromSettings(st *config.Settings) server.TakeoverConfigSync {
-	if st == nil {
-		return server.TakeoverConfigSync{}
-	}
-	return server.TakeoverConfigSync{
-		Extensions:    st.Download.AllExtensions(),
-		ExcludedSites: st.Takeover.ExcludedSites,
-		PauseShortcut: st.Takeover.PauseShortcut,
-		ForceShortcut: st.Takeover.ForceShortcut,
-	}
-}
-
+// getTakeoverSync 是扩展主动来取配置时的那一份：与设置变更推给扩展的规则同源，
+// 翻译只在 settingsapply 里做一次。
 func (a *App) getTakeoverSync() server.TakeoverConfigSync {
 	if a.settings == nil {
 		return server.TakeoverConfigSync{}
 	}
 	st := a.settings.Get()
-	return takeoverSyncFromSettings(&st)
+	return settingsapply.TakeoverSync(&st)
 }
 
 func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*server.HandoverResponse, error) {

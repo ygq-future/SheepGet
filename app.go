@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sheep-get/internal/browser"
-	"sheep-get/internal/chrome"
 	"sheep-get/internal/clipboard"
 	"sheep-get/internal/config"
 	"sheep-get/internal/duplicate"
@@ -18,7 +17,7 @@ import (
 	"sheep-get/internal/logging"
 	"sheep-get/internal/protocol"
 	"sheep-get/internal/server"
-	"sheep-get/internal/skill"
+	"sheep-get/internal/settingsapply"
 	"sheep-get/internal/storage"
 	"sheep-get/internal/sys"
 	"sheep-get/internal/task"
@@ -56,6 +55,7 @@ type App struct {
 	store               task.TaskStore
 	storage             *storage.Storage
 	settings            *config.SettingsService
+	settingsApply       *settingsapply.Applier
 	windowQueue         *window.QueueController
 	windows             *windowing.Registry
 	progressAlwaysOnTop bool
@@ -138,46 +138,21 @@ func NewApp() *App {
 		storage: storeDir,
 	}
 
+	// 设置这一层只负责持久化快照；推给运行中的子系统由设置应用路径完成（见 wireSettingsApply）。
 	settingsSvc := config.NewSettingsService(
 		storeDir.ConfigFile(),
 		defaultDownloadDir,
 		defaultTempDir,
-		func(updated *config.Settings) error {
-			return app.OnSettingsUpdated(updated)
-		},
 	)
 	app.settings = settingsSvc
 
 	activeSettings := settingsSvc.Get()
-	downloader := engine.NewHTTPDownloader(nil)
-	downloader.SetTempDirectory(activeSettings.Download.TempDirectory)
-	downloader.SetUseServerFileTime(activeSettings.Download.UseServerFileTime)
-	// 配置层已保证自定义代理地址可解析；这里失败说明默认值或校验被破坏，
-	// 与上面的初始化失败同等处理，不能让不生效的代理留在运行中的下载器上。
-	if err := downloader.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.EffectiveCustomAddrs()...); err != nil {
-		panic(fmt.Sprintf("failed to apply stored proxy settings: %v", err))
-	}
-
-	mgr := engine.NewManager(store, downloader, engine.Config{
-		MaxActiveTasks:            activeSettings.Download.MaxConcurrentDownloads,
-		TempDirectory:             activeSettings.Download.TempDirectory,
-		UseServerFileTime:         activeSettings.Download.UseServerFileTime,
+	// 引擎构造时只接「建任务时要用到的那一项」；并发上限、临时目录、服务器文件时间与代理
+	// 都由设置应用路径推送，这里不再写第二遍。
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(nil), engine.Config{
 		DefaultConnectionsPerTask: activeSettings.Download.DefaultConnectionsPerTask,
 	})
 	app.manager = mgr
-
-	// 日志默认关闭：正常使用不落盘，只有打开开关才写文件（写不出来时降级为丢弃，不拦下载）。
-	app.applyLogging(activeSettings.General.EnableLogging)
-	startupFields := []any{
-		"mode", string(storeDir.Mode),
-		"dataDir", storeDir.DataDir,
-		"log", app.log().Path(),
-	}
-	logger := app.log()
-	if logErr := app.logError; logErr != nil {
-		startupFields = append(startupFields, "logError", logErr.Error())
-	}
-	logger.Info("应用启动", startupFields...)
 
 	app.declareWindows(&windowsHost{app: app})
 	winView := &wailsWindowView{
@@ -201,24 +176,30 @@ func NewApp() *App {
 	})
 	adapter := &loopbackServerAdapter{app: app}
 	loopbackSrv := server.NewServer(storeDir.SessionFile(), adapter, adapter)
-	st := settingsSvc.Get()
-	if st.General.ServerPort > 0 {
-		loopbackSrv.SetTargetPort(st.General.ServerPort)
-	} else {
-		loopbackSrv.SetTargetPort(protocol.PortDefaultServer)
-	}
-	loopbackSrv.SetAPIKey(st.General.APIKey)
 	loopbackSrv.SetOnStatusChange(func(status server.Status) {
 		if wailsApp := app.getApp(); wailsApp != nil {
 			wailsApp.Event.Emit(protocol.EventServerStatusChanged, status)
 		}
 	})
 	app.loopbackServer = loopbackSrv
+	app.updater = update.NewService(storeDir, nil)
 
-	updater := update.NewService(storeDir, nil)
-	_ = updater.SetProxy(string(activeSettings.Proxy.Mode), activeSettings.Proxy.EffectiveCustomAddrs()...)
-	app.updater = updater
-	app.syncSkillFile()
+	// 启动路径：把存下来的这份快照推给各子系统。代理解析不了会在这里直接暴露，
+	// 不能让一个不生效的代理留在运行中的下载器上。
+	if err := app.wireSettingsApply(); err != nil {
+		panic(fmt.Sprintf("failed to apply stored settings: %v", err))
+	}
+
+	startupFields := []any{
+		"mode", string(storeDir.Mode),
+		"dataDir", storeDir.DataDir,
+		"log", app.log().Path(),
+	}
+	logger := app.log()
+	if logErr := app.logError; logErr != nil {
+		startupFields = append(startupFields, "logError", logErr.Error())
+	}
+	logger.Info("应用启动", startupFields...)
 
 	return app
 }
@@ -235,9 +216,7 @@ func (a *App) setApplication(app *application.App) {
 			},
 		)
 		st := a.GetSettings()
-		if st.Clipboard.Enabled {
-			a.clipboardWatcher.Start()
-		}
+		a.clipboardWatcher.SetEnabled(st.Clipboard.Enabled)
 	}
 }
 func (a *App) getApp() *application.App {
@@ -264,14 +243,12 @@ func (a *App) startup(ctx context.Context) {
 		} else {
 			actualPort := a.loopbackServer.Port()
 			a.log().Info("环回服务已启动", "port", actualPort)
-			if actualPort > 0 && a.settings != nil {
-				st := a.settings.Get()
-				if st.General.ServerPort != actualPort {
-					st.General.ServerPort = actualPort
-					_, _ = a.settings.Update(st)
+			// 端口被占用而顺延时，把实际端口记进设置：界面、扩展与 Skill 文件都指向它。
+			if a.settingsApply != nil {
+				if err := a.settingsApply.AdoptPort(actualPort); err != nil {
+					a.log().Warn("记录环回服务端口失败", "error", err.Error())
 				}
 			}
-			a.syncSkillFile()
 		}
 	}
 	a.migrateHistoricalTasksCategory(ctx)
@@ -340,53 +317,6 @@ func (a *App) OnTaskDeleted(taskID string) {
 	}
 }
 
-// OnSettingsUpdated applies changed settings to the running engine and broadcasts them.
-// 应用代理可能失败，错误交回发起更新的调用方，避免界面继续显示一个实际未生效的代理。
-func (a *App) OnSettingsUpdated(s *config.Settings) error {
-	if a.manager != nil && s != nil {
-		a.manager.SetMaxActiveTasks(s.Download.MaxConcurrentDownloads)
-		a.manager.SetTempDirectory(s.Download.TempDirectory)
-		a.manager.SetUseServerFileTime(s.Download.UseServerFileTime)
-		if err := a.manager.SetProxy(string(s.Proxy.Mode), s.Proxy.EffectiveCustomAddrs()...); err != nil {
-			return err
-		}
-	}
-	if s != nil {
-		a.applyLogging(s.General.EnableLogging)
-	}
-	if a.loopbackServer != nil && s != nil {
-		a.loopbackServer.BroadcastTakeoverConfig(takeoverSyncFromSettings(s))
-		a.loopbackServer.SetAPIKey(s.General.APIKey)
-	}
-	if a.clipboardWatcher != nil {
-		a.clipboardWatcher.OnSettingsUpdated(s)
-	}
-	if app := a.getApp(); app != nil {
-		app.Event.Emit(protocol.EventSettingsUpdated, s)
-		if s != nil {
-			themeMode := string(s.Appearance.Theme)
-			for _, w := range app.Window.GetAll() {
-				chrome.SetNativeWindowTheme(w, themeMode)
-			}
-		}
-	}
-	if a.updater != nil && s != nil {
-		_ = a.updater.SetProxy(string(s.Proxy.Mode), s.Proxy.EffectiveCustomAddrs()...)
-	}
-	if a.windows != nil && s != nil {
-		a.windows.SetBackground(winNameMain, a.mainWindowBackground())
-		if s.General.LightweightMode {
-			// 打开轻量模式：不再热备，立刻收掉不可见的窗口（可见的留给用户自己关）。
-			a.windows.CloseHidden(winNameMain)
-			a.windows.CloseHidden(winNameProgress)
-		}
-	}
-	if s != nil {
-		a.syncSkillFile()
-	}
-	return nil
-}
-
 // GetSettings returns current active settings
 func (a *App) GetSettings() config.Settings {
 	if a.settings == nil {
@@ -395,30 +325,13 @@ func (a *App) GetSettings() config.Settings {
 	return a.settings.Get()
 }
 
-// UpdateSettings persists updated settings and broadcasts to all windows
+// UpdateSettings persists updated settings and applies them to the running subsystems.
+// 端口变更、失败回滚与各子系统的推送顺序都在设置应用路径里（internal/settingsapply）。
 func (a *App) UpdateSettings(s config.Settings) (config.Settings, error) {
-	if a.settings == nil {
+	if a.settingsApply == nil {
 		return s, fmt.Errorf("settings service not initialized")
 	}
-	prev := a.settings.Get()
-	updated, err := a.settings.Update(s)
-	if err == nil && prev.General.LaunchAtStartup != updated.General.LaunchAtStartup {
-		a.syncLaunchAtStartup(updated.General.LaunchAtStartup)
-	}
-	if err == nil && prev.General.ServerPort != updated.General.ServerPort && updated.General.ServerPort > 0 {
-		if _, restartErr := a.RestartServer(updated.General.ServerPort); restartErr != nil {
-			updated.General.ServerPort = prev.General.ServerPort
-			_, _ = a.settings.Update(updated)
-			return updated, fmt.Errorf("设置已保存但本地端口重启失败: %w", restartErr)
-		}
-	}
-	if err == nil {
-		if a.loopbackServer != nil {
-			a.loopbackServer.SetAPIKey(updated.General.APIKey)
-		}
-		a.syncSkillFile()
-	}
-	return updated, err
+	return a.settingsApply.Update(s)
 }
 
 func (a *App) syncLaunchAtStartup(enabled bool) {
@@ -437,32 +350,10 @@ func (a *App) syncLaunchAtStartup(enabled bool) {
 // RestartServer restarts the local HTTP loopback server on the specified port.
 // If port <= 0, it uses the port configured in settings.
 func (a *App) RestartServer(port int) (int, error) {
-	if a.loopbackServer == nil {
+	if a.settingsApply == nil {
 		return 0, fmt.Errorf("loopback server not initialized")
 	}
-	if port <= 0 {
-		if a.settings != nil {
-			port = a.settings.Get().General.ServerPort
-		}
-		if port <= 0 {
-			port = protocol.PortDefaultServer
-		}
-	}
-
-	if err := a.loopbackServer.Restart(port); err != nil {
-		return 0, err
-	}
-
-	actualPort := a.loopbackServer.Port()
-	if a.settings != nil {
-		st := a.settings.Get()
-		if st.General.ServerPort != actualPort {
-			st.General.ServerPort = actualPort
-			_, _ = a.settings.Update(st)
-		}
-	}
-	a.syncSkillFile()
-	return actualPort, nil
+	return a.settingsApply.RestartPort(port)
 }
 
 // GetServerStatus returns the active loopback server runtime status.
@@ -543,7 +434,7 @@ func (a *App) categoryDirectory(filename string) string {
 
 // AssignExtensionToCategory assigns an extension to a target category and updates settings.
 func (a *App) AssignExtensionToCategory(ext, targetCategoryID string) error {
-	if a.settings == nil {
+	if a.settingsApply == nil || a.settings == nil {
 		return fmt.Errorf("settings service not initialized")
 	}
 	current := a.settings.Get()
@@ -552,13 +443,13 @@ func (a *App) AssignExtensionToCategory(ext, targetCategoryID string) error {
 		return nil
 	}
 	current.Download = updatedDownload
-	_, err := a.settings.Update(current)
+	_, err := a.settingsApply.Update(current)
 	return err
 }
 
 // SetCategoryDirectory sets the save directory for a category by ID and updates settings.
 func (a *App) SetCategoryDirectory(targetCategoryID, directory string) error {
-	if a.settings == nil {
+	if a.settingsApply == nil || a.settings == nil {
 		return fmt.Errorf("settings service not initialized")
 	}
 	current := a.settings.Get()
@@ -567,7 +458,7 @@ func (a *App) SetCategoryDirectory(targetCategoryID, directory string) error {
 		return nil
 	}
 	current.Download = updatedDownload
-	_, err := a.settings.Update(current)
+	_, err := a.settingsApply.Update(current)
 	return err
 }
 
@@ -1043,36 +934,15 @@ func (a *App) OpenExtensionFolder() error {
 	return cmd.Start()
 }
 
-// syncSkillFile 将最新的本地环回端口和 API Key 渲染并原子写入 SKILL.md
-func (a *App) syncSkillFile() {
-	if a.storage == nil {
-		return
-	}
-	port := protocol.PortDefaultServer
-	apiKey := ""
-	if a.settings != nil {
-		st := a.settings.Get()
-		if st.General.ServerPort > 0 {
-			port = st.General.ServerPort
-		}
-		apiKey = st.General.APIKey
-	}
-	if a.loopbackServer != nil && a.loopbackServer.Port() > 0 {
-		port = a.loopbackServer.Port()
-	}
-
-	if err := skill.Sync(a.storage.ExecDir, port, apiKey); err != nil {
-		a.log().Warn("同步 Agent Skill 文件失败", "error", err.Error(), "execDir", a.storage.ExecDir)
-	}
-}
-
 // OpenSkillDirectory reveals the skills parent directory in the system file manager.
 func (a *App) OpenSkillDirectory() error {
 	if a.storage == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	// 确保目录和最新的 SKILL.md 存在
-	a.syncSkillFile()
+	// 确保目录和最新的 SKILL.md 存在：端口与密钥由设置应用路径按当前快照写入。
+	if a.settingsApply != nil {
+		a.settingsApply.SyncSkill()
+	}
 
 	dir := a.storage.SkillDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {

@@ -226,14 +226,6 @@ export function MinimiseProgressWindow(): $CancellablePromise<void> {
 }
 
 /**
- * OnSettingsUpdated applies changed settings to the running engine and broadcasts them.
- * 应用代理可能失败，错误交回发起更新的调用方，避免界面继续显示一个实际未生效的代理。
- */
-export function OnSettingsUpdated(s: config$0.Settings | null): $CancellablePromise<void> {
-    return $Call.ByID(3585324432, s);
-}
-
-/**
  * OnTaskDeleted emits wails event to the frontend whenever a task is deleted
  */
 export function OnTaskDeleted(taskID: string): $CancellablePromise<void> {
@@ -493,7 +485,8 @@ export function UpdateExtension(assetURL: string): $CancellablePromise<void> {
 }
 
 /**
- * UpdateSettings persists updated settings and broadcasts to all windows
+ * UpdateSettings persists updated settings and applies them to the running subsystems.
+ * 端口变更、失败回滚与各子系统的推送顺序都在设置应用路径里（internal/settingsapply）。
  */
 export function UpdateSettings(s: config$0.Settings): $CancellablePromise<config$0.Settings> {
     return $Call.ByID(2894041249, s).then(($result: any) => {

@@ -289,7 +289,12 @@ func (a *App) lightweightMode() bool {
 }
 
 func (a *App) mainWindowBackground() windowing.Colour {
-	if a.settings != nil && a.settings.Get().Appearance.Theme == config.ThemeLight {
+	return backgroundColour(a.settings != nil && a.settings.Get().Appearance.Theme == config.ThemeLight)
+}
+
+// backgroundColour 给出主窗口底色：窗口创建时与主题切换时共用同一份判定。
+func backgroundColour(light bool) windowing.Colour {
+	if light {
 		return mainWindowLightBackgroundColour
 	}
 	return mainWindowDarkBackgroundColour

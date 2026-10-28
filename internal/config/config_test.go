@@ -4,12 +4,10 @@ import (
 	"sheep-get/internal/protocol"
 
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestDefaultSettings(t *testing.T) {
@@ -193,15 +191,11 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	}
 }
 
-func TestSettingsService_AtomicPersistenceAndBroadcast(t *testing.T) {
+func TestSettingsService_AtomicPersistence(t *testing.T) {
 	tempDir := t.TempDir()
 	configFile := filepath.Join(tempDir, "config.json")
 
-	var notified *Settings
-	service := NewSettingsService(configFile, "/default/downloads", "/default/temp", func(updated *Settings) error {
-		notified = updated
-		return nil
-	})
+	service := NewSettingsService(configFile, "/default/downloads", "/default/temp")
 
 	// Initial load without file should give default settings
 	initial := service.Get()
@@ -223,8 +217,8 @@ func TestSettingsService_AtomicPersistenceAndBroadcast(t *testing.T) {
 	if updated.Appearance.Theme != ThemeDark {
 		t.Errorf("expected ThemeDark, got %s", updated.Appearance.Theme)
 	}
-	if notified == nil || notified.Appearance.Theme != ThemeDark {
-		t.Fatalf("expected broadcast callback to be called with updated settings")
+	if service.Get().Appearance.Theme != ThemeDark {
+		t.Fatalf("expected the in-memory snapshot to hold the updated settings")
 	}
 
 	// Verify file was written on disk atomically
@@ -242,7 +236,7 @@ func TestSettingsService_AtomicPersistenceAndBroadcast(t *testing.T) {
 	}
 
 	// Create a new service pointing to the same file, should load persisted settings
-	reloadedService := NewSettingsService(configFile, "/default/downloads", "/default/temp", nil)
+	reloadedService := NewSettingsService(configFile, "/default/downloads", "/default/temp")
 	reloaded := reloadedService.Get()
 	if reloaded.Appearance.Theme != ThemeDark {
 		t.Errorf("reloaded config expected ThemeDark, got %s", reloaded.Appearance.Theme)
@@ -844,49 +838,6 @@ func TestProxyCustomAddrValidation(t *testing.T) {
 				t.Fatalf("expected empty customAddrs for %q, got %v", tc.addr, validated.Proxy.CustomAddrs)
 			}
 		})
-	}
-}
-
-// TestSettingsService_ReportsApplyFailure 保证应用新设置失败时错误回到发起更新的调用方，
-// 而不是被丢弃后让界面显示一个没有生效的状态。
-func TestSettingsService_ReportsApplyFailure(t *testing.T) {
-	tempDir := t.TempDir()
-	configFile := filepath.Join(tempDir, "config.json")
-	applyErr := errors.New("apply rejected")
-
-	service := NewSettingsService(configFile, "/dl", "/temp", func(updated *Settings) error {
-		return applyErr
-	})
-
-	if _, err := service.Update(DefaultSettings("/dl", "/temp")); !errors.Is(err, applyErr) {
-		t.Fatalf("expected apply failure to reach the caller, got %v", err)
-	}
-}
-
-func TestSettingsService_ReentrantDeadlock(t *testing.T) {
-	tempDir := t.TempDir()
-	configFile := filepath.Join(tempDir, "config.json")
-
-	var service *SettingsService
-	service = NewSettingsService(configFile, "/dl", "/temp", func(updated *Settings) error {
-		// Attempting to read settings inside onChanged callback (exact calling chain of watcher.Start())
-		_ = service.Get()
-		return nil
-	})
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		st := service.Get()
-		st.Clipboard.Enabled = true
-		_, _ = service.Update(st)
-	}()
-
-	select {
-	case <-done:
-		// Succeeded without deadlock
-	case <-time.After(5 * time.Second):
-		t.Fatal("DEADLOCK: service.Update deadlocked when onChanged callback called service.Get()")
 	}
 }
 
