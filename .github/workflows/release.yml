@@ -151,4 +151,45 @@ jobs:
             build/dist/*.dmg
             build/dist/*.deb
             build/dist/*.AppImage
-            build/dist/SHA256SUMS.txt
+
+  # 每个平台的打包 job 只上传自己的安装包：SHA256SUMS 若也在这里上传，三个平台会互相覆盖，
+  # 最终文件只列最后上传那个平台的产物。汇总 job 等全部产物就位后统一生成一次。
+  checksums:
+    name: Compute Release Checksums
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download published packages
+        id: tag_info
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="${{ github.event.inputs.tag || 'v1.0.11' }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          mkdir -p build/dist
+          gh release download "$TAG" --repo "${{ github.repository }}" --dir build/dist --clobber \
+            --pattern '*.zip' --pattern '*.exe' --pattern '*.msi' --pattern '*.tar.gz' \
+            --pattern '*.dmg' --pattern '*.deb' --pattern '*.AppImage'
+
+      - name: Write checksum manifest
+        shell: bash
+        run: |
+          cd build/dist
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.exe' -o -name '*.msi' \
+            -o -name '*.tar.gz' -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) \
+            -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload checksum manifest
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag_info.outputs.tag }}
+          files: build/dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true

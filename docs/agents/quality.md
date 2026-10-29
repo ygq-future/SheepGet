@@ -99,7 +99,7 @@ Ubuntu 24.04 依赖 GTK4 与 WebKitGTK 6.0（libgtk-4-dev、libwebkitgtk-6.0-dev
 
 远端执行结果（2026-10-29，GitHub Actions）：
 
-- `Release` run `40888489924`（tag `v1.0.11`，覆盖同日首次发布 `40867720058`）：Quality Gate 与 Build & Package 的 Windows x64、macOS Apple Silicon、Linux x86_64 六个 job 全部 success，发布页上传 11 个分发包与 `SHA256SUMS.txt`；该版本包含常驻运行期间每 24 小时检查更新。
+- `Release` run `40894446269`（tag `v1.0.11`，覆盖同日两次重发 `40867720058`、`40888489924`）：Quality Gate 与 Build & Package 的 Windows x64、macOS Apple Silicon、Linux x86_64 六个 job 全部 success，发布页上传 11 个分发包，`SHA256SUMS.txt` 汇总全部 11 个产物的校验和；该版本包含常驻运行期间每 24 小时检查更新与限流分片重试让出并发名额。
 - `Release Extension` run `40867719146`（tag `ext-v1.0.7`）：协议镜像校验、扩展类型检查与 126 项测试通过后产出 `SheepGet_1.0.7_extension-chrome-mv3.zip`。
 - `Quality` run `40869822708`（`main` 推送 `254e406`）：三平台质量门禁 success。首次推送（`61248c7`）在 Windows 上失败，原因是 zip 聚合测试夹具每次请求都用 `time.Now()` 作 `Last-Modified`，探测与下载跨秒即被判“文件已变”；固定 modtime 后复跑通过。
 
