@@ -574,7 +574,7 @@ export function SettingsPanel({
       showToast(`设置运行日志失败: ${String(err)}`, 'error');
     }
   };
-  const handleCheckUpdateOnStartupChange = async (checked: boolean) => {
+  const handleAutomaticUpdateCheckChange = async (checked: boolean) => {
     try {
       await updateSettings({
         general: new configModels.GeneralConfig({
@@ -582,9 +582,9 @@ export function SettingsPanel({
           checkUpdateOnStartup: checked,
         }),
       });
-      showToast(checked ? '已开启启动时检查更新' : '已关闭启动时检查更新', 'success');
+      showToast(checked ? '已开启自动检查更新' : '已关闭自动检查更新', 'success');
     } catch (err) {
-      showToast(`设置启动时检查更新失败: ${String(err)}`, 'error');
+      showToast(`设置自动检查更新失败: ${String(err)}`, 'error');
     }
   };
 
@@ -1517,13 +1517,13 @@ export function SettingsPanel({
                   />
                 </SettingRow>
                 <SettingRow
-                  label="启动时检查更新"
-                  description="启动软件时在后台静默检查 GitHub Releases 新版本"
+                  label="自动检查更新"
+                  description="启动时与运行期间每 24 小时在后台静默检查 GitHub Releases 新版本；关闭后不再自动请求"
                 >
                   <Switch
                     checked={general.checkUpdateOnStartup ?? true}
                     onCheckedChange={(checked) => {
-                      void handleCheckUpdateOnStartupChange(checked);
+                      void handleAutomaticUpdateCheckChange(checked);
                     }}
                   />
                 </SettingRow>

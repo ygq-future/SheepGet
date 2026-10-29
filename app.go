@@ -269,7 +269,7 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}
-	a.checkUpdateOnStartupAsync()
+	a.startAutomaticUpdateChecks()
 }
 
 // Shutdown is called when the app is terminating to cleanly stop manager and persist state.
@@ -1063,30 +1063,55 @@ func (a *App) GetCachedAppUpdate() *update.AppUpdateResult {
 	return a.cachedAppUpdate
 }
 
-func (a *App) checkUpdateOnStartupAsync() {
+// automaticUpdateCheckInterval 是常驻运行期间的更新检查间隔。关闭主窗口后软件驻留托盘，
+// 用户往往数天不重启，只在启动时检查一次会让新版本一直不被发现。
+const automaticUpdateCheckInterval = 24 * time.Hour
+
+// automaticUpdateCheckStartupDelay 让启动检查避开窗口与任务恢复的高峰。
+const automaticUpdateCheckStartupDelay = 1500 * time.Millisecond
+
+// startAutomaticUpdateChecks 启动后执行一次检查，此后按 automaticUpdateCheckInterval 周期重复。
+func (a *App) startAutomaticUpdateChecks() {
 	if a.updater == nil {
 		return
 	}
-	st := a.GetSettings()
-	if !st.General.CheckUpdateOnStartup {
+	go runPeriodicUpdateChecks(a.ctx, automaticUpdateCheckStartupDelay, automaticUpdateCheckInterval, a.checkUpdateQuietly)
+}
+
+// runPeriodicUpdateChecks 等待 initialDelay 后执行一次 check，之后每个 interval 执行一次，
+// 直到 ctx 结束。抽成独立函数是为了让周期与取消语义能在测试里用毫秒级间隔验证。
+func runPeriodicUpdateChecks(ctx context.Context, initialDelay, interval time.Duration, check func()) {
+	select {
+	case <-time.After(initialDelay):
+	case <-ctx.Done():
 		return
 	}
-	go func() {
+	check()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
 		select {
-		case <-time.After(1500 * time.Millisecond):
-		case <-a.ctx.Done():
+		case <-ticker.C:
+			check()
+		case <-ctx.Done():
 			return
 		}
-		res, err := a.CheckAppUpdate()
-		if err != nil || res == nil {
-			return
-		}
-		if res.HasUpdate {
-			if app := a.getApp(); app != nil {
-				app.Event.Emit(protocol.EventUpdateAvailable, res)
-			}
-		}
-	}()
+	}
+}
+
+// checkUpdateQuietly 按当前设置发起一次后台检查，发现新版本才通知界面。
+// 每次检查都重读设置：运行中关闭「自动检查更新」后，后续周期检查不再发请求。
+func (a *App) checkUpdateQuietly() {
+	if a.updater == nil || !a.GetSettings().General.CheckUpdateOnStartup {
+		return
+	}
+	res, err := a.CheckAppUpdate()
+	if err != nil || res == nil || !res.HasUpdate {
+		return
+	}
+	if app := a.getApp(); app != nil {
+		app.Event.Emit(protocol.EventUpdateAvailable, res)
+	}
 }
 
 // CheckExtensionUpdate checks for updates to the browser extension.

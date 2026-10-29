@@ -2608,3 +2608,49 @@ func TestApp_CreateTaskProgressDisplayOverrides(t *testing.T) {
 		t.Fatalf("expected completion to focus the window by default, got %d", got)
 	}
 }
+
+func TestRunPeriodicUpdateChecksRepeatsUntilCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		runPeriodicUpdateChecks(ctx, 0, 5*time.Millisecond, func() { calls.Add(1) })
+		close(done)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodic update checks did not stop after the context was cancelled")
+	}
+	if got := calls.Load(); got < 3 {
+		t.Fatalf("expected the startup check to repeat on every interval, got %d calls", got)
+	}
+}
+
+func TestRunPeriodicUpdateChecksHonoursCancelledStartupDelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		runPeriodicUpdateChecks(ctx, time.Hour, time.Hour, func() { calls.Add(1) })
+		close(done)
+	}()
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("periodic update checks ignored a cancellation during the startup delay")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("expected no check when cancelled during the startup delay, got %d", got)
+	}
+}
