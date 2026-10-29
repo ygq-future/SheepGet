@@ -1,8 +1,10 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -57,6 +59,102 @@ func (l *marshalListener) downloadingPayload() *task.Task {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.downloading
+}
+
+// blockingPublishSink 让第一次发布停在原地，用来观察「发布还在进行中」时传输是否仍在前进。
+type blockingPublishSink struct {
+	firstStarted  chan struct{}
+	firstRelease  chan struct{}
+	secondStarted chan struct{}
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *blockingPublishSink) WantsSnapshot() bool { return true }
+
+func (s *blockingPublishSink) PublishSnapshot(*task.Task) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+
+	switch call {
+	case 1:
+		close(s.firstStarted)
+		<-s.firstRelease
+	case 2:
+		close(s.secondStarted)
+	}
+}
+
+// TestHTTPDownloader_PublishDoesNotHoldChunkLock 固定一条契约：进度发布（落盘 + 广播）不发生在
+// 分片元数据锁内。
+//
+// 发布要写全库 JSON 并回调监听者，压在 coord.mu 上时所有分片工作协程都会跟着停摆——一个慢磁盘
+// 就能把整条传输按成单线程。这里让第一次发布卡住：若锁仍被它持有，第二个工作协程永远交不出
+// 自己的副本，用例超时失败。
+func TestHTTPDownloader_PublishDoesNotHoldChunkLock(t *testing.T) {
+	payload := make([]byte, 4<<20)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+	ts := serveRanged(payload, 0, "")
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	sink := &blockingPublishSink{
+		firstStarted:  make(chan struct{}),
+		firstRelease:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+	}
+	dlTask := &task.Task{
+		ID:             "task-publish-lock",
+		URL:            ts.URL + "/big.bin",
+		Filename:       "big.bin",
+		Directory:      tmpDir,
+		TotalBytes:     int64(len(payload)),
+		Resumable:      true,
+		MaxConcurrency: 4,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	downloader := engine.NewHTTPDownloader(ts.Client())
+	errCh := make(chan error, 1)
+	go func() { errCh <- downloader.Download(ctx, dlTask, sink) }()
+
+	select {
+	case <-sink.firstStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("expected the transfer to publish progress")
+	}
+
+	select {
+	case <-sink.secondStarted:
+	case <-time.After(2 * time.Second):
+		close(sink.firstRelease)
+		<-errCh
+		t.Fatal("chunk workers stalled behind an in-flight publish: PublishSnapshot must run outside coord.mu")
+	}
+	close(sink.firstRelease)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("download failed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("download did not finish")
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmpDir, "big.bin"))
+	if err != nil {
+		t.Fatalf("failed to read downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("downloaded content does not match the served payload")
+	}
 }
 
 // TestManager_EventPayloadIsPrivateCopy 固定一条契约：事件载荷必须是自有副本。

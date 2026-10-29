@@ -22,8 +22,9 @@ const (
 // 按节流回答「此刻要不要一份快照」，以及把收到的副本落盘并广播。速度采样同样来自相邻两次
 // 已发布字节数的差值——为了拿一个数字而共享可变状态，正是这条竞态的由来。
 //
-// 它在传输侧的一致性锁内被调用（分片路径是 coord.mu，HLS 是清单侧的锁），因此自己也只做
-// 短临界区的记账，落盘与广播放在锁外。
+// 两件事分属两段：WantsSnapshot 在传输侧的一致性锁内被调用（分片路径是 coord.mu），因此只做
+// 短临界区的记账；PublishSnapshot 要做全量 JSON 落盘与监听者回调，分片路径必须把它留在
+// coord.mu 之外——副本在锁内取走，发布在解锁之后。
 type progressSink struct {
 	manager     *Manager
 	ctx         context.Context
@@ -33,7 +34,7 @@ type progressSink struct {
 
 	mu          sync.Mutex
 	published   int64     // 已发布的字节数：速度采样与节流都以它为基准
-	lastPublish time.Time // 上一次发布快照的时刻
+	lastPublish time.Time // 上一次预约发布窗口的时刻
 	lastSave    time.Time // 上一次落盘的时刻
 }
 
@@ -47,12 +48,16 @@ func newProgressSink(ctx context.Context, m *Manager, taskID string, baseElapsed
 	}
 }
 
-// WantsSnapshot 报告此刻是否需要一份快照。它可能被多个分片工作协程并发调用，
-// 极窄的窗口里会有不止一个得到肯定答复；PublishSnapshot 只发布前进的那一份。
+// WantsSnapshot 报告此刻是否需要一份快照，并在肯定答复时预约这一帧：它会被多个分片工作协程
+// 并发调用，只有第一个得到 true，其余在下一个发布窗口再问。
 func (s *progressSink) WantsSnapshot() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return time.Since(s.lastPublish) >= progressPublishInterval
+	if time.Since(s.lastPublish) < progressPublishInterval {
+		return false
+	}
+	s.lastPublish = time.Now()
+	return true
 }
 
 // PublishSnapshot 落盘并广播一份自有副本。
@@ -69,7 +74,6 @@ func (s *progressSink) PublishSnapshot(snapshot *task.Task) {
 	}
 	delta := snapshot.Downloaded - s.published
 	s.published = snapshot.Downloaded
-	s.lastPublish = time.Now()
 	dueSave := s.lastSave.IsZero() ||
 		time.Since(s.lastSave) >= progressSaveInterval ||
 		delta >= progressSaveBytes

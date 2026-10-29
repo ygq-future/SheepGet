@@ -21,7 +21,7 @@
 | O-02 | P0     | 直接点击交接失败后，回退的原生下载被扩展取消            | 小          | 已修复 |
 | O-03 | P0     | 媒体处理阶段无法暂停/删除，删除的任务会被写回           | 小          | 已修复 |
 | O-04 | P0     | 队列锁跨越引擎取消调用，最长阻塞 5 秒                   | 小          | 已修复 |
-| O-05 | P1     | 分片热路径在 `coord.mu` 内写盘、克隆任务并落库          | 小—中       | 待修   |
+| O-05 | P1     | 分片热路径在 `coord.mu` 内写盘、克隆任务并落库          | 小—中       | 已修复 |
 | O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 待修   |
 | O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 待修   |
 | O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 待修   |
@@ -85,10 +85,14 @@
 
 ### O-05 分片热路径在 `coord.mu` 内写盘、克隆任务并落库
 
-- **证据**：`internal/engine/downloader.go:2276-2339`（每个 64KB 读取都在 `coord.mu` 内 `file.WriteAt`，随后 `publishLocked`）；`internal/engine/progress.go:66-96`（`PublishSnapshot` 在调用方持锁时克隆整个任务并同步 `store.Save`）；`internal/task/store.go:102-108`（落库为全量 JSON 序列化 + 原子写）。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`internal/engine/downloader.go:2276-2339`（每个 64KB 读取都在 `coord.mu` 内 `file.WriteAt`，随后 `publishLocked`）；`internal/engine/progress.go:66-96`（`PublishSnapshot` 在调用方持锁时克隆整个任务并同步 `store.Save`）；`internal/task/store.go:102-108`（落库为全量 JSON 序列化 + 原子写）。
 - **影响**：所有分片 worker 串行在 `coord.mu` 上；每 60ms 一次的快照还会把全库 JSON 写盘放进同一临界区，高带宽/多连接时吞吐被锁和磁盘拖住。`fileMu` 只在 `coord.mu` 内被获取，没有独立作用。
-- **最小修复**：`coord.mu` 只保护分片元数据与 `trackers`；`WriteAt` 移到锁外（由 `fileMu` 保护）；快照在锁内克隆、落盘与广播移到锁外。
-- **验收**：用现有分片/慢区块用例与一次本机大文件下载对比吞吐；`go test -race` 覆盖分片路径。
+- **实际修复**：
+  1. 读循环拆成三段：锁内只取分片元数据（`End` 与本次可写长度），`WriteAt` 只在 `fileMu` 下进行，记账、tracker 采样与完成判定再回到 `coord.mu`。写盘期间分片可能被拆分导致 `End` 收缩，越界字节属于协助分片（它会重写同一段源数据），因此按新 `End` 截断记账，进度不会越过分片总量。
+  2. 发布改成两段：`snapshotFor` 在 `coord.mu` 内取走副本，`sink.PublishSnapshot` 在解锁之后执行（全库 JSON 落盘与监听者回调）。`publishLocked` 相应改为 `snapshotLocked`。
+  3. `WantsSnapshot` 在肯定答复时预约这一帧（写入 `lastPublish`），使「一帧一份快照」的约束不依赖发布仍在锁内；`PublishSnapshot` 仍按已发布字节数丢弃落后的副本。
+- **验收**：新增 `TestHTTPDownloader_PublishDoesNotHoldChunkLock`（第一次发布卡住时，第二个分片工作协程仍须交出自己的副本）与 `TestProgressSinkReservesOneSnapshotPerInterval`（8 个并发询问只放行 1 个）。临时把 `PublishSnapshot` 挪回锁内，前者 2 秒内失败；临时去掉 `WantsSnapshot` 的预约，后者得到 8 个肯定答复。恢复后 `go test ./internal/engine/ ./internal/hls/ ./internal/task/ -race` 187 项通过。
 
 ### O-06 进度落盘节流判据错误
 
@@ -182,7 +186,8 @@
 ## 未验证与边界
 
 - O-01 的运行时表现按 Chrome 官方权限文档与构建产物判定，未在真实浏览器里抓取交接请求核对 Cookie 是否为空。
-- O-03、O-05、O-07 的修复需要并发用例与一次真实下载/暂停/删除操作共同验收；当前只有代码路径证据。
+- O-03、O-07 的修复需要并发用例与一次真实下载/暂停/删除操作共同验收；当前只有代码路径证据。
+- O-05 的锁外写盘与锁外发布已由并发用例与 `-race` 覆盖，但没有在真实高速链路上对比修复前后的吞吐。
 - O-06 的 17MB/s 阈值是由 60ms 发布间隔与 1MB 阈值推算，未在真实高速链路上测量落盘次数。
 - O-09 的卡顿程度与任务数量、窗口动画时长相关，需要在实机上量化重渲染次数。
 - macOS/Linux 的运行时行为仍未观察（O-14）。

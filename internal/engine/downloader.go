@@ -1066,8 +1066,11 @@ func extractFilenameFromURL(urlStr string) string {
 // 因此对外发布的一律是自有副本：调用方先问「要不要」，传输侧再在自己的锁内拷一份交出去。
 type TransferSink interface {
 	// WantsSnapshot 报告调用方此刻是否需要一份快照；节流节奏由调用方决定，这里只回答是与否。
+	// 拿到肯定答复的那一帧由调用方负责交出副本，因此它同时是一次预约：并发调用时只有一方得到 true。
 	WantsSnapshot() bool
-	// PublishSnapshot 接收一份此后不会再被改写的任务副本，由调用方决定落盘与广播的时机。
+	// PublishSnapshot 接收一份此后不会再被改写的任务副本，落盘并广播。
+	// 它要做磁盘写与监听者回调，因此不得在分片元数据锁内调用：分片路径先在锁内取走副本，
+	// 解锁后再调用它（见 downloadChunkStream）。
 	PublishSnapshot(*task.Task)
 }
 
@@ -1106,17 +1109,26 @@ func (d *HTTPDownloader) Download(ctx context.Context, t *task.Task, sink Transf
 	return err
 }
 
-// publishProgress 把当前进度作为一份自有副本交给调用方。它只在传输侧独占任务对象时调用：
-// 单流路径的读写都在同一协程上，分片路径则必须持有 coord.mu（见 publishLocked）。
-func publishProgress(t *task.Task, downloaded int64, sink TransferSink) {
+// snapshotFor 在传输侧的一致性锁内取一份自有副本：副本必须与分片（或清单）状态取自同一时刻。
+// 返回 nil 表示这一帧不需要发布。分片路径在 coord.mu 内调用它，解锁后才把副本交给
+// sink.PublishSnapshot——落盘与广播不能压在分片锁上。
+func snapshotFor(t *task.Task, downloaded int64, sink TransferSink) *task.Task {
 	if sink == nil {
-		return
+		return nil
 	}
 	t.Downloaded = downloaded
 	if !sink.WantsSnapshot() {
-		return
+		return nil
 	}
-	sink.PublishSnapshot(t.Clone())
+	return t.Clone()
+}
+
+// publishProgress 取一份副本并立即发布。它只用于调用方此刻没有第二个写方、也不持有分片锁的
+// 路径（单流下载、HLS 清单回调）；分片路径见 snapshotFor。
+func publishProgress(t *task.Task, downloaded int64, sink TransferSink) {
+	if snapshot := snapshotFor(t, downloaded, sink); snapshot != nil {
+		sink.PublishSnapshot(snapshot)
+	}
 }
 func initSingleResumeChunk(t *task.Task, downloaded int64) bool {
 	if !t.Resumable || t.TotalBytes <= 0 || downloaded <= 0 || downloaded >= t.TotalBytes {
@@ -1426,11 +1438,6 @@ type chunkCoordinator struct {
 	lastErr  error
 }
 
-// publishLocked 在持锁状态下把当前进度交出去。必须在持有 coord.mu 时调用：快照要与分片状态
-// 取自同一时刻，否则交出去的就是一份内部互相矛盾的分片列表。
-func (coord *chunkCoordinator) publishLocked(downloaded int64) {
-	publishProgress(coord.t, downloaded, coord.sink)
-}
 func (coord *chunkCoordinator) resetTrackersLocked() {
 	coord.globalBackoffUntil = time.Time{}
 	for _, trk := range coord.trackers {
@@ -2273,6 +2280,7 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 				coord.adaptive.OnStreamEstablished()
 			}
 
+			// 锁内只读分片元数据：这一份 Range 在本分片内还剩多少可以写。
 			coord.mu.Lock()
 			chunk := &coord.t.Chunks[chunkIdx]
 			targetEnd := chunk.End
@@ -2289,19 +2297,28 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 				validN = targetEnd - offset + 1
 				truncated = true
 			}
+			coord.mu.Unlock()
 
+			// 写盘只由 fileMu 串行化，不压在 coord.mu 里：其他工作协程不必等这一块磁盘写完。
 			coord.fileMu.Lock()
 			_, wErr := coord.file.WriteAt(buf[:validN], offset)
+			coord.fileMu.Unlock()
 			if wErr != nil {
-				coord.fileMu.Unlock()
-				coord.mu.Unlock()
 				return wErr
 			}
 			offset += validN
-			chunk.Downloaded += validN
-			atomic.AddInt64(&coord.totalDown, validN)
+
+			coord.mu.Lock()
+			chunk = &coord.t.Chunks[chunkIdx]
+			// 写盘期间本分片可能被拆分，End 收缩到刚才的写点之内：越界那部分字节属于协助分片，
+			// 它会重写同一段源数据，因此这里只按新的 End 记账，进度不能越过分片总量。
+			accounted := validN
+			if excess := offset - 1 - chunk.End; excess > 0 {
+				accounted = max(validN-excess, 0)
+			}
+			chunk.Downloaded += accounted
+			atomic.AddInt64(&coord.totalDown, accounted)
 			currTotal := atomic.LoadInt64(&coord.totalDown)
-			coord.fileMu.Unlock()
 
 			now := time.Now()
 			trk := coord.trackers[chunkIdx]
@@ -2320,9 +2337,13 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 			}
 			done := chunk.Completed
 
-			coord.publishLocked(currTotal)
-
+			// 快照在锁内取走（与分片状态同一时刻），落盘与广播在锁外：那两步要走磁盘和监听者回调，
+			// 放进分片锁会让所有工作协程一起等。
+			snapshot := snapshotFor(coord.t, currTotal, coord.sink)
 			coord.mu.Unlock()
+			if snapshot != nil {
+				coord.sink.PublishSnapshot(snapshot)
+			}
 
 			if done {
 				// 若本分片未被中途动态拆分截断（即正好读到了本次 HTTP Range 请求的末尾 end），
