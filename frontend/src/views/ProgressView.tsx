@@ -140,7 +140,7 @@ export function ProgressView() {
   };
   const contentRef = useRef<HTMLDivElement>(null);
 
-  const keepCompletedInfo = settings?.download?.keepCompletedInfo ?? true;
+  const globalKeepCompletedInfo = settings?.download?.keepCompletedInfo ?? true;
   const autoRemoveCompletedOnOpen = settings?.download?.autoRemoveCompletedOnOpen ?? false;
 
   // Dynamic window height observation
@@ -213,6 +213,10 @@ export function ProgressView() {
       const updated = unwrapEventData<taskModels.Task>(ev);
       if (!updated || !updated.id) return;
       if (updated.status === taskModels.Status.StatusCompleted) {
+        // 这份完成信息留不留由这次任务自己说了算：HTTP 直连接口可以按次覆盖，
+        // 没覆盖的项才回落到配置中心。
+        const keepCompletedInfo =
+          updated.progressDisplay?.keepCompletedInfo ?? globalKeepCompletedInfo;
         // Transition from active to completed
         setActiveTasks((prev) => {
           const next = prev.filter((t) => t.id !== updated.id);
@@ -315,7 +319,7 @@ export function ProgressView() {
       unlistenClear();
       unlistenDeleted();
     };
-  }, [loadSettings, keepCompletedInfo]);
+  }, [loadSettings, globalKeepCompletedInfo]);
 
   const handleOpenFile = async (t: taskModels.Task) => {
     const fullPath = `${t.directory}/${t.filename}`.replace(/\\/g, '/');

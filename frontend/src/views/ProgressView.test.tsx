@@ -1,13 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { ProgressView } from './ProgressView';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
+import { Event } from '../lib/protocol.generated';
 
 const bindings = vi.hoisted(() => ({
   listTasks: vi.fn(),
   hideProgressWindow: vi.fn(),
 }));
+
+// 进度窗口的行为由事件驱动：把注册进来的处理函数留下，测试才能像桌面端那样推一条任务更新。
+const eventHandlers = vi.hoisted(() => new Map<string, (event: unknown) => void>());
 
 vi.mock('../../bindings/sheep-get/app', () => ({
   ListTasks: bindings.listTasks,
@@ -31,7 +35,12 @@ vi.mock('../../bindings/sheep-get/app', () => ({
 vi.mock('@wailsio/runtime', () => {
   const passthrough = (value: unknown) => value;
   return {
-    Events: { On: vi.fn(() => () => {}) },
+    Events: {
+      On: vi.fn((name: string, handler: (event: unknown) => void) => {
+        eventHandlers.set(name, handler);
+        return () => eventHandlers.delete(name);
+      }),
+    },
     Create: Object.assign(passthrough, {
       Any: passthrough,
       Array: () => passthrough,
@@ -74,6 +83,7 @@ describe('ProgressView', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    eventHandlers.clear();
     bindings.listTasks.mockReset();
     bindings.hideProgressWindow.mockReset();
   });
@@ -96,5 +106,28 @@ describe('ProgressView', () => {
 
     await vi.waitFor(() => expect(bindings.hideProgressWindow).toHaveBeenCalled());
     expect(screen.queryByText('movie.mp4')).toBeNull();
+  });
+
+  it('drops the completed card when the task itself disabled keep completed info', async () => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const task = downloadingTask('quiet.mp4');
+    bindings.listTasks.mockResolvedValue([task]);
+
+    render(<ProgressView />);
+    expect(await screen.findByText('quiet.mp4')).toBeTruthy();
+
+    act(() => {
+      eventHandlers.get(Event.TaskUpdated)?.({
+        data: {
+          ...task,
+          status: taskModels.Status.StatusCompleted,
+          // 全局默认保留完成信息；这次下载按次关掉了它，所以完成后不留下这一条并收窗。
+          progressDisplay: new taskModels.ProgressDisplay({ keepCompletedInfo: false }),
+        },
+      });
+    });
+
+    await vi.waitFor(() => expect(bindings.hideProgressWindow).toHaveBeenCalled());
+    expect(screen.queryByText('quiet.mp4')).toBeNull();
   });
 });

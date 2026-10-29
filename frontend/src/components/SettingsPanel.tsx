@@ -1038,6 +1038,17 @@ export function SettingsPanel({
     });
   };
 
+  const handleFocusProgressWindowOnCompleteChange = async (
+    focusProgressWindowOnComplete: boolean,
+  ) => {
+    await updateSettings({
+      download: new configModels.DownloadConfig({
+        ...download,
+        focusProgressWindowOnComplete,
+      }),
+    });
+  };
+
   const handleAutoRemoveCompletedChange = async (autoRemoveCompletedOnOpen: boolean) => {
     await updateSettings({
       download: new configModels.DownloadConfig({
@@ -1902,6 +1913,18 @@ export function SettingsPanel({
                   <Switch
                     checked={download.keepCompletedInfo ?? true}
                     onCheckedChange={(checked) => void handleKeepCompletedInfoChange(checked)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label="完成后聚焦进度窗口"
+                  description="下载完成时把进度窗口置于最前；关闭即静默下载，完成时不会抢焦点"
+                >
+                  <Switch
+                    checked={download.focusProgressWindowOnComplete ?? true}
+                    onCheckedChange={(checked) =>
+                      void handleFocusProgressWindowOnCompleteChange(checked)
+                    }
                   />
                 </SettingRow>
 

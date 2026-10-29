@@ -35,9 +35,13 @@ Triggers a direct download without prompting the File Info confirmation window. 
   "headers": {
     "Cookie": "session=...",
     "Referer": "https://example.com/"
-  }
+  },
+  "showProgressWindow": false,
+  "keepCompletedInfo": false,
+  "focusProgressWindowOnComplete": false
 }
 ```
+- **Per-request window behavior**: `showProgressWindow`, `keepCompletedInfo` and `focusProgressWindowOnComplete` override the Settings Center for this one download. Omit any of them to follow the saved settings. Setting all three to `false` downloads silently: no progress window pops up and no window is focused when it finishes.
 - **Responses**:
   - `201 Created`: `{"taskId": "task_xxx", "status": "downloading", "filename": "file.zip", "savePath": "..."}`
   - `400 Bad Request`: `{"error": "reason"}`

@@ -45,11 +45,21 @@ type HandoverResponse struct {
 }
 
 // CreateTaskRequest is the payload sent to POST /api/v1/tasks.
+//
+// 三个进度窗口参数是单次下载的覆盖：不传即跟随配置中心，与从桌面端建立的下载一致。
+// 它们只在任务上生效，不影响其它任务，也不改变已保存的全局设置。
 type CreateTaskRequest struct {
 	URL       string            `json:"url"`
 	Filename  string            `json:"filename,omitempty"`
 	Directory string            `json:"directory,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
+	// ShowProgressWindow 覆盖「自动显示下载进度窗口」。
+	ShowProgressWindow *bool `json:"showProgressWindow,omitempty"`
+	// KeepCompletedInfo 覆盖「保留完成信息」。
+	KeepCompletedInfo *bool `json:"keepCompletedInfo,omitempty"`
+	// FocusProgressWindowOnComplete 覆盖「完成后聚焦进度窗口」；传 false 即这次静默下载：
+	// 完成时不呼出进度窗口，也不把用户正在看的窗口抢到前台。
+	FocusProgressWindowOnComplete *bool `json:"focusProgressWindowOnComplete,omitempty"`
 }
 
 // CreateTaskResponse is returned upon successful task creation.

@@ -49,6 +49,9 @@ func TestDefaultSettings(t *testing.T) {
 	if !s.Download.KeepCompletedInfo {
 		t.Errorf("expected KeepCompletedInfo true by default")
 	}
+	if !s.Download.FocusProgressWindowOnComplete {
+		t.Errorf("expected FocusProgressWindowOnComplete true by default")
+	}
 	if s.Download.AutoRemoveCompletedOnOpen {
 		t.Errorf("expected AutoRemoveCompletedOnOpen false by default")
 	}
@@ -85,7 +88,7 @@ func TestDefaultSettings(t *testing.T) {
 }
 
 func TestDownloadConfig_WindowSettingsJSONUnmarshal(t *testing.T) {
-	// Case 1: missing fields in JSON -> defaults true, true, false
+	// Case 1: missing fields in JSON -> defaults true, true, true, false
 	rawMissing := `{"defaultDirectory": "/test"}`
 	var c1 DownloadConfig
 	if err := json.Unmarshal([]byte(rawMissing), &c1); err != nil {
@@ -97,12 +100,15 @@ func TestDownloadConfig_WindowSettingsJSONUnmarshal(t *testing.T) {
 	if !c1.KeepCompletedInfo {
 		t.Errorf("expected KeepCompletedInfo default to true when missing")
 	}
+	if !c1.FocusProgressWindowOnComplete {
+		t.Errorf("expected FocusProgressWindowOnComplete default to true when missing")
+	}
 	if c1.AutoRemoveCompletedOnOpen {
 		t.Errorf("expected AutoRemoveCompletedOnOpen default to false when missing")
 	}
 
-	// Case 2: explicitly set to false, false, true
-	rawExplicit := `{"showProgressWindow": false, "keepCompletedInfo": false, "autoRemoveCompletedOnOpen": true}`
+	// Case 2: explicitly set to false, false, false, true
+	rawExplicit := `{"showProgressWindow": false, "keepCompletedInfo": false, "focusProgressWindowOnComplete": false, "autoRemoveCompletedOnOpen": true}`
 	var c2 DownloadConfig
 	if err := json.Unmarshal([]byte(rawExplicit), &c2); err != nil {
 		t.Fatalf("failed to unmarshal c2: %v", err)
@@ -112,6 +118,9 @@ func TestDownloadConfig_WindowSettingsJSONUnmarshal(t *testing.T) {
 	}
 	if c2.KeepCompletedInfo {
 		t.Errorf("expected KeepCompletedInfo false")
+	}
+	if c2.FocusProgressWindowOnComplete {
+		t.Errorf("expected FocusProgressWindowOnComplete false")
 	}
 	if !c2.AutoRemoveCompletedOnOpen {
 		t.Errorf("expected AutoRemoveCompletedOnOpen true")

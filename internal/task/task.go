@@ -42,6 +42,19 @@ type Chunk struct {
 	Completed  bool  `json:"completed"`
 }
 
+// ProgressDisplay 是单次下载对下载进度窗口展示行为的覆盖，字段为 nil 表示跟随配置中心。
+//
+// 它按任务落地而不是只存在请求里：这些取舍要到任务开始与完成那一刻才用得上，
+// 而完成可能发生在暂停、重启、重试之后。
+type ProgressDisplay struct {
+	// ShowProgressWindow 覆盖「自动显示下载进度窗口」：这条任务开始与完成时是否主动呼出窗口。
+	ShowProgressWindow *bool `json:"showProgressWindow,omitempty"`
+	// KeepCompletedInfo 覆盖「保留完成信息」：完成后是否在窗口里留下这一条。
+	KeepCompletedInfo *bool `json:"keepCompletedInfo,omitempty"`
+	// FocusProgressWindowOnComplete 覆盖「完成后聚焦进度窗口」：完成时是否把窗口拉到最前。
+	FocusProgressWindowOnComplete *bool `json:"focusProgressWindowOnComplete,omitempty"`
+}
+
 // Task represents a download task in SheepGet.
 type Task struct {
 	ID  string `json:"id"`
@@ -107,6 +120,10 @@ type Task struct {
 	// TransferDone 表示 MediaInputs 已经全部就绪，剩下的只是处理。
 	// 它是「传输已完成」这一事实的唯一记录——处理失败后不能靠重新传输来恢复。
 	TransferDone bool `json:"transferDone,omitempty"`
+
+	// ProgressDisplay 是本次下载在下载进度窗口中的展示约定（HTTP 直连接口按次传入的覆盖）。
+	// 为 nil 时完全跟随配置中心；有值时只覆盖给出的那几项。
+	ProgressDisplay *ProgressDisplay `json:"progressDisplay,omitempty"`
 
 	// RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
 	// links whose authorization has expired; applied to every probe and transfer request.

@@ -93,17 +93,22 @@ type DownloadConfig struct {
 	UseServerFileTime         bool               `json:"useServerFileTime"`
 	ShowProgressWindow        bool               `json:"showProgressWindow"`
 	KeepCompletedInfo         bool               `json:"keepCompletedInfo"`
-	AutoRemoveCompletedOnOpen bool               `json:"autoRemoveCompletedOnOpen"`
-	BuiltinCategories         []CategoryConfig   `json:"builtinCategories"`
-	CustomCategories          []CategoryConfig   `json:"customCategories"`
+	// FocusProgressWindowOnComplete 决定下载完成时是否把进度窗口强制置前一次。关闭即静默下载：
+	// 完成时既不呼出窗口，也不把正在看的窗口抢到前台。
+	FocusProgressWindowOnComplete bool             `json:"focusProgressWindowOnComplete"`
+	AutoRemoveCompletedOnOpen     bool             `json:"autoRemoveCompletedOnOpen"`
+	BuiltinCategories             []CategoryConfig `json:"builtinCategories"`
+	CustomCategories              []CategoryConfig `json:"customCategories"`
 }
 
-// UnmarshalJSON customizes unmarshaling to ensure showProgressWindow and keepCompletedInfo default to true when omitted.
+// UnmarshalJSON customizes unmarshaling to ensure showProgressWindow, keepCompletedInfo and
+// focusProgressWindowOnComplete default to true when omitted.
 func (d *DownloadConfig) UnmarshalJSON(data []byte) error {
 	type alias DownloadConfig
 	aux := &struct {
-		ShowProgressWindow *bool `json:"showProgressWindow"`
-		KeepCompletedInfo  *bool `json:"keepCompletedInfo"`
+		ShowProgressWindow            *bool `json:"showProgressWindow"`
+		KeepCompletedInfo             *bool `json:"keepCompletedInfo"`
+		FocusProgressWindowOnComplete *bool `json:"focusProgressWindowOnComplete"`
 		*alias
 	}{
 		alias: (*alias)(d),
@@ -120,6 +125,11 @@ func (d *DownloadConfig) UnmarshalJSON(data []byte) error {
 		d.KeepCompletedInfo = true
 	} else {
 		d.KeepCompletedInfo = *aux.KeepCompletedInfo
+	}
+	if aux.FocusProgressWindowOnComplete == nil {
+		d.FocusProgressWindowOnComplete = true
+	} else {
+		d.FocusProgressWindowOnComplete = *aux.FocusProgressWindowOnComplete
 	}
 	return nil
 }
@@ -426,19 +436,20 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			AccentColor: DefaultAccentColor,
 		},
 		Download: DownloadConfig{
-			DuplicateURLPolicy:        DuplicatePolicyAsk,
-			PreDownload:               false,
-			SkipFileInfoConfirm:       false,
-			MaxConcurrentDownloads:    DefaultMaxConcurrentDownloads,
-			DefaultConnectionsPerTask: DefaultConnectionsPerTask,
-			DefaultDirectory:          defaultDownloadDir,
-			TempDirectory:             defaultTempDir,
-			UseServerFileTime:         false,
-			ShowProgressWindow:        true,
-			KeepCompletedInfo:         true,
-			AutoRemoveCompletedOnOpen: false,
-			BuiltinCategories:         builtinCategories,
-			CustomCategories:          []CategoryConfig{},
+			DuplicateURLPolicy:            DuplicatePolicyAsk,
+			PreDownload:                   false,
+			SkipFileInfoConfirm:           false,
+			MaxConcurrentDownloads:        DefaultMaxConcurrentDownloads,
+			DefaultConnectionsPerTask:     DefaultConnectionsPerTask,
+			DefaultDirectory:              defaultDownloadDir,
+			TempDirectory:                 defaultTempDir,
+			UseServerFileTime:             false,
+			ShowProgressWindow:            true,
+			KeepCompletedInfo:             true,
+			FocusProgressWindowOnComplete: true,
+			AutoRemoveCompletedOnOpen:     false,
+			BuiltinCategories:             builtinCategories,
+			CustomCategories:              []CategoryConfig{},
 		},
 		Proxy: ProxyConfig{
 			Mode:        ProxyModeSystem,

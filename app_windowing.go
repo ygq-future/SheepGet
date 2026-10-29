@@ -15,6 +15,7 @@ import (
 	"sheep-get/internal/chrome"
 	"sheep-get/internal/config"
 	"sheep-get/internal/protocol"
+	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 	"sheep-get/internal/windowing"
 )
@@ -328,6 +329,27 @@ func (a *App) OpenSettingsWindow() {
 		a.windows.Show(winNameMain, "")
 		a.emit(protocol.EventAppOpenSettings, nil)
 	}
+}
+
+// progressDisplay 解析这条任务在下载进度窗口上的展示约定：配置中心给出默认值，
+// 写在任务上的单次覆盖（HTTP 直连接口按次传入）优先。
+func (a *App) progressDisplay(t *task.Task) (show, keep, focus bool) {
+	d := a.GetSettings().Download
+	show, keep, focus = d.ShowProgressWindow, d.KeepCompletedInfo, d.FocusProgressWindowOnComplete
+	if t == nil || t.ProgressDisplay == nil {
+		return show, keep, focus
+	}
+	override := *t.ProgressDisplay
+	if override.ShowProgressWindow != nil {
+		show = *override.ShowProgressWindow
+	}
+	if override.KeepCompletedInfo != nil {
+		keep = *override.KeepCompletedInfo
+	}
+	if override.FocusProgressWindowOnComplete != nil {
+		focus = *override.FocusProgressWindowOnComplete
+	}
+	return show, keep, focus
 }
 
 // ShowProgressWindow brings up or focuses the shared download progress window and highlights the task.

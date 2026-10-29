@@ -504,6 +504,18 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 											"additionalProperties": map[string]any{"type": "string"},
 											"description":          "Optional custom HTTP headers (Cookie, Referer, etc.).",
 										},
+										"showProgressWindow": map[string]any{
+											"type":        "boolean",
+											"description": "Per-request override of the auto-show progress window setting. Omit to follow the Settings Center.",
+										},
+										"keepCompletedInfo": map[string]any{
+											"type":        "boolean",
+											"description": "Per-request override of the keep completed info setting. Omit to follow the Settings Center.",
+										},
+										"focusProgressWindowOnComplete": map[string]any{
+											"type":        "boolean",
+											"description": "Per-request override of the focus progress window on completion setting. false makes this download silent: no window is raised when it finishes. Omit to follow the Settings Center.",
+										},
 									},
 								},
 							},

@@ -70,6 +70,9 @@ type Request struct {
 	VariantURI string
 	MaxConn    int
 	Mode       Mode
+	// ProgressDisplay 是入口带来的进度窗口展示覆盖；只有 HTTP 直连接口会填，
+	// 其余入口留空表示跟随配置中心。
+	ProgressDisplay *task.ProgressDisplay
 }
 
 // Target 是一次下载的目标：名字、落点、分类，以及决定它们的事实。
@@ -110,6 +113,8 @@ type Target struct {
 	mode Mode
 	// variantURI 是登记时扩展已经选好的清晰度；它决定探测阶段要不要顺手解析这一版。
 	variantURI string
+	// display 是入口带来的进度窗口展示覆盖，提交时原样落到任务上。
+	display *task.ProgressDisplay
 	// namedByRequest 记录名字是不是入口给的：用户自己填的名字不被探测结果替换。
 	namedByRequest bool
 	// dirFromCategory 记录目录是请求给的还是按分类裁出来的：只有后者会在名字变化后重算。
@@ -184,6 +189,7 @@ func (in *Intake) Begin(ctx context.Context, req Request, reserved engine.Reserv
 		MaxConn:        req.MaxConn,
 		mode:           req.Mode,
 		variantURI:     req.VariantURI,
+		display:        req.ProgressDisplay,
 		namedByRequest: suggested != "",
 		TotalBytes:     -1,
 	}
@@ -393,13 +399,14 @@ func (in *Intake) StartPreDownload(ctx context.Context, t Target) (*task.Task, e
 // 探测结果；nil 表示由引擎自己探一次。
 func (in *Intake) createRequest(t Target, probe *engine.ProbeResult) engine.CreateRequest {
 	req := engine.CreateRequest{
-		URL:        t.URL,
-		Directory:  t.Directory,
-		Filename:   t.Filename,
-		MaxConn:    t.MaxConn,
-		Headers:    t.Headers,
-		PageURL:    t.PageURL,
-		CategoryID: t.CategoryID,
+		URL:             t.URL,
+		Directory:       t.Directory,
+		Filename:        t.Filename,
+		MaxConn:         t.MaxConn,
+		Headers:         t.Headers,
+		PageURL:         t.PageURL,
+		CategoryID:      t.CategoryID,
+		ProgressDisplay: t.display,
 	}
 	if probe != nil {
 		req.Probe, req.ProbeErr = probe, t.probeErr
@@ -451,13 +458,14 @@ func (in *Intake) Submit(ctx context.Context, t Target, choice Choice) (Result, 
 			return res, ErrChoiceRequired
 		}
 		created, err = in.eng.ResolveDuplicate(ctx, engine.DuplicateRequest{
-			TaskID:     t.DuplicateTask.ID,
-			Action:     action,
-			Directory:  t.Directory,
-			Filename:   t.Filename,
-			MaxConn:    t.MaxConn,
-			CategoryID: t.CategoryID,
-			Probe:      probe,
+			TaskID:          t.DuplicateTask.ID,
+			Action:          action,
+			Directory:       t.Directory,
+			Filename:        t.Filename,
+			MaxConn:         t.MaxConn,
+			CategoryID:      t.CategoryID,
+			Probe:           probe,
+			ProgressDisplay: t.display,
 		})
 	case choice.PreTaskID != "":
 		created, err = in.eng.ConfirmPreDownload(ctx, engine.ConfirmRequest{

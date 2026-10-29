@@ -14,6 +14,7 @@ import (
 	"sheep-get/internal/intake"
 	"sheep-get/internal/server"
 	"sheep-get/internal/settingsapply"
+	"sheep-get/internal/task"
 	"sheep-get/internal/window"
 )
 
@@ -116,15 +117,29 @@ func (a *App) handleCreateTask(ctx context.Context, req *server.CreateTaskReques
 		Directory: req.Directory,
 		Headers:   req.Headers,
 	}
-	return a.directDownload(ctx, dlReq)
+	return a.directDownload(ctx, dlReq, progressDisplayOverride(req))
+}
+
+// progressDisplayOverride 把接口按次传入的展示参数翻成任务上的覆盖。三项都没给时返回 nil，
+// 表示完全跟随配置中心——未传参数的调用方看到的仍是从前那套行为。
+func progressDisplayOverride(req *server.CreateTaskRequest) *task.ProgressDisplay {
+	if req.ShowProgressWindow == nil && req.KeepCompletedInfo == nil && req.FocusProgressWindowOnComplete == nil {
+		return nil
+	}
+	return &task.ProgressDisplay{
+		ShowProgressWindow:            req.ShowProgressWindow,
+		KeepCompletedInfo:             req.KeepCompletedInfo,
+		FocusProgressWindowOnComplete: req.FocusProgressWindowOnComplete,
+	}
 }
 
 // directDownload 直接创建并启动下载任务，跳过文件信息确认窗口，按设置呼起下载进度窗口。
 //
 // 它只做请求翻译：探测、命名、HLS、落点、占用与重复裁决都在 intake 里，与文件信息窗口
 // 共用同一份实现。没有确认窗口可问，需要用户决定的局面由 intake 按安全答案落地。
+// display 是这次请求的进度窗口展示覆盖（来自 HTTP 直连接口），为 nil 时跟随配置中心。
 // 它不导出为 Wails 绑定——只被 loopback 服务器调用，导出只会把 server 包的类型泄漏进前端模型图。
-func (a *App) directDownload(ctx context.Context, req window.DownloadRequest) (*server.CreateTaskResponse, error) {
+func (a *App) directDownload(ctx context.Context, req window.DownloadRequest, display *task.ProgressDisplay) (*server.CreateTaskResponse, error) {
 	if a.manager == nil {
 		return nil, fmt.Errorf("download engine not initialized")
 	}
@@ -142,14 +157,15 @@ func (a *App) directDownload(ctx context.Context, req window.DownloadRequest) (*
 
 	downloads := intake.New(a.manager, a.settings)
 	target := downloads.Begin(ctx, intake.Request{
-		URL:        urlStr,
-		Headers:    req.Headers,
-		Filename:   req.Filename,
-		Directory:  req.Directory,
-		PageURL:    req.PageURL,
-		VariantURI: req.VariantURI,
-		MaxConn:    req.MaxConn,
-		Mode:       intake.ModeDirect,
+		URL:             urlStr,
+		Headers:         req.Headers,
+		Filename:        req.Filename,
+		Directory:       req.Directory,
+		PageURL:         req.PageURL,
+		VariantURI:      req.VariantURI,
+		MaxConn:         req.MaxConn,
+		Mode:            intake.ModeDirect,
+		ProgressDisplay: display,
 	}, nil)
 
 	probe, probeErr := downloads.Probe(ctx, target)
@@ -160,8 +176,9 @@ func (a *App) directDownload(ctx context.Context, req window.DownloadRequest) (*
 		return nil, err
 	}
 
-	// 唤起进度窗口（跳过文件信息确认窗口）
-	if st := a.GetSettings(); st.Download.ShowProgressWindow {
+	// 唤起进度窗口（跳过文件信息确认窗口）：这次请求自己说了算的那一项优先，
+	// 没说就按配置中心。
+	if show, _, _ := a.progressDisplay(created.Task); show {
 		a.ShowProgressWindow(created.Task.ID)
 	}
 

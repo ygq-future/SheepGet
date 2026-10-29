@@ -115,6 +115,12 @@ export class DownloadConfig {
     "useServerFileTime": boolean;
     "showProgressWindow": boolean;
     "keepCompletedInfo": boolean;
+
+    /**
+     * FocusProgressWindowOnComplete 决定下载完成时是否把进度窗口强制置前一次。关闭即静默下载：
+     * 完成时既不呼出窗口，也不把正在看的窗口抢到前台。
+     */
+    "focusProgressWindowOnComplete": boolean;
     "autoRemoveCompletedOnOpen": boolean;
     "builtinCategories": CategoryConfig[];
     "customCategories": CategoryConfig[];
@@ -151,6 +157,9 @@ export class DownloadConfig {
         if (!("keepCompletedInfo" in $$source)) {
             this["keepCompletedInfo"] = false;
         }
+        if (!("focusProgressWindowOnComplete" in $$source)) {
+            this["focusProgressWindowOnComplete"] = false;
+        }
         if (!("autoRemoveCompletedOnOpen" in $$source)) {
             this["autoRemoveCompletedOnOpen"] = false;
         }
@@ -168,14 +177,14 @@ export class DownloadConfig {
      * Creates a new DownloadConfig instance from a string or object.
      */
     static createFrom($$source: any = {}): DownloadConfig {
-        const $$createField11_0 = $$createType2;
         const $$createField12_0 = $$createType2;
+        const $$createField13_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("builtinCategories" in $$parsedSource) {
-            $$parsedSource["builtinCategories"] = $$createField11_0($$parsedSource["builtinCategories"]);
+            $$parsedSource["builtinCategories"] = $$createField12_0($$parsedSource["builtinCategories"]);
         }
         if ("customCategories" in $$parsedSource) {
-            $$parsedSource["customCategories"] = $$createField12_0($$parsedSource["customCategories"]);
+            $$parsedSource["customCategories"] = $$createField13_0($$parsedSource["customCategories"]);
         }
         return new DownloadConfig($$parsedSource as Partial<DownloadConfig>);
     }

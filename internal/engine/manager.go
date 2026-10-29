@@ -447,6 +447,9 @@ type DuplicateRequest struct {
 	CategoryID string
 	// Probe 是当次选定的探测事实（HLS 清晰度与大小）；为 nil 时沿用历史任务的。
 	Probe *ProbeResult
+	// ProgressDisplay 是这次请求的进度窗口展示覆盖；只有复制与覆盖会新建任务，
+	// 续传沿用历史任务自己的那一份。
+	ProgressDisplay *task.ProgressDisplay
 }
 
 // ResolveDuplicate 按动作处理一次重复链接：续传、覆盖重下、另存序号副本，或只把历史任务
@@ -508,25 +511,26 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, req DuplicateRequest) (*
 		}
 
 		newTask := &task.Task{
-			ID:             nextTaskID(),
-			URL:            t.URL,
-			FinalURL:       finalURLFrom(t.FinalURL, probe),
-			PageURL:        t.PageURL,
-			CategoryID:     targetCatID,
-			Filename:       filename,
-			Directory:      dir,
-			TempDir:        m.getTempDir(),
-			TotalBytes:     totalBytes,
-			Downloaded:     0,
-			Status:         task.StatusQueued,
-			MaxConcurrency: maxConn,
-			Resumable:      t.Resumable,
-			ETag:           t.ETag,
-			LastModified:   t.LastModified,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-			RequestHeaders: t.RequestHeaders.Clone(),
-			Media:          media,
+			ID:              nextTaskID(),
+			URL:             t.URL,
+			FinalURL:        finalURLFrom(t.FinalURL, probe),
+			PageURL:         t.PageURL,
+			CategoryID:      targetCatID,
+			Filename:        filename,
+			Directory:       dir,
+			TempDir:         m.getTempDir(),
+			TotalBytes:      totalBytes,
+			Downloaded:      0,
+			Status:          task.StatusQueued,
+			MaxConcurrency:  maxConn,
+			Resumable:       t.Resumable,
+			ETag:            t.ETag,
+			LastModified:    t.LastModified,
+			CreatedAt:       time.Now(),
+			UpdatedAt:       time.Now(),
+			RequestHeaders:  t.RequestHeaders.Clone(),
+			Media:           media,
+			ProgressDisplay: req.ProgressDisplay,
 		}
 		if err := m.store.Save(ctx, newTask); err != nil {
 			return nil, err
@@ -565,25 +569,26 @@ func (m *Manager) ResolveDuplicate(ctx context.Context, req DuplicateRequest) (*
 		}
 
 		newTask := &task.Task{
-			ID:             nextTaskID(),
-			URL:            t.URL,
-			FinalURL:       finalURLFrom(t.FinalURL, probe),
-			PageURL:        t.PageURL,
-			CategoryID:     targetCatID,
-			Filename:       filename,
-			Directory:      dir,
-			TempDir:        m.getTempDir(),
-			TotalBytes:     totalBytes,
-			Downloaded:     0,
-			Status:         task.StatusQueued,
-			MaxConcurrency: maxConn,
-			Resumable:      t.Resumable,
-			ETag:           t.ETag,
-			LastModified:   t.LastModified,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-			RequestHeaders: t.RequestHeaders.Clone(),
-			Media:          media,
+			ID:              nextTaskID(),
+			URL:             t.URL,
+			FinalURL:        finalURLFrom(t.FinalURL, probe),
+			PageURL:         t.PageURL,
+			CategoryID:      targetCatID,
+			Filename:        filename,
+			Directory:       dir,
+			TempDir:         m.getTempDir(),
+			TotalBytes:      totalBytes,
+			Downloaded:      0,
+			Status:          task.StatusQueued,
+			MaxConcurrency:  maxConn,
+			Resumable:       t.Resumable,
+			ETag:            t.ETag,
+			LastModified:    t.LastModified,
+			CreatedAt:       time.Now(),
+			UpdatedAt:       time.Now(),
+			RequestHeaders:  t.RequestHeaders.Clone(),
+			Media:           media,
+			ProgressDisplay: req.ProgressDisplay,
 		}
 		if err := m.store.Save(ctx, newTask); err != nil {
 			return nil, err
@@ -1135,6 +1140,9 @@ type CreateRequest struct {
 	// ProbeErr 是那次探测的失败原因。它随结果一起递进来，引擎据此决定降级排队还是留下
 	// 一条看得见的失败任务（A03）。
 	ProbeErr error
+	// ProgressDisplay 是调用方按次给定的进度窗口展示覆盖（HTTP 直连接口的参数）。
+	// 为 nil 时跟随配置中心，与从文件信息窗口创建的下载完全一致。
+	ProgressDisplay *task.ProgressDisplay
 }
 
 // CreateTask 建一条任务：先挡住重复链接，再按探测事实落成一条任务并交给调度。
@@ -1177,21 +1185,22 @@ func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task
 		} else {
 			// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
 			t := &task.Task{
-				ID:             nextTaskID(),
-				URL:            urlStr,
-				PageURL:        pageURL,
-				CategoryID:     categoryID,
-				Filename:       filename,
-				Directory:      dir,
-				TempDir:        m.getTempDir(),
-				TotalBytes:     -1,
-				Status:         task.StatusError,
-				FailurePhase:   task.FailurePhaseTransfer,
-				ErrorMsg:       probeErr.Error(),
-				MaxConcurrency: maxConn,
-				RequestHeaders: creds,
-				CreatedAt:      now,
-				UpdatedAt:      now,
+				ID:              nextTaskID(),
+				URL:             urlStr,
+				PageURL:         pageURL,
+				CategoryID:      categoryID,
+				Filename:        filename,
+				Directory:       dir,
+				TempDir:         m.getTempDir(),
+				TotalBytes:      -1,
+				Status:          task.StatusError,
+				FailurePhase:    task.FailurePhaseTransfer,
+				ErrorMsg:        probeErr.Error(),
+				MaxConcurrency:  maxConn,
+				RequestHeaders:  creds,
+				ProgressDisplay: req.ProgressDisplay,
+				CreatedAt:       now,
+				UpdatedAt:       now,
 			}
 			if t.Filename == "" {
 				t.Filename = extractFilenameFromURL(urlStr)
@@ -1227,26 +1236,27 @@ func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task
 	}
 
 	t := &task.Task{
-		ID:             nextTaskID(),
-		URL:            urlStr,
-		FinalURL:       finalURLFrom("", probe),
-		PageURL:        pageURL,
-		CategoryID:     categoryID,
-		Filename:       filename,
-		Directory:      dir,
-		TempDir:        m.getTempDir(),
-		TotalBytes:     probe.TotalBytes,
-		Downloaded:     0,
-		Status:         task.StatusQueued,
-		MaxConcurrency: maxConn,
-		Resumable:      probe.Resumable,
-		ETag:           probe.ETag,
-		LastModified:   probe.LastModified,
-		RequestHeaders: creds,
-		DirectTransfer: probe.DirectTransfer,
-		ProxyAddr:      probe.ProxyAddr,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              nextTaskID(),
+		URL:             urlStr,
+		FinalURL:        finalURLFrom("", probe),
+		PageURL:         pageURL,
+		CategoryID:      categoryID,
+		Filename:        filename,
+		Directory:       dir,
+		TempDir:         m.getTempDir(),
+		TotalBytes:      probe.TotalBytes,
+		Downloaded:      0,
+		Status:          task.StatusQueued,
+		MaxConcurrency:  maxConn,
+		Resumable:       probe.Resumable,
+		ETag:            probe.ETag,
+		LastModified:    probe.LastModified,
+		RequestHeaders:  creds,
+		DirectTransfer:  probe.DirectTransfer,
+		ProxyAddr:       probe.ProxyAddr,
+		ProgressDisplay: req.ProgressDisplay,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	// HLS 任务的总大小来自选定的清晰度：清单自己的字节数与这次下载无关。
 	if probe.HLS != nil && probe.HLS.Media != nil {

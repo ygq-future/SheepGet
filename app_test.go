@@ -2074,7 +2074,58 @@ func TestApp_TaskCompleted_FocusProgressWindow(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// Case 6: Historical tasks present on startup are marked and never triggered
+	// Case 6: focusProgressWindowOnComplete = false -> 静默完成，不强制聚焦
+	st = app.settings.Get()
+	st.Download.ShowProgressWindow = true
+	st.Download.KeepCompletedInfo = true
+	st.Download.FocusProgressWindowOnComplete = false
+	_, _ = app.settings.Update(st)
+
+	task4 := &task.Task{
+		ID:       "task_4",
+		Filename: "file4.zip",
+		Status:   task.StatusCompleted,
+	}
+	app.OnTaskUpdated(task4)
+	mu.Lock()
+	if len(progressShown) != 2 {
+		t.Fatalf("expected no trigger when focusProgressWindowOnComplete is false, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 7: 单次请求把聚焦打开，全局关闭也依然触发（请求的覆盖优先）
+	task5 := &task.Task{
+		ID:       "task_5",
+		Filename: "file5.zip",
+		Status:   task.StatusCompleted,
+		ProgressDisplay: &task.ProgressDisplay{
+			FocusProgressWindowOnComplete: new(true),
+		},
+	}
+	app.OnTaskUpdated(task5)
+	mu.Lock()
+	if len(progressShown) != 3 || progressShown[2] != "task_5" {
+		t.Fatalf("expected per-request focus override to win, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 8: 单次请求关掉保留完成信息 -> 这条任务完成时不弹完成信息
+	task6 := &task.Task{
+		ID:       "task_6",
+		Filename: "file6.zip",
+		Status:   task.StatusCompleted,
+		ProgressDisplay: &task.ProgressDisplay{
+			KeepCompletedInfo: new(false),
+		},
+	}
+	app.OnTaskUpdated(task6)
+	mu.Lock()
+	if len(progressShown) != 3 {
+		t.Fatalf("expected no trigger when per-request keepCompletedInfo is false, got %v", progressShown)
+	}
+	mu.Unlock()
+
+	// Case 9: Historical tasks present on startup are marked and never triggered
 	_ = store.Save(context.Background(), &task.Task{
 		ID:       "hist_task",
 		Filename: "hist.zip",
@@ -2367,14 +2418,14 @@ func TestApp_DirectDownloadKeepsVariantsAsSeparateTasks(t *testing.T) {
 	low, err := app.directDownload(ctx, window.DownloadRequest{
 		URL:        srv.URL + "/master.m3u8",
 		VariantURI: srv.URL + "/v720/index.m3u8",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("720p direct download failed: %v", err)
 	}
 	high, err := app.directDownload(ctx, window.DownloadRequest{
 		URL:        srv.URL + "/master.m3u8",
 		VariantURI: srv.URL + "/v1080/index.m3u8",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("1080p direct download failed: %v", err)
 	}
@@ -2397,5 +2448,77 @@ func TestApp_DirectDownloadKeepsVariantsAsSeparateTasks(t *testing.T) {
 		if saved.Media == nil || saved.Media.Variant.URI != want.variant {
 			t.Errorf("task %s media = %+v, want variant %q", want.id, saved.Media, want.variant)
 		}
+	}
+}
+
+// 直连接口的按次展示参数只影响这一次下载：它们随任务落地（完成时还要读得到），
+// 开始与完成时都以任务上的覆盖优先于配置中心。
+func TestApp_CreateTaskProgressDisplayOverrides(t *testing.T) {
+	app, store, _ := newTestApp(t)
+	// 任务停在队列里即可：这里断言的是展示约定，不是传输本身。
+	app.manager.SetMaxActiveTasks(0)
+	srv := serveRangedPayload([]byte("payload"), "", 0)
+	t.Cleanup(srv.Close)
+
+	var mu sync.Mutex
+	var shown []string
+	app.onShowProgress = func(taskID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		shown = append(shown, taskID)
+	}
+	countShown := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(shown)
+	}
+
+	// 只关掉完成时聚焦：开始时仍按全局设置呼出窗口，完成时静默，不抢焦点。
+	resp, err := app.handleCreateTask(context.Background(), &server.CreateTaskRequest{
+		URL:                           srv.URL + "/focus-off.bin",
+		FocusProgressWindowOnComplete: new(false),
+	})
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+	if got := countShown(); got != 1 {
+		t.Fatalf("expected the window to open once when the task starts, got %d", got)
+	}
+	saved, err := store.Get(context.Background(), resp.TaskID)
+	if err != nil {
+		t.Fatalf("created task missing from the store: %v", err)
+	}
+	if saved.ProgressDisplay == nil || saved.ProgressDisplay.FocusProgressWindowOnComplete == nil ||
+		*saved.ProgressDisplay.FocusProgressWindowOnComplete {
+		t.Fatalf("expected the focus override to be persisted on the task, got %+v", saved.ProgressDisplay)
+	}
+
+	saved.Status = task.StatusCompleted
+	app.OnTaskUpdated(saved)
+	if got := countShown(); got != 1 {
+		t.Fatalf("expected no focus on completion, got %d window calls", got)
+	}
+
+	// 不带展示参数的请求不写覆盖：仍按配置中心（默认聚焦）在完成时呼出窗口。
+	resp2, err := app.handleCreateTask(context.Background(), &server.CreateTaskRequest{
+		URL: srv.URL + "/default.bin",
+	})
+	if err != nil {
+		t.Fatalf("create task without overrides failed: %v", err)
+	}
+	saved2, err := store.Get(context.Background(), resp2.TaskID)
+	if err != nil {
+		t.Fatalf("default task missing from the store: %v", err)
+	}
+	if saved2.ProgressDisplay != nil {
+		t.Fatalf("expected no display override when the request omits it, got %+v", saved2.ProgressDisplay)
+	}
+	if got := countShown(); got != 2 {
+		t.Fatalf("expected the window to open when the default task starts, got %d", got)
+	}
+	saved2.Status = task.StatusCompleted
+	app.OnTaskUpdated(saved2)
+	if got := countShown(); got != 3 {
+		t.Fatalf("expected completion to focus the window by default, got %d", got)
 	}
 }

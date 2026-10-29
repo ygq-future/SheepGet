@@ -170,15 +170,15 @@ func NewApp() *App {
 	app.windowQueue = window.NewQueueController(mgr, settingsSvc, winView)
 	app.windowQueue.SetOnShowCompleted(app.ShowProgressWindow)
 	app.windowQueue.SetOnSubmitTask(func(t *task.Task) {
-		if t != nil && app.settings != nil {
-			st := app.settings.Get()
-			if st.Download.ShowProgressWindow {
-				app.ShowProgressWindow(t.ID)
-			}
-			if app.fileInfoQueueLength() > 0 {
-				if fileWin, ok := app.windows.Find(winNameFileInfo); ok && fileWin.IsVisible() {
-					fileWin.Raise()
-				}
+		if t == nil || app.settings == nil {
+			return
+		}
+		if show, _, _ := app.progressDisplay(t); show {
+			app.ShowProgressWindow(t.ID)
+		}
+		if app.fileInfoQueueLength() > 0 {
+			if fileWin, ok := app.windows.Find(winNameFileInfo); ok && fileWin.IsVisible() {
+				fileWin.Raise()
 			}
 		}
 	})
@@ -305,11 +305,11 @@ func (a *App) OnTaskUpdated(t *task.Task) {
 	switch t.Status {
 	case task.StatusCompleted:
 		if _, loaded := a.completedNotified.LoadOrStore(t.ID, struct{}{}); !loaded {
-			if a.settings != nil {
-				st := a.settings.Get()
-				if st.Download.ShowProgressWindow && st.Download.KeepCompletedInfo {
-					a.ShowProgressWindow(t.ID)
-				}
+			show, keep, focus := a.progressDisplay(t)
+			// 显示与留档是完成时弹出窗口的前提，聚焦是用户可关的那一项：关掉即静默下载，
+			// 完成时不呼出窗口，也不把用户正在看的窗口抢到前台（内容仍随任务事件更新）。
+			if show && keep && focus {
+				a.ShowProgressWindow(t.ID)
 			}
 		}
 	case task.StatusDownloading, task.StatusQueued:

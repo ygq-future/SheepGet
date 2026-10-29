@@ -524,4 +524,27 @@ func TestServer_CreateTaskEndpoint(t *testing.T) {
 	if mockH.handledCreateReq == nil || mockH.handledCreateReq.URL != "https://example.com/test.zip" {
 		t.Errorf("expected handledCreateReq to have URL, got %+v", mockH.handledCreateReq)
 	}
+	if mockH.handledCreateReq.FocusProgressWindowOnComplete != nil {
+		t.Errorf("expected display overrides to stay unset when omitted, got %+v", mockH.handledCreateReq)
+	}
+
+	// 4. 按次展示参数原样到达处理方：没传的项仍是 nil，表示跟随配置中心
+	overridesBody := `{"url":"https://example.com/quiet.zip","showProgressWindow":false,"keepCompletedInfo":true,"focusProgressWindowOnComplete":false}`
+	req, _ = http.NewRequest("POST", baseURL+protocol.PathTasks, bytes.NewBufferString(overridesBody))
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created for overrides request, got %d", resp.StatusCode)
+	}
+	received := mockH.handledCreateReq
+	if received.URL != "https://example.com/quiet.zip" ||
+		received.ShowProgressWindow == nil || *received.ShowProgressWindow ||
+		received.KeepCompletedInfo == nil || !*received.KeepCompletedInfo ||
+		received.FocusProgressWindowOnComplete == nil || *received.FocusProgressWindowOnComplete {
+		t.Errorf("display overrides did not arrive intact: %+v", received)
+	}
 }

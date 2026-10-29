@@ -73,6 +73,43 @@ export enum FailurePhase {
 };
 
 /**
+ * ProgressDisplay 是单次下载对下载进度窗口展示行为的覆盖，字段为 nil 表示跟随配置中心。
+ * 
+ * 它按任务落地而不是只存在请求里：这些取舍要到任务开始与完成那一刻才用得上，
+ * 而完成可能发生在暂停、重启、重试之后。
+ */
+export class ProgressDisplay {
+    /**
+     * ShowProgressWindow 覆盖「自动显示下载进度窗口」：这条任务开始与完成时是否主动呼出窗口。
+     */
+    "showProgressWindow"?: boolean | null;
+
+    /**
+     * KeepCompletedInfo 覆盖「保留完成信息」：完成后是否在窗口里留下这一条。
+     */
+    "keepCompletedInfo"?: boolean | null;
+
+    /**
+     * FocusProgressWindowOnComplete 覆盖「完成后聚焦进度窗口」：完成时是否把窗口拉到最前。
+     */
+    "focusProgressWindowOnComplete"?: boolean | null;
+
+    /** Creates a new ProgressDisplay instance. */
+    constructor($$source: Partial<ProgressDisplay> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProgressDisplay instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProgressDisplay {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProgressDisplay($$parsedSource as Partial<ProgressDisplay>);
+    }
+}
+
+/**
  * Status represents the download task status.
  */
 export enum Status {
@@ -199,6 +236,12 @@ export class Task {
     "transferDone"?: boolean;
 
     /**
+     * ProgressDisplay 是本次下载在下载进度窗口中的展示约定（HTTP 直连接口按次传入的覆盖）。
+     * 为 nil 时完全跟随配置中心；有值时只覆盖给出的那几项。
+     */
+    "progressDisplay"?: ProgressDisplay | null;
+
+    /**
      * RequestHeaders carries request context (Referer, Cookie, Authorization, …) required by
      * links whose authorization has expired; applied to every probe and transfer request.
      * Encapsulated in RequestCredentials to ensure sensitive fields are masked by default on serialization.
@@ -255,6 +298,7 @@ export class Task {
         const $$createField25_0 = $$createType3;
         const $$createField28_0 = $$createType4;
         const $$createField29_0 = $$createType6;
+        const $$createField31_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
             $$parsedSource["chunks"] = $$createField24_0($$parsedSource["chunks"]);
@@ -268,6 +312,9 @@ export class Task {
         if ("mediaInputs" in $$parsedSource) {
             $$parsedSource["mediaInputs"] = $$createField29_0($$parsedSource["mediaInputs"]);
         }
+        if ("progressDisplay" in $$parsedSource) {
+            $$parsedSource["progressDisplay"] = $$createField31_0($$parsedSource["progressDisplay"]);
+        }
         return new Task($$parsedSource as Partial<Task>);
     }
 }
@@ -280,3 +327,5 @@ const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = $Create.Array($Create.Any);
 const $$createType5 = hls$0.Inputs.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = ProgressDisplay.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);

@@ -118,9 +118,13 @@ SheepGet 内置轻量级本地开放接口，支持外部脚本或 AI Agent 调�
      -d '{
        "url": "https://example.com/file.zip",
        "filename": "custom_name.zip",
-       "directory": "D:/Downloads"
+       "directory": "D:/Downloads",
+       "showProgressWindow": false,
+       "keepCompletedInfo": false,
+       "focusProgressWindowOnComplete": false
      }'
    ```
+   后三个参数是单次下载对「自动显示下载进度窗口」「保留完成信息」「完成后聚焦进度窗口」的覆盖，省略任一项即跟随配置中心；三者都关闭就是一次完全静默的下载。
 4. **内置 Agent Skill**：在「设置」中点击「定位 Agent Skill 目录」，可直接将内置技能导入 Claude Code、Cursor、Windsurf 等 AI Agent 工具中协同使用。
 
 ---

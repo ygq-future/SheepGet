@@ -4,6 +4,7 @@
 export {
     Chunk,
     FailurePhase,
+    ProgressDisplay,
     Status,
     Task
 } from "./models.js";
