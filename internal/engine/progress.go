@@ -11,7 +11,9 @@ import (
 const (
 	// progressPublishInterval 是界面刷新节流：约 16 FPS，足够让进度条与排序动画平滑。
 	progressPublishInterval = 60 * time.Millisecond
-	// progressSaveInterval / progressSaveBytes 是落盘节流：最多每 500ms 或每 1MB 写一次。
+	// progressSaveInterval / progressSaveBytes 是落盘节流：两次写盘至少间隔 500ms，且至少攒够
+	// 1MB 才值得写。前者限制写盘频率（高速下载不必每个发布窗口都重写全库），后者限制写入放大
+	// （慢速下载不必为几百 KB 重写一遍全部任务）。
 	progressSaveInterval = 500 * time.Millisecond
 	progressSaveBytes    = 1 << 20
 )
@@ -32,10 +34,11 @@ type progressSink struct {
 	baseElapsed int64     // 本轮运行启动前已累计的耗时（纳秒）
 	runStarted  time.Time // 本轮运行开始的时刻
 
-	mu          sync.Mutex
-	published   int64     // 已发布的字节数：速度采样与节流都以它为基准
-	lastPublish time.Time // 上一次预约发布窗口的时刻
-	lastSave    time.Time // 上一次落盘的时刻
+	mu             sync.Mutex
+	published      int64     // 已发布的字节数：速度采样与节流都以它为基准
+	lastPublish    time.Time // 上一次预约发布窗口的时刻
+	lastSave       time.Time // 上一次落盘的时刻
+	lastSavedBytes int64     // 上一次落盘时的字节数：1MB 门槛按「距上次落盘」计，不是按单个发布窗口
 }
 
 func newProgressSink(ctx context.Context, m *Manager, taskID string, baseElapsed int64, runStarted time.Time) *progressSink {
@@ -74,11 +77,14 @@ func (s *progressSink) PublishSnapshot(snapshot *task.Task) {
 	}
 	delta := snapshot.Downloaded - s.published
 	s.published = snapshot.Downloaded
+	// 1MB 门槛按「距上次落盘」的字节数算：delta 只是这一个发布窗口（60ms）的量，用它判断会在
+	// 高速链路上让每个窗口都触发一次全库重写。
 	dueSave := s.lastSave.IsZero() ||
-		time.Since(s.lastSave) >= progressSaveInterval ||
-		delta >= progressSaveBytes
+		(time.Since(s.lastSave) >= progressSaveInterval &&
+			snapshot.Downloaded-s.lastSavedBytes >= progressSaveBytes)
 	if dueSave {
 		s.lastSave = time.Now()
+		s.lastSavedBytes = snapshot.Downloaded
 	}
 	s.mu.Unlock()
 

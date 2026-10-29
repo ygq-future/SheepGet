@@ -22,7 +22,7 @@
 | O-03 | P0     | 媒体处理阶段无法暂停/删除，删除的任务会被写回           | 小          | 已修复 |
 | O-04 | P0     | 队列锁跨越引擎取消调用，最长阻塞 5 秒                   | 小          | 已修复 |
 | O-05 | P1     | 分片热路径在 `coord.mu` 内写盘、克隆任务并落库          | 小—中       | 已修复 |
-| O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 待修   |
+| O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 已修复 |
 | O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 待修   |
 | O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 待修   |
 | O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 待修   |
@@ -96,10 +96,12 @@
 
 ### O-06 进度落盘节流判据错误
 
-- **证据**：`internal/engine/progress.go:70-73`。`delta` 是“距上次发布”的字节数，而 `s.published` 每个发布窗口都会更新；`delta >= 1MB` 因此表示“这 60ms 内下载了 1MB”，不是“距上次落盘 1MB”。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`internal/engine/progress.go` 的 `dueSave` 用 `delta >= progressSaveBytes` 判断。`delta` 是「距上次发布」的字节数，而 `s.published` 每个发布窗口都会更新；它因此表示「这 60ms 内下载了 1MB」，不是「距上次落盘 1MB」。
 - **影响**：速度超过约 17MB/s 时，每个 60ms 窗口都判定需要落盘，等于每个任务每秒 16 次全库 JSON 重写（[推算]，基于 `progressPublishInterval=60ms` 与 `progressSaveBytes=1MB`）。
-- **最小修复**：新增 `lastSavedBytes`，用 `snapshot.Downloaded - lastSavedBytes >= progressSaveBytes` 判断，并只在真正落盘时更新它。
-- **验收**：新增用例固定“高速连续发布只按 500ms 间隔落盘”；现有进度节流用例不回归。
+- **判据修正**：只把 `delta` 换成「距上次落盘」还不够。若两个阈值仍按「或」组合，33MB/s 下每 30ms 就攒够 1MB，写盘次数反而升到每秒 33 次——与「高速只按 500ms 落盘」的验收目标相反。两个常量都表述的是写盘频率上限（「最多每 500ms 或每 1MB 写一次」），因此实现为两者同时成立才写。
+- **实际修复**：新增 `lastSavedBytes`；`dueSave = 首次 || (距上次落盘 ≥ 500ms && Downloaded-lastSavedBytes ≥ 1MB)`，并只在真正落盘时更新 `lastSave` 与 `lastSavedBytes`。结果是：高速（≥ 2MB/s）每 500ms 写一次，慢速每攒够 1MB 写一次（因此也 ≤ 2 次/秒），进度不动时不写。首次快照仍立即落盘；暂停、完成与失败由 `finalizeRun` / `saveIfPresent` 显式写，不受这条节流影响。
+- **验收**：新增 `TestProgressSinkPersistsAtSaveIntervalDuringFastPublishing`（每 60ms 前进 2MB，跨 180ms 只写 1 次；修复前写 4 次）与 `TestProgressSinkWaitsForOneMegabyteBetweenSaves`（时间条件满足但只走了 512KB 时不写，攒够 1MB 才补一次；去掉字节门槛后该用例失败）。
 
 ### O-07 `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条重写
 
@@ -188,7 +190,7 @@
 - O-01 的运行时表现按 Chrome 官方权限文档与构建产物判定，未在真实浏览器里抓取交接请求核对 Cookie 是否为空。
 - O-03、O-07 的修复需要并发用例与一次真实下载/暂停/删除操作共同验收；当前只有代码路径证据。
 - O-05 的锁外写盘与锁外发布已由并发用例与 `-race` 覆盖，但没有在真实高速链路上对比修复前后的吞吐。
-- O-06 的 17MB/s 阈值是由 60ms 发布间隔与 1MB 阈值推算，未在真实高速链路上测量落盘次数。
+- O-06 修复后写盘频率不再依赖 17MB/s 这个推算阈值（间隔与字节门槛都是硬约束），但仍未在真实高速链路上计数落盘次数。
 - O-09 的卡顿程度与任务数量、窗口动画时长相关，需要在实机上量化重渲染次数。
 - macOS/Linux 的运行时行为仍未观察（O-14）。
 
