@@ -47,6 +47,14 @@ type DestinationInfo struct {
 	CategoryID string `json:"categoryId"`
 }
 
+// clipboardWatcher 是设置应用路径与退出路径需要的剪贴板监视面：跟着开关启停。
+// 定义成接口而不是具体类型，是为了让「设置变更真的到达监视」能在无头测试里被观察，
+// 而不必启动真实的系统剪贴板轮询。
+type clipboardWatcher interface {
+	SetEnabled(enabled bool)
+	Stop()
+}
+
 // App struct
 type App struct {
 	app                 *application.App
@@ -59,7 +67,7 @@ type App struct {
 	windowQueue         *window.QueueController
 	windows             *windowing.Registry
 	progressAlwaysOnTop bool
-	clipboardWatcher    *clipboard.Watcher
+	clipboardWatcher    clipboardWatcher
 	clipboardReader     clipboard.Reader
 	loopbackServer      *server.Server
 	logger              atomic.Pointer[logging.Logger]

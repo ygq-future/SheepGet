@@ -184,8 +184,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 }));
 
-// Listen to settings:updated events and system color-scheme changes
+// Listen to settings:updated events and system color-scheme changes.
+// 返回的清理函数撤掉这里注册的全部监听：重复初始化（窗口重建、热重载）时旧监听不会累积。
 export function initSettingsListener() {
+  const cleanups: Array<() => void> = [];
   if (typeof window !== 'undefined' && window.matchMedia) {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleSystemThemeChange = () => {
@@ -197,19 +199,28 @@ export function initSettingsListener() {
       }
     };
     mediaQuery.addEventListener('change', handleSystemThemeChange);
+    cleanups.push(() => mediaQuery.removeEventListener('change', handleSystemThemeChange));
   }
-  Events.On('theme:systemChanged', () => {
-    const current = useSettingsStore.getState().settings;
-    const theme = current?.appearance?.theme || configModels.ThemeMode.ThemeSystem;
-    if (theme === configModels.ThemeMode.ThemeSystem && current) {
-      useSettingsStore.getState().applyThemeAndAccent(current);
-    }
-  });
+  cleanups.push(
+    Events.On('theme:systemChanged', () => {
+      const current = useSettingsStore.getState().settings;
+      const theme = current?.appearance?.theme || configModels.ThemeMode.ThemeSystem;
+      if (theme === configModels.ThemeMode.ThemeSystem && current) {
+        useSettingsStore.getState().applyThemeAndAccent(current);
+      }
+    }),
+  );
 
-  return Events.On(Event.SettingsUpdated, (event: unknown) => {
-    const updated = unwrapEventData<configModels.Settings>(event);
-    if (!updated) return;
-    useSettingsStore.setState({ settings: updated });
-    useSettingsStore.getState().applyThemeAndAccent(updated);
-  });
+  cleanups.push(
+    Events.On(Event.SettingsUpdated, (event: unknown) => {
+      const updated = unwrapEventData<configModels.Settings>(event);
+      if (!updated) return;
+      useSettingsStore.setState({ settings: updated });
+      useSettingsStore.getState().applyThemeAndAccent(updated);
+    }),
+  );
+
+  return () => {
+    for (const cleanup of cleanups) cleanup();
+  };
 }

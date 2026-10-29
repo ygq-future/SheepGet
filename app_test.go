@@ -1011,19 +1011,58 @@ func TestApp_CheckURLFilesExist_MultiStaleDuplicates_AllCleaned(t *testing.T) {
 	}
 }
 
+// recordingClipboardWatcher 记录每次开关，并像真实监视的 CheckOnce 一样，在自己的互斥下
+// 回头读一次设置。设置应用路径若在持有设置存储锁时调用它，两边就会互相等待。
+type recordingClipboardWatcher struct {
+	app     *App
+	mu      sync.Mutex
+	enabled []bool
+}
+
+func (w *recordingClipboardWatcher) SetEnabled(enabled bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.app.GetSettings()
+	w.enabled = append(w.enabled, enabled)
+}
+
+func (w *recordingClipboardWatcher) Stop() {}
+
 func TestApp_ToggleClipboardSettingsNoDeadlock(t *testing.T) {
 	app, _, _ := newTestApp(t)
+	watcher := &recordingClipboardWatcher{app: app}
+	app.clipboardWatcher = watcher
 
-	// Rapidly toggle clipboard enabled back and forth
-	for i := 0; i < 10; i++ {
+	// 连续切换开关：每次都要真的到达监视，且不能在监视持锁回读设置时与保存路径互相等待。
+	var want []bool
+	for i := range 10 {
 		st := app.GetSettings()
 		st.Clipboard.Enabled = !st.Clipboard.Enabled
-		updated, err := app.UpdateSettings(st)
-		if err != nil {
-			t.Fatalf("UpdateSettings failed on iteration %d: %v", i, err)
+		want = append(want, st.Clipboard.Enabled)
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := app.UpdateSettings(st)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("UpdateSettings failed on iteration %d: %v", i, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("UpdateSettings deadlocked on iteration %d while the watcher held its lock", i)
 		}
-		if updated.Clipboard.Enabled != st.Clipboard.Enabled {
-			t.Errorf("iteration %d: expected Clipboard.Enabled %v, got %v", i, st.Clipboard.Enabled, updated.Clipboard.Enabled)
+	}
+
+	watcher.mu.Lock()
+	defer watcher.mu.Unlock()
+	if len(watcher.enabled) != len(want) {
+		t.Fatalf("expected %d watcher updates, got %d: %v", len(want), len(watcher.enabled), watcher.enabled)
+	}
+	for i := range want {
+		if watcher.enabled[i] != want[i] {
+			t.Errorf("iteration %d: watcher got enabled=%v, want %v", i, watcher.enabled[i], want[i])
 		}
 	}
 }

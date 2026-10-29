@@ -28,7 +28,7 @@
 | O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 已修复 |
 | O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 已修复 |
 | O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 已修复 |
-| O-12 | P2     | 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏  | 小—中       | 待修   |
+| O-12 | P2     | 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏  | 小—中       | 已修复 |
 | O-13 | P2     | `Select` 在 `<button>` 内嵌交互元素                     | 小          | 待修   |
 | O-14 | P2     | 11 个提交未推送；macOS/Linux 运行时未验证               | —           | 待处理 |
 
@@ -163,10 +163,14 @@
 
 ### O-12 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏
 
-- **证据**：`find frontend/src -name '*.test.tsx'` 为 0；`frontend/src/stores/settings.ts:188-209`（`mediaQuery` 与 `theme:systemChanged` 监听没有进入返回的清理函数）；`app_test.go:1013-1028`（`TestApp_ToggleClipboardSettingsNoDeadlock` 只反复保存设置；`newTestApp` 未创建 `clipboardWatcher`，`app_settings.go:126-130` 对 nil 直接跳过）。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`find frontend/src -name '*.test.tsx'` 为 0；`frontend/src/stores/settings.ts:188-209`（`mediaQuery` 与 `theme:systemChanged` 监听没有进入返回的清理函数）；`app_test.go:1013-1028`（`TestApp_ToggleClipboardSettingsNoDeadlock` 只反复保存设置；`newTestApp` 未创建 `clipboardWatcher`，`app_settings.go:126-130` 对 nil 直接跳过）。
 - **影响**：核心视图（文件信息、进度窗、设置面板）没有渲染/交互回归保护；名为“无死锁”的用例并未触及 watcher 的互斥；重复初始化会累积监听器。
-- **最小修复**：为 `FileInfoView`/`ProgressView` 增加最小渲染用例（需要 `happy-dom` + `@testing-library/react`）；`initSettingsListener` 返回合并后的清理函数；在测试里注入 watcher 假实现，让死锁用例真正执行 `SetEnabled`。
-- **验收**：新增用例在去掉清理函数或去掉 watcher 互斥时失败。
+- **实际修复**：
+  1. `initSettingsListener` 收集 `matchMedia` 的 `change`、`theme:systemChanged` 与 `SettingsUpdated` 三处监听，返回的清理函数逐个撤销；`App.tsx` 卸载时因此不再残留系统配色监听。
+  2. `App.clipboardWatcher` 从具体类型改为 `clipboardWatcher` 接口（`SetEnabled`/`Stop`），`*clipboard.Watcher` 照旧满足；死锁用例注入假实现，`SetEnabled` 在自己的互斥下回读设置（与真实 `CheckOnce` 的加锁顺序一致），并断言 10 次切换全部到达监视、每次保存都在 5 秒内返回。
+  3. 引入 `happy-dom` + `@testing-library/react`，新增 `ProgressView.test.tsx`（渲染进行中的下载、无任务时关闭窗口）、`FileInfoView.test.tsx`（队列项填入可编辑表单）与 `settingsListener.test.ts`（清理函数撤销全部监听）。
+- **验收**：`bun run test`（18 个文件 128 项）、`tsc --noEmit`、`eslint --max-warnings 0` 与 `go test ./ -run TestApp_ToggleClipboardSettingsNoDeadlock -race` 通过；去掉清理函数时 `settingsListener.test.ts` 的 `removeEventListener` 断言失败，去掉 watcher 注入时用例不再覆盖 `SetEnabled`。
 
 ### O-13 `Select` 在 `<button>` 内嵌交互元素
 
