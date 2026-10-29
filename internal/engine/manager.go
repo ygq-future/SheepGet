@@ -168,11 +168,17 @@ func nextTaskID() string {
 
 // Manager orchestrates task queues, concurrency, lifecycle, and progress reporting.
 type Manager struct {
-	mu           sync.Mutex
-	store        task.TaskStore
-	downloader   *HTTPDownloader
-	config       Config
-	activeTasks  map[string]context.CancelFunc
+	mu         sync.Mutex
+	store      task.TaskStore
+	downloader *HTTPDownloader
+	config     Config
+	// activeTasks 只计下载名额：传输结束就从这里移除，媒体处理不再占用名额。
+	activeTasks map[string]context.CancelFunc
+	// executingTasks 持有一次运行从头到尾的取消句柄（含媒体处理），
+	// 因此处理阶段仍然可以暂停；它比 activeTasks 活得久。
+	executingTasks map[string]context.CancelFunc
+	// deletedTasks 是运行期间被删除的任务的墓碑：在途的进度/收尾写库不能把它复活。
+	deletedTasks map[string]struct{}
 	taskDone     map[string]chan struct{}
 	taskSpeed    map[string]int64
 	speedSamples map[string]int64
@@ -216,15 +222,17 @@ func NewManager(store task.TaskStore, downloader *HTTPDownloader, cfg Config) *M
 	}
 
 	m := &Manager{
-		store:        store,
-		downloader:   downloader,
-		config:       cfg,
-		activeTasks:  make(map[string]context.CancelFunc),
-		taskDone:     make(map[string]chan struct{}),
-		taskSpeed:    make(map[string]int64),
-		speedSamples: make(map[string]int64),
-		probeCache:   make(map[string]probeCacheEntry),
-		probeFlight:  make(map[string]*probeFlightCall),
+		store:          store,
+		downloader:     downloader,
+		config:         cfg,
+		activeTasks:    make(map[string]context.CancelFunc),
+		executingTasks: make(map[string]context.CancelFunc),
+		deletedTasks:   make(map[string]struct{}),
+		taskDone:       make(map[string]chan struct{}),
+		taskSpeed:      make(map[string]int64),
+		speedSamples:   make(map[string]int64),
+		probeCache:     make(map[string]probeCacheEntry),
+		probeFlight:    make(map[string]*probeFlightCall),
 	}
 
 	if cfg.TempDirectory != "" {
@@ -1267,11 +1275,12 @@ func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task
 // Pause stops an active or queued task, releasing slot and scheduling next.
 func (m *Manager) Pause(ctx context.Context, id string) error {
 	m.mu.Lock()
-	cancel, active := m.activeTasks[id]
-	if active {
-		delete(m.activeTasks, id)
+	// 取消句柄属于整次运行：传输结束、进入媒体处理之后它仍然在这里。
+	if cancel, executing := m.executingTasks[id]; executing {
 		cancel()
 	}
+	// 下载名额在传输结束时就该释放；暂停也立即让出，让后面的任务进来。
+	delete(m.activeTasks, id)
 	m.mu.Unlock()
 
 	t, err := m.store.Get(ctx, id)
@@ -1391,11 +1400,29 @@ func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
 // Delete removes task from store and stops running transfer.
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	_ = m.Pause(ctx, id)
-	err := m.store.Delete(ctx, id)
-	if err == nil {
-		m.notifyDelete(id)
+
+	// 先立墓碑再删库：在途的进度/收尾写库看到墓碑就不再写，
+	// 否则被取消的协程会把刚删掉的任务重新插回去。
+	marked := false
+	m.mu.Lock()
+	if _, executing := m.executingTasks[id]; executing {
+		if _, exists := m.deletedTasks[id]; !exists {
+			m.deletedTasks[id] = struct{}{}
+			marked = true
+		}
 	}
-	return err
+	m.mu.Unlock()
+
+	if err := m.store.Delete(ctx, id); err != nil {
+		if marked {
+			m.mu.Lock()
+			delete(m.deletedTasks, id)
+			m.mu.Unlock()
+		}
+		return err
+	}
+	m.notifyDelete(id)
+	return nil
 }
 
 // List returns all tasks.
@@ -1483,25 +1510,37 @@ func (m *Manager) schedule() {
 			break
 		}
 		if t.Status == task.StatusQueued {
-			if _, running := m.activeTasks[t.ID]; !running {
-				taskCtx, cancel := context.WithCancel(context.Background())
-				m.activeTasks[t.ID] = cancel
-				availableSlots--
-
-				m.wg.Add(1)
-				done := make(chan struct{})
-				m.taskDone[t.ID] = done
-				go func(id string, finished chan struct{}) {
-					defer m.wg.Done()
-					defer func() {
-						m.mu.Lock()
-						close(finished)
-						delete(m.taskDone, id)
-						m.mu.Unlock()
-					}()
-					m.runTask(taskCtx, id)
-				}(t.ID, done)
+			// 上一次运行（可能正在收尾媒体处理）还没退出时不能再起一份，
+			// 否则同一个任务会有两个写方。
+			if _, executing := m.executingTasks[t.ID]; executing {
+				continue
 			}
+			if _, running := m.activeTasks[t.ID]; running {
+				continue
+			}
+			taskCtx, cancel := context.WithCancel(context.Background())
+			m.activeTasks[t.ID] = cancel
+			m.executingTasks[t.ID] = cancel
+			availableSlots--
+
+			m.wg.Add(1)
+			done := make(chan struct{})
+			m.taskDone[t.ID] = done
+			go func(id string, finished chan struct{}) {
+				defer m.wg.Done()
+				defer func() {
+					m.mu.Lock()
+					delete(m.executingTasks, id)
+					delete(m.deletedTasks, id)
+					close(finished)
+					delete(m.taskDone, id)
+					m.mu.Unlock()
+					// 运行期间可能有人把它重新排进队列（暂停后又继续）；
+					// 旧运行退出后再让调度器决定要不要起新的一份。
+					m.schedule()
+				}()
+				m.runTask(taskCtx, id)
+			}(t.ID, done)
 		}
 	}
 }
@@ -1519,8 +1558,9 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	// 本次运行重新开始，清掉上一轮遗留的失败阶段。
 	t.FailurePhase = task.FailurePhaseNone
 	t.UpdatedAt = time.Now()
-	_ = m.store.Save(bgCtx, t)
-	m.notify(t)
+	if m.saveIfPresent(bgCtx, t) {
+		m.notify(t)
+	}
 	baseElapsed := t.ElapsedNano
 	sink := newProgressSink(bgCtx, m, taskID, baseElapsed, taskStarted)
 
@@ -1549,7 +1589,7 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 		}
 		if transferErr == nil {
 			t.TransferDone = true
-			_ = m.store.Save(bgCtx, t)
+			m.saveIfPresent(bgCtx, t)
 		}
 	}
 
@@ -1558,11 +1598,13 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	m.schedule()
 
 	var processErr error
-	if transferErr == nil && t.IsHLS() {
+	// 已被删除的任务不再进入媒体处理：删除是终止性的，没必要再为它生成成品。
+	if transferErr == nil && t.IsHLS() && !m.taskDeleted(taskID) {
 		t.Status = task.StatusProcessing
 		t.UpdatedAt = time.Now()
-		_ = m.store.Save(bgCtx, t)
-		m.notify(t)
+		if m.saveIfPresent(bgCtx, t) {
+			m.notify(t)
+		}
 
 		processErr = m.runMediaProcessing(ctx, t)
 		if processErr == nil {
@@ -1613,22 +1655,27 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 		}
 	}
 	t.UpdatedAt = time.Now()
-	_ = m.store.Save(bgCtx, t)
-	m.notify(t)
+	saved, err := m.finalizeRun(bgCtx, t)
+	if err != nil {
+		m.log().Warn("task finalize failed", "task", taskID, "error", err)
+	}
+	if saved {
+		m.notify(t)
 
-	// 任务收尾记一行：失败了要有原因，完成了要有耗时与请求数——「是网络还是引擎」的答案就在这行。
-	logFields := []any{
-		"task", t.ID, "status", string(t.Status), "phase", string(t.FailurePhase),
-		"bytes", t.Downloaded, "total", t.TotalBytes,
-		"ms", time.Since(taskStarted).Milliseconds(), "url", logging.SafeURL(t.URL),
-	}
-	if t.ErrorMsg != "" {
-		logFields = append(logFields, "error", t.ErrorMsg)
-	}
-	if t.Status == task.StatusError {
-		m.log().Warn("task finished", logFields...)
-	} else {
-		m.log().Info("task finished", logFields...)
+		// 任务收尾记一行：失败了要有原因，完成了要有耗时与请求数——「是网络还是引擎」的答案就在这行。
+		logFields := []any{
+			"task", t.ID, "status", string(t.Status), "phase", string(t.FailurePhase),
+			"bytes", t.Downloaded, "total", t.TotalBytes,
+			"ms", time.Since(taskStarted).Milliseconds(), "url", logging.SafeURL(t.URL),
+		}
+		if t.ErrorMsg != "" {
+			logFields = append(logFields, "error", t.ErrorMsg)
+		}
+		if t.Status == task.StatusError {
+			m.log().Warn("task finished", logFields...)
+		} else {
+			m.log().Info("task finished", logFields...)
+		}
 	}
 
 	// Free slot and promote next queued task
@@ -1658,6 +1705,59 @@ func canceledOrPaused(err error, ctx context.Context) bool {
 func (m *Manager) pausedElsewhere(ctx context.Context, taskID string) bool {
 	latest, err := m.store.Get(ctx, taskID)
 	return err == nil && latest.Status == task.StatusPaused
+}
+
+// taskDeleted 报告这次运行是否已经被用户删除。删除是终止性的：
+// 在途的进度与收尾都不能再把任务写回存储或推给界面。
+func (m *Manager) taskDeleted(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, deleted := m.deletedTasks[taskID]
+	return deleted
+}
+
+// saveIfPresent 只在任务仍然存在时写库。传输/处理期间的中间状态不属于「创建」，
+// 任务被删除后不能因为一次迟到的写入复活。
+func (m *Manager) saveIfPresent(ctx context.Context, t *task.Task) bool {
+	if m.taskDeleted(t.ID) {
+		return false
+	}
+	if _, err := m.store.Get(ctx, t.ID); err != nil {
+		return false
+	}
+	if err := m.store.Save(ctx, t); err != nil {
+		m.log().Warn("task save failed", "task", t.ID, "error", err)
+		return false
+	}
+	return true
+}
+
+// finalizeRun 把一次运行的最终结果写回存储。
+//
+// 运行期间用户可能已经暂停、继续或删除这个任务：
+//   - 删除是终止性的，不写；
+//   - 暂停/继续是用户意图，本次运行的结果不能把它覆盖成完成或失败。
+func (m *Manager) finalizeRun(ctx context.Context, t *task.Task) (bool, error) {
+	if m.taskDeleted(t.ID) {
+		return false, nil
+	}
+	latest, err := m.store.Get(ctx, t.ID)
+	if errors.Is(err, task.ErrTaskNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if (latest.Status == task.StatusPaused || latest.Status == task.StatusQueued) &&
+		t.Status != latest.Status {
+		t.Status = latest.Status
+		t.FailurePhase = latest.FailurePhase
+		t.ErrorMsg = latest.ErrorMsg
+	}
+	if err := m.store.Save(ctx, t); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *Manager) finishTask(taskID string) {
@@ -1690,10 +1790,16 @@ func (m *Manager) speedTicker() {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
+	// 处理阶段已经不在 activeTasks 里，但它的取消句柄还在 executingTasks。
+	for _, cancel := range m.executingTasks {
+		cancel()
+	}
 	for _, cancel := range m.activeTasks {
 		cancel()
 	}
 	m.activeTasks = make(map[string]context.CancelFunc)
+	m.executingTasks = make(map[string]context.CancelFunc)
+	m.deletedTasks = make(map[string]struct{})
 	m.mu.Unlock()
 	m.wg.Wait()
 }

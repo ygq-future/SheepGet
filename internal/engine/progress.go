@@ -57,7 +57,7 @@ func (s *progressSink) WantsSnapshot() bool {
 
 // PublishSnapshot 落盘并广播一份自有副本。
 func (s *progressSink) PublishSnapshot(snapshot *task.Task) {
-	if snapshot == nil {
+	if snapshot == nil || s.manager.taskDeleted(s.taskID) {
 		return
 	}
 
@@ -90,8 +90,12 @@ func (s *progressSink) PublishSnapshot(snapshot *task.Task) {
 	snapshot.Speed = m.taskSpeed[s.taskID]
 	m.mu.Unlock()
 
-	if dueSave {
+	if dueSave && !m.taskDeleted(s.taskID) {
 		_ = m.store.Save(s.ctx, snapshot)
+	}
+	// 删除是终止性的：在途的快照不能把已经删掉的任务重新推回界面。
+	if m.taskDeleted(s.taskID) {
+		return
 	}
 	// 这份快照从传输侧交出来之后就没有第二个写方了，可以直接发布，不必再拷一次。
 	m.notifyPayload(snapshot)
