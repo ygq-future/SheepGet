@@ -390,9 +390,12 @@ func (m *Manager) runHLSTransfer(ctx context.Context, t *task.Task, sink Transfe
 		pl := stream.playlist
 		base := offset
 		offset += len(pl.Segments)
-		part, dlErr := f.DownloadWithPrefix(ctx, pl, dir, stream.prefix, concurrency, func(downloaded, _ int64, completed, _ int, done []bool) {
-			// 最多个把一帧的差异，不会出现非法状态；切片头本身不再替换。
-			copy(segmentDone[base:base+len(done)], done)
+		part, dlErr := f.DownloadWithPrefix(ctx, pl, dir, stream.prefix, concurrency, func(downloaded, _ int64, completed, _ int, completedIndices []int) {
+			// 回调只带自上次以来的增量，并进任务位图是 O(1) 的；每个分片都复制整张位图的话，
+			// 数千分片的清单会产生平方级的分配。切片头本身不再替换。
+			for _, idx := range completedIndices {
+				segmentDone[base+idx] = true
+			}
 			t.SegmentsTotal = totalSegments
 			t.SegmentsDone = segmentsDone + completed
 			if downloaded > reported {

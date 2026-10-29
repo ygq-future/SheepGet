@@ -272,10 +272,12 @@ func (in *Inputs) Paths(dir string) (initPaths, segmentPaths []string) {
 	return initPaths, segmentPaths
 }
 
-// ProgressFunc 汇报分片下载进度。Total 为 -1 表示总大小未知。done 是整条清单的分片
-// 完成位图快照（索引即分片序号；调用方可以改写自己的副本，不会影响下载过程），
-// 续传时一开始就带出磁盘上已有的分片，调用方靠它把「分段并发」画进界面。
-type ProgressFunc func(downloaded, total int64, completed, totalCount int, done []bool)
+// ProgressFunc 汇报分片下载进度。total 为 -1 表示总大小未知。
+//
+// completedIndices 是自上一次回调以来新完成的分片序号（续传时第一次回调会一次带出磁盘上已有的
+// 分片）。它只在本次回调内有效，调用方要留存就自己复制：这样每个分片完成都不必复制整张位图，
+// 分片数上千时进度汇报仍然是 O(1)。
+type ProgressFunc func(downloaded, total int64, completed, totalCount int, completedIndices []int)
 
 // FallbackTarget 描述主客户端失效时的一个有序备用传输通道（下一个自定义代理或最终直连）。
 type FallbackTarget struct {
@@ -482,6 +484,38 @@ func (f *Fetcher) Download(ctx context.Context, pl *MediaPlaylist, dir string, c
 	return f.DownloadWithPrefix(ctx, pl, dir, "", concurrency, onProgress)
 }
 
+// segmentProgress 是分片下载的进度记账：完成位图、已下载字节、完成计数，以及「自上次回调
+// 以来」完成的分片序号。
+//
+// 增量而不是整张位图是这条路径保持 O(1) 的关键：每个分片完成都复制一遍位图，会让数千分片的
+// 清单在进度汇报上付出平方级的分配。需要留存的调用方（任务快照）按自己的节流复制一次。
+type segmentProgress struct {
+	done        []bool
+	downloaded  int64
+	completed   int
+	sinceReport []int
+}
+
+func newSegmentProgress(segments int) *segmentProgress {
+	return &segmentProgress{
+		done:        make([]bool, segments),
+		sinceReport: make([]int, 0, min(segments, 64)),
+	}
+}
+
+// markComplete 记下一个分片完成。续传时磁盘上已有的分片同样走这里，只是大小为文件大小。
+func (p *segmentProgress) markComplete(index int, size int64) {
+	p.done[index] = true
+	p.downloaded += size
+	p.completed++
+	p.sinceReport = append(p.sinceReport, index)
+}
+
+// delta 返回自上次 resetDelta 以来完成的分片序号。调用方只能在本次回调内读它。
+func (p *segmentProgress) delta() []int { return p.sinceReport }
+
+func (p *segmentProgress) resetDelta() { p.sinceReport = p.sinceReport[:0] }
+
 // DownloadWithPrefix 支持带文件名前缀下载分片（如音视频分离时使用 "video" / "audio" 前缀区分落盘文件）。
 func (f *Fetcher) DownloadWithPrefix(ctx context.Context, pl *MediaPlaylist, dir string, prefix string, concurrency int, onProgress ProgressFunc) (*Inputs, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -503,22 +537,17 @@ func (f *Fetcher) DownloadWithPrefix(ctx context.Context, pl *MediaPlaylist, dir
 
 	// 已完成的分片（续传时已在磁盘上）直接计入进度起点。
 	var mu sync.Mutex
-	downloaded := int64(0)
-	completed := 0
-	doneFlags := make([]bool, len(pl.Segments))
+	progress := newSegmentProgress(len(pl.Segments))
 	for i, name := range inputs.Segments {
 		if info, statErr := os.Stat(filepath.Join(dir, name)); statErr == nil {
-			downloaded += info.Size()
-			completed++
-			doneFlags[i] = true
+			progress.markComplete(i, info.Size())
 		}
 	}
 	report := func() {
 		if onProgress != nil {
-			snapshot := make([]bool, len(doneFlags))
-			copy(snapshot, doneFlags)
-			onProgress(downloaded, total, completed, len(pl.Segments), snapshot)
+			onProgress(progress.downloaded, total, progress.completed, len(pl.Segments), progress.delta())
 		}
+		progress.resetDelta()
 	}
 	report()
 
@@ -529,7 +558,7 @@ func (f *Fetcher) DownloadWithPrefix(ctx context.Context, pl *MediaPlaylist, dir
 	}
 	var pending []pendingSeg
 	for i, seg := range pl.Segments {
-		if doneFlags[i] {
+		if progress.done[i] {
 			continue
 		}
 		pending = append(pending, pendingSeg{
@@ -593,9 +622,7 @@ func (f *Fetcher) DownloadWithPrefix(ctx context.Context, pl *MediaPlaylist, dir
 					mu.Unlock()
 					return
 				}
-				downloaded += written
-				doneFlags[item.index] = true
-				completed++
+				progress.markComplete(item.index, written)
 				report()
 				mu.Unlock()
 			}

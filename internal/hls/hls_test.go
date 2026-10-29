@@ -31,7 +31,7 @@ func mustParse(t *testing.T, base, body string) *hls.ParseResult {
 	return parsed
 }
 
-func mustURL(t *testing.T, raw string) *url.URL {
+func mustURL(t testing.TB, raw string) *url.URL {
 	t.Helper()
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -294,7 +294,7 @@ type fakeOrigin struct {
 	failTimes map[string]int
 }
 
-func newFakeOrigin(t *testing.T) *fakeOrigin {
+func newFakeOrigin(t testing.TB) *fakeOrigin {
 	t.Helper()
 	o := &fakeOrigin{hits: map[string]int{}, failTimes: map[string]int{}}
 	o.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -446,13 +446,17 @@ func TestDownloadReportsProgress(t *testing.T) {
 	var mu sync.Mutex
 	var lastDownloaded int64
 	var lastCompleted, lastTotal int
-	var lastDone []bool
+	done := make([]bool, 2)
+	maxDelta := 0
 	_, err := newTestFetcher().Download(context.Background(), pl, t.TempDir(), 2,
-		func(downloaded, _ int64, completed, totalCount int, done []bool) {
+		func(downloaded, _ int64, completed, totalCount int, completedIndices []int) {
 			mu.Lock()
 			defer mu.Unlock()
 			lastDownloaded, lastCompleted, lastTotal = downloaded, completed, totalCount
-			lastDone = done
+			maxDelta = max(maxDelta, len(completedIndices))
+			for _, idx := range completedIndices {
+				done[idx] = true
+			}
 		})
 	if err != nil {
 		t.Fatalf("下载失败: %v", err)
@@ -466,8 +470,66 @@ func TestDownloadReportsProgress(t *testing.T) {
 	if lastDownloaded <= 0 {
 		t.Fatalf("进度字节数不对: %d", lastDownloaded)
 	}
-	if len(lastDone) != 2 || !lastDone[0] || !lastDone[1] {
-		t.Fatalf("分片完成位图不对: %v", lastDone)
+	if len(done) != 2 || !done[0] || !done[1] {
+		t.Fatalf("增量并起来没有覆盖全部分片: %v", done)
+	}
+	// 每次回调只带自上次以来的增量：整张位图复制会让分片数上千时变成平方级分配。
+	if maxDelta > 1 {
+		t.Fatalf("单次回调带了 %d 个分片，期望每次只带一个增量", maxDelta)
+	}
+}
+
+// TestDownloadProgressDeltasCoverEverySegmentOnce 固定增量的完整性：续传时磁盘上已有的分片
+// 在第一次回调里一次带出，之后每个分片恰好出现一次，不多也不少。
+func TestDownloadProgressDeltasCoverEverySegmentOnce(t *testing.T) {
+	origin := newFakeOrigin(t)
+	names := make([]string, 8)
+	for i := range names {
+		names[i] = fmt.Sprintf("seg%d.ts", i)
+	}
+	pl := parseBody(t, origin.url("/media.m3u8"), origin.mediaPlaylist(names...))
+
+	dir := t.TempDir()
+	// 续传起点：第 0、4 个分片已经在磁盘上。
+	for _, idx := range []int{0, 4} {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("seg_%05d.ts", idx)), []byte("done"), 0o644); err != nil {
+			t.Fatalf("无法预置分片: %v", err)
+		}
+	}
+
+	var mu sync.Mutex
+	seen := make(map[int]int, len(names))
+	var batches []int
+	_, err := newTestFetcher().Download(context.Background(), pl, dir, 3,
+		func(_, _ int64, _, _ int, completedIndices []int) {
+			mu.Lock()
+			defer mu.Unlock()
+			batches = append(batches, len(completedIndices))
+			for _, idx := range completedIndices {
+				seen[idx]++
+			}
+		})
+	if err != nil {
+		t.Fatalf("下载失败: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for idx := range names {
+		if seen[idx] != 1 {
+			t.Errorf("分片 %d 出现在增量里 %d 次，期望恰好一次", idx, seen[idx])
+		}
+	}
+	if len(batches) == 0 {
+		t.Fatal("没有任何进度回调")
+	}
+	if batches[0] != 2 {
+		t.Fatalf("第一次回调应一次带出 2 个续传分片，实际 %d", batches[0])
+	}
+	for i, n := range batches[1:] {
+		if n != 1 {
+			t.Errorf("第 %d 次回调带了 %d 个增量，期望每次一个", i+1, n)
+		}
 	}
 }
 

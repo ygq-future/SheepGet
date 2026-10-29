@@ -24,7 +24,7 @@
 | O-05 | P1     | 分片热路径在 `coord.mu` 内写盘、克隆任务并落库          | 小—中       | 已修复 |
 | O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 已修复 |
 | O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 已修复 |
-| O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 待修   |
+| O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 已修复 |
 | O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 待修   |
 | O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 待修   |
 | O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 待修   |
@@ -116,10 +116,12 @@
 
 ### O-08 HLS 每个分片复制整份进度位图
 
-- **证据**：`internal/hls/download.go:518-520`（每个分片完成都 `make([]bool, len(doneFlags))` + `copy`）；`internal/engine/hls.go:393-408`（回调再复制进任务位图）。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`internal/hls/download.go` 的 `report` 在每个分片完成时 `make([]bool, len(doneFlags))` + `copy`；`internal/engine/hls.go` 的回调再 `copy` 一次进任务位图。
 - **影响**：数千分片的清单产生 O(N²) 布尔复制与大量短命分配，GC 压力随分片数平方增长。
-- **最小修复**：位图快照按发布节流（约 60ms）生成；中间完成只上报计数与字节数。
-- **验收**：用现有 HLS 用例断言进度回调仍覆盖全部分片；新增一个分片数较大的基准，观察分配次数下降。
+- **实际修复**：`ProgressFunc` 的最后一个参数从「整张位图」改为「自上次回调以来完成的分片序号」。进度记账收敛为 `hls.segmentProgress`（增量切片预留容量、报告后清零复用），每个分片完成只做 O(1) 追加；引擎回调按序号并入任务位图，位图只在任务快照（60ms 节流）时复制一次。续传时磁盘上已有的分片仍在第一次回调里一次带出。
+- **验收**：`TestDownloadReportsProgress`（单次回调最多带一个增量）、`TestDownloadProgressDeltasCoverEverySegmentOnce`（每个分片恰好出现一次，续传起点一次带出 2 个）、`TestSegmentProgressPerSegmentWorkDoesNotScaleWithSegmentCount`（8 与 4096 分片下每分片 0 次分配；恢复整份复制后失败）、`TestRunHLSTransferMarksEverySegmentDone`（引擎位图覆盖全部分片；去掉增量应用后失败）。
+- **基准说明**：`BenchmarkDownloadProgressReporting`（1024 分片，`-bench` 手动运行）保留作观察工具。端到端噪声底（±4k allocs/轮，来自 HTTP 与文件路径）大于旧实现每轮约 1k 次位图复制的增量，因此回归保护由上面的分配用例承担，不依赖基准数字。
 
 ### O-09 进度事件触发全列表排序与整树重渲染
 
