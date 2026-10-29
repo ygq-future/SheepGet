@@ -25,7 +25,7 @@
 | O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 已修复 |
 | O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 已修复 |
 | O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 已修复 |
-| O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 待修   |
+| O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 已修复 |
 | O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 待修   |
 | O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 待修   |
 | O-12 | P2     | 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏  | 小—中       | 待修   |
@@ -125,10 +125,15 @@
 
 ### O-09 进度事件触发全列表排序与整树重渲染
 
-- **证据**：`frontend/src/App.tsx:59-72`（比较器内 `new Date(...).getTime()`）；`:169-181`（每个 `TaskUpdated` 都 `sortTasks`）；`:880-896`（`TaskItem` 未 memo，回调为内联箭头函数）；`frontend/src/views/FileInfoView.tsx:707-720` 与 `frontend/src/views/ProgressView.tsx:152-160`（`ResizeObserver` 每次高度变化都直接调用 Wails `SetFileInfoWindowHeight` / `SetProgressWindowHeight`）；`app_windowing.go:362-377`（后端直接 `SetSize`）。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`frontend/src/App.tsx`（比较器内 `new Date(...).getTime()`；每个 `TaskUpdated` 都 `sortTasks`；`TaskItem` 未 memo，回调为内联箭头函数）；`frontend/src/views/FileInfoView.tsx` 与 `ProgressView.tsx`（`ResizeObserver` 每次高度变化都直接调用 Wails `SetFileInfoWindowHeight` / `SetProgressWindowHeight`）；`app_windowing.go`（后端直接 `SetSize`）。
 - **影响**：多任务下载时，后端每个任务每 60ms 一条进度事件，前端每次都做 O(N log N) 日期解析、重建列表并重排整棵树；窗口内动画期间 `ResizeObserver` 逐帧触发原生窗口 resize，造成卡顿。
-- **最小修复**：`TaskItem` 用 `React.memo`，列表与筛选 `useMemo`，操作回调用 `useCallback`；排序键预先解析，或仅在 `updatedAt/createdAt` 变化时重排；窗口高度 IPC 用 `requestAnimationFrame`/尾随防抖（约 60ms）。
-- **验收**：构造 50+ 任务、多个进行中的场景，观察重渲染次数与窗口动画流畅度；现有前端用例不回归。
+- **实际修复**：
+  1. 列表顺序规则收进 `frontend/src/lib/taskList.ts`：`sortTasks` 先算排序键再排序（每条任务只解析一次时间）；`applyTaskUpdate` 在排序键没变时只替换那一项、不重排——进度快照不改 `UpdatedAt`，因此绝大多数事件不再触发排序，未受影响的任务项仍是同一批对象。
+  2. `TaskItem` 改为 `React.memo`；App 传给它的回调全部用 `useCallback` 固定（Shift 连选需要的列表顺序经 ref 跟随，回调不再随每次进度事件换新引用）；`filteredTasks` 用 `useMemo`；任务控制回调改为非 async + `.catch`，与 `TaskItem` 的 void 回调契约一致。
+  3. 窗口高度 IPC 走 `createResizeReporter`：每 60ms 合并一次并保证最后一个高度送达，两个视图的 `ResizeObserver` 不再逐帧调用原生窗口 resize。
+- **验收**：新增 `taskList.test.ts`（倒序、回退创建时间、同时间按 id；排序键不变时其余项保持同一对象引用）与 `resizeReporter.test.ts`（间隔内合并、只调度一次定时器、尾随送达、dispose 丢弃）；`tsc --noEmit`、`eslint --max-warnings 0`、`vite build` 与 `vitest`（15 个文件 124 项）通过。
+- **未验证**：重渲染次数与动画流畅度需要组件测试环境（`happy-dom` + `@testing-library/react`，见 O-12），本次没有在实机上量化。
 
 ### O-10 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次
 

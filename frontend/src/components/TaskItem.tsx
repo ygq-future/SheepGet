@@ -1,4 +1,4 @@
-import { useRef, type MouseEvent } from 'react';
+import { memo, useRef, type MouseEvent } from 'react';
 import { motion } from 'motion/react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
 import {
@@ -32,7 +32,13 @@ interface TaskItemProps {
   onRetry?: (task: task.Task) => void;
 }
 
-export function TaskItem({
+/**
+ * 列表项只在自身任务对象、选中态或回调变化时重渲染。
+ *
+ * 进度事件每秒十几条，后端每条的载荷只涉及一个任务；没有这层 memo，一次进度更新就会重建
+ * 整列任务项。回调由 App 用 useCallback 固定，因此稳定的 props 不会让这里失效。
+ */
+export const TaskItem = memo(function TaskItem({
   task: t,
   selected = false,
   onToggleSelect,
@@ -218,4 +224,4 @@ export function TaskItem({
       </div>
     </motion.div>
   );
-}
+});

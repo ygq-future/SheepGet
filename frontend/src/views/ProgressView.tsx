@@ -38,6 +38,7 @@ import { ToastContainer, showToast } from '../components/ui/Toast';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed, formatTimeHMS } from '../lib/format';
 import { progressWindowHeightFor } from '../lib/windowSize';
+import { createResizeReporter } from '../lib/resizeReporter';
 import {
   calculateChunkProgress,
   calculateChunkDividers,
@@ -149,6 +150,8 @@ export function ProgressView() {
     if (!el) return;
 
     let lastHeight = 0;
+    // 高度在动画期间逐帧变化：合并成每 60ms 一次原生窗口 resize，最后一个高度仍会送达。
+    const reporter = createResizeReporter((height) => void SetProgressWindowHeight(height));
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const contentHeight = Math.ceil(
@@ -157,13 +160,16 @@ export function ProgressView() {
         const targetHeight = progressWindowHeightFor(contentHeight);
         if (Math.abs(targetHeight - lastHeight) >= 2) {
           lastHeight = targetHeight;
-          void SetProgressWindowHeight(targetHeight);
+          reporter.push(targetHeight);
         }
       }
     });
 
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      reporter.dispose();
+    };
   }, []);
 
   // Initial load and live event subscription

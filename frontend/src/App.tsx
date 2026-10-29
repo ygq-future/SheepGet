@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import * as task from '../bindings/sheep-get/internal/task/models';
 import {
@@ -38,6 +38,7 @@ import { useAppUpdateStore, initAppUpdateListener } from './stores/appUpdate';
 import { ToastContainer, showToast } from './components/ui/Toast';
 import { Select } from './components/ui/Select';
 import { filterTasks, type TaskFilterType } from './lib/taskFilter';
+import { applyTaskUpdate, sortTasks } from './lib/taskList';
 import { TitleBarDragRegion, WindowControls } from './native/window-controls';
 import { Button } from './components/ui/Button';
 import {
@@ -51,20 +52,6 @@ const SettingsPanel = lazy(() =>
 
 function nonNullTasks(list: (task.Task | null)[] | null | undefined): task.Task[] {
   return (list || []).filter((t): t is task.Task => t !== null);
-}
-
-// 按「最后连接时间」倒序：续传或重试历史任务后它同样要浮到最前，
-// 只按创建时间排序会让刚恢复的任务留在列表深处。列表右侧展示的也是这个时间。
-// 老记录可能没有 updatedAt，退回创建时间；两者相同再按 id 稳定排序。
-function sortTasks(taskList: task.Task[]): task.Task[] {
-  return [...taskList].sort((a, b) => {
-    const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
-    const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
-    if (timeA !== timeB) {
-      return timeB - timeA;
-    }
-    return b.id.localeCompare(a.id);
-  });
 }
 
 interface ServerStatusState {
@@ -169,17 +156,7 @@ export function App() {
     const onUpdated = (event: unknown) => {
       const updated = unwrapEventData<task.Task>(event);
       if (!updated || !updated.id) return;
-      setTasks((prev) => {
-        const idx = prev.findIndex((t) => t.id === updated.id);
-        let next: task.Task[];
-        if (idx !== -1) {
-          next = [...prev];
-          next[idx] = updated;
-        } else {
-          next = [updated, ...prev];
-        }
-        return sortTasks(next);
-      });
+      setTasks((prev) => applyTaskUpdate(prev, updated));
     };
 
     const onDeleted = (event: unknown) => {
@@ -220,12 +197,16 @@ export function App() {
     return opts;
   }, [settings?.download?.customCategories, settings?.download?.builtinCategories]);
 
-  const filteredTasks = filter === 'settings' ? [] : filterTasks(tasks, filter, selectedCategory);
+  const filteredTasks = useMemo(
+    () => (filter === 'settings' ? [] : filterTasks(tasks, filter, selectedCategory)),
+    [tasks, filter, selectedCategory],
+  );
 
   // Handle single task delete request
-  const handleDeleteSingleRequest = (target: task.Task) => {
+  // 传给任务项的回调必须是稳定引用，否则每个进度事件都会让整列任务重渲染。
+  const handleDeleteSingleRequest = useCallback((target: task.Task) => {
     setDeletingTask(target);
-  };
+  }, []);
 
   const handleConfirmSingleDelete = async (deleteDiskFile: boolean) => {
     if (!deletingTask) return;
@@ -250,112 +231,112 @@ export function App() {
       showToast('删除任务失败', 'error');
     }
   };
-  const handleResumeTask = async (t: task.Task) => {
-    try {
-      await executeTaskControlAction(t, 'resume', {
-        resumeTask: ResumeTask,
-        pauseTask: PauseTask,
-        retryTask: RetryTask,
-        retryProcessingTask: RetryProcessingTask,
-        showProgressWindow: ShowProgressWindow,
-      });
-    } catch (err) {
+  const handleResumeTask = useCallback((t: task.Task) => {
+    executeTaskControlAction(t, 'resume', {
+      resumeTask: ResumeTask,
+      pauseTask: PauseTask,
+      retryTask: RetryTask,
+      retryProcessingTask: RetryProcessingTask,
+      showProgressWindow: ShowProgressWindow,
+    }).catch((err: unknown) => {
       console.error('Failed to resume task:', err);
       showToast('继续下载失败', 'error');
-    }
-  };
+    });
+  }, []);
 
-  const handlePauseTask = async (t: task.Task) => {
-    try {
-      await executeTaskControlAction(t, 'pause', {
-        resumeTask: ResumeTask,
-        pauseTask: PauseTask,
-        retryTask: RetryTask,
-        retryProcessingTask: RetryProcessingTask,
-        showProgressWindow: ShowProgressWindow,
-      });
-    } catch (err) {
+  const handlePauseTask = useCallback((t: task.Task) => {
+    executeTaskControlAction(t, 'pause', {
+      resumeTask: ResumeTask,
+      pauseTask: PauseTask,
+      retryTask: RetryTask,
+      retryProcessingTask: RetryProcessingTask,
+      showProgressWindow: ShowProgressWindow,
+    }).catch((err: unknown) => {
       console.error('Failed to pause task:', err);
       showToast('暂停任务失败', 'error');
-    }
-  };
+    });
+  }, []);
 
-  const handleRetryTask = async (t: task.Task) => {
-    try {
-      await executeTaskControlAction(t, 'retry', {
-        resumeTask: ResumeTask,
-        pauseTask: PauseTask,
-        retryTask: RetryTask,
-        retryProcessingTask: RetryProcessingTask,
-        showProgressWindow: ShowProgressWindow,
-      });
-    } catch (err) {
+  const handleRetryTask = useCallback((t: task.Task) => {
+    executeTaskControlAction(t, 'retry', {
+      resumeTask: ResumeTask,
+      pauseTask: PauseTask,
+      retryTask: RetryTask,
+      retryProcessingTask: RetryProcessingTask,
+      showProgressWindow: ShowProgressWindow,
+    }).catch((err: unknown) => {
       console.error('Failed to retry task:', err);
       showToast('重试任务失败', 'error');
-    }
-  };
+    });
+  }, []);
+
+  // 列表顺序在事件回调里要用（Shift 连选），但它每次进度事件后都会换一个新数组。
+  // 用 ref 跟随最新顺序，回调本身只随选择状态变化：一次进度更新不再让整列任务项重渲染。
+  const orderedTaskIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    orderedTaskIdsRef.current = filteredTasks.map((t) => t.id);
+  }, [filteredTasks]);
 
   // Selection model: Exclusive Single Selection by default, Shift for range, Ctrl/Cmd for toggle
-  const handleToggleSelect = (
-    id: string,
-    modifiers: { ctrlKey: boolean; shiftKey: boolean; forceSelect?: boolean },
-  ) => {
-    // 0. Force Select (e.g. on double-click open progress)
-    if (modifiers.forceSelect) {
+  const handleToggleSelect = useCallback(
+    (id: string, modifiers: { ctrlKey: boolean; shiftKey: boolean; forceSelect?: boolean }) => {
+      const orderedIds = orderedTaskIdsRef.current;
+      // 0. Force Select (e.g. on double-click open progress)
+      if (modifiers.forceSelect) {
+        const next = new Set([id]);
+        setSelectedTaskIds(next);
+        setSelectionAnchor(id);
+        setBaseSelectedIds(next);
+        return;
+      }
+      // 1. Shift key pressed: continuous range selection based on anchor
+      if (modifiers.shiftKey) {
+        const anchorId = selectionAnchor || id;
+        const anchorIdx = orderedIds.indexOf(anchorId);
+        const currIdx = orderedIds.indexOf(id);
+        if (anchorIdx !== -1 && currIdx !== -1) {
+          const start = Math.min(anchorIdx, currIdx);
+          const end = Math.max(anchorIdx, currIdx);
+          const rangeIds = new Set(orderedIds.slice(start, end + 1));
+          const next = new Set([...baseSelectedIds, ...rangeIds]);
+          setSelectedTaskIds(next);
+          if (!selectionAnchor) {
+            setSelectionAnchor(id);
+          }
+          return;
+        }
+      }
+
+      // 2. Ctrl / Cmd key pressed: non-continuous discrete toggle selection
+      if (modifiers.ctrlKey) {
+        const next = new Set(selectedTaskIds);
+        if (next.has(id)) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+        setSelectedTaskIds(next);
+        setSelectionAnchor(id);
+        setBaseSelectedIds(next);
+        return;
+      }
+
+      // 3. Normal single click: if already exclusively selected, deselect it; otherwise select it exclusively
+      if (selectedTaskIds.size === 1 && selectedTaskIds.has(id)) {
+        setSelectedTaskIds(new Set());
+        setSelectionAnchor(null);
+        setBaseSelectedIds(new Set());
+        return;
+      }
+
       const next = new Set([id]);
       setSelectedTaskIds(next);
       setSelectionAnchor(id);
       setBaseSelectedIds(next);
-      return;
-    }
-    // 1. Shift key pressed: continuous range selection based on anchor
-    if (modifiers.shiftKey) {
-      const anchorId = selectionAnchor || id;
-      const anchorIdx = filteredTasks.findIndex((t) => t.id === anchorId);
-      const currIdx = filteredTasks.findIndex((t) => t.id === id);
-      if (anchorIdx !== -1 && currIdx !== -1) {
-        const start = Math.min(anchorIdx, currIdx);
-        const end = Math.max(anchorIdx, currIdx);
-        const rangeIds = new Set<string>();
-        for (let i = start; i <= end; i++) {
-          rangeIds.add(filteredTasks[i].id);
-        }
-        const next = new Set([...baseSelectedIds, ...rangeIds]);
-        setSelectedTaskIds(next);
-        if (!selectionAnchor) {
-          setSelectionAnchor(id);
-        }
-        return;
-      }
-    }
+    },
+    [selectionAnchor, baseSelectedIds, selectedTaskIds],
+  );
 
-    // 2. Ctrl / Cmd key pressed: non-continuous discrete toggle selection
-    if (modifiers.ctrlKey) {
-      const next = new Set(selectedTaskIds);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      setSelectedTaskIds(next);
-      setSelectionAnchor(id);
-      setBaseSelectedIds(next);
-      return;
-    }
-
-    // 3. Normal single click: if already exclusively selected, deselect it; otherwise select it exclusively
-    if (selectedTaskIds.size === 1 && selectedTaskIds.has(id)) {
-      setSelectedTaskIds(new Set());
-      setSelectionAnchor(null);
-      setBaseSelectedIds(new Set());
-      return;
-    }
-
-    const next = new Set([id]);
-    setSelectedTaskIds(next);
-    setSelectionAnchor(id);
-    setBaseSelectedIds(next);
-  };
   const handleToggleSelectAll = () => {
     if (selectedTaskIds.size > 0) {
       setSelectedTaskIds(new Set());
@@ -369,11 +350,11 @@ export function App() {
     }
   };
 
-  const handleCancelSelection = () => {
+  const handleCancelSelection = useCallback(() => {
     setSelectedTaskIds(new Set());
     setSelectionAnchor(null);
     setBaseSelectedIds(new Set());
-  };
+  }, []);
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && selectedTaskIds.size > 0 && !isBatchDeleting && !deletingTask) {
@@ -382,7 +363,7 @@ export function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedTaskIds.size, isBatchDeleting, deletingTask]);
+  }, [selectedTaskIds.size, isBatchDeleting, deletingTask, handleCancelSelection]);
 
   const handleSelectFilter = (nextFilter: TaskFilterType | 'settings') => {
     setFilter(nextFilter);
@@ -437,7 +418,7 @@ export function App() {
     }
   };
 
-  const handleOpenFile = (filePath: string) => {
+  const handleOpenFile = useCallback((filePath: string) => {
     void (async () => {
       try {
         await OpenFile(filePath);
@@ -446,13 +427,17 @@ export function App() {
         showToast(msg || '文件不存在或已被移动/删除', 'error', '无法打开文件');
       }
     })();
-  };
+  }, []);
 
-  const handleOpenFolder = (folderPath: string) => {
+  const handleOpenFolder = useCallback((folderPath: string) => {
     void (async () => {
       await OpenFolder(folderPath);
     })();
-  };
+  }, []);
+
+  const handleShowProgress = useCallback((id: string) => {
+    void ShowProgressWindow(id);
+  }, []);
 
   const handleNewDownload = async () => {
     try {
@@ -885,10 +870,10 @@ export function App() {
                     onDelete={handleDeleteSingleRequest}
                     onOpenFile={handleOpenFile}
                     onOpenFolder={handleOpenFolder}
-                    onShowProgress={(id) => void ShowProgressWindow(id)}
-                    onResume={(task) => void handleResumeTask(task)}
-                    onPause={(task) => void handlePauseTask(task)}
-                    onRetry={(task) => void handleRetryTask(task)}
+                    onShowProgress={handleShowProgress}
+                    onResume={handleResumeTask}
+                    onPause={handlePauseTask}
+                    onRetry={handleRetryTask}
                   />
                 ))}
               </AnimatePresence>

@@ -44,6 +44,7 @@ import type * as windowModels from '../../bindings/sheep-get/internal/window/mod
 import * as duplicateModels from '../../bindings/sheep-get/internal/duplicate/models';
 import { Events } from '@wailsio/runtime';
 import { unwrapEventData } from '../lib/utils';
+import { createResizeReporter } from '../lib/resizeReporter';
 import { Event } from '../lib/protocol.generated';
 import { useSettingsStore } from '../stores/settings';
 import { useFileInfoDraftStore } from '../stores/fileInfoDraft';
@@ -704,18 +705,23 @@ export function FileInfoView() {
     if (!el) return;
 
     let lastHeight = 0;
+    // 高度在动画期间逐帧变化：合并成每 60ms 一次原生窗口 resize，最后一个高度仍会送达。
+    const reporter = createResizeReporter((height) => void SetFileInfoWindowHeight(height));
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const height = Math.ceil(entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
         if (height > 0 && Math.abs(height - lastHeight) >= 2) {
           lastHeight = height;
-          void SetFileInfoWindowHeight(height);
+          reporter.push(height);
         }
       }
     });
 
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      reporter.dispose();
+    };
   }, []);
 
   return (
