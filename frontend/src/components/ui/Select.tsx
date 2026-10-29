@@ -43,68 +43,62 @@ export function Select<T extends string | number>({
     };
   }, [open]);
 
-  const handleClear = (e: React.MouseEvent | React.PointerEvent | React.KeyboardEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
+  const handleClear = () => {
     onChange('' as T);
   };
 
   return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          data-select-trigger
-          disabled={disabled}
-          className={`flex w-full items-center justify-between text-xs font-medium text-[var(--text-primary)] transition-all duration-150 focus:outline-hidden disabled:pointer-events-none disabled:opacity-50 ${
-            ghost
-              ? `rounded-lg border px-2 ${
-                  open
-                    ? 'border-[var(--accent)] bg-black/5 ring-1 ring-[var(--border-focus)]/40 dark:bg-white/10'
-                    : 'border-[var(--border-subtle)] bg-transparent hover:border-[var(--border-hover)] hover:bg-black/5 dark:hover:bg-white/10'
-                }`
-              : `rounded-md border px-2.5 shadow-xs ${
-                  open
-                    ? 'border-[var(--accent)] bg-[var(--bg-surface-hover)] ring-1 ring-[var(--border-focus)]/40'
-                    : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)]'
-                }`
-          } ${className || 'h-8 py-1.5'}`}
-        >
-          <span
-            className={`truncate ${
-              selectedOption ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
-            }`}
+      {/* 清空控件必须是 trigger 的兄弟而不是子节点：<button> 里不能再放可聚焦控件。 */}
+      <div className="relative flex w-full min-w-0">
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            data-select-trigger
+            disabled={disabled}
+            className={`flex w-full min-w-0 items-center justify-between text-xs font-medium text-[var(--text-primary)] transition-all duration-150 focus:outline-hidden disabled:pointer-events-none disabled:opacity-50 ${
+              ghost
+                ? `rounded-lg border px-2 ${
+                    open
+                      ? 'border-[var(--accent)] bg-black/5 ring-1 ring-[var(--border-focus)]/40 dark:bg-white/10'
+                      : 'border-[var(--border-subtle)] bg-transparent hover:border-[var(--border-hover)] hover:bg-black/5 dark:hover:bg-white/10'
+                  }`
+                : `rounded-md border px-2.5 shadow-xs ${
+                    open
+                      ? 'border-[var(--accent)] bg-[var(--bg-surface-hover)] ring-1 ring-[var(--border-focus)]/40'
+                      : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--border-hover)] hover:bg-[var(--bg-surface-hover)]'
+                  }`
+            } ${className || 'h-8 py-1.5'}`}
           >
-            {selectedOption ? selectedOption.label : placeholder}
-          </span>
-          {showClear ? (
             <span
-              role="button"
-              tabIndex={0}
-              title="清空"
-              onClick={handleClear}
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  handleClear(e);
-                }
-              }}
-              className="flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)]"
-            >
-              <X className="h-3 w-3" />
-            </span>
-          ) : (
-            <ChevronDown
-              className={`h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-200 ${
-                open ? 'rotate-180 text-[var(--accent)]' : ''
+              className={`truncate ${showClear ? 'pr-5' : ''} ${
+                selectedOption ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
               }`}
-            />
-          )}
-        </button>
-      </DropdownMenu.Trigger>
+            >
+              {selectedOption ? selectedOption.label : placeholder}
+            </span>
+            {!showClear && (
+              <ChevronDown
+                className={`h-3.5 w-3.5 shrink-0 text-[var(--text-muted)] transition-transform duration-200 ${
+                  open ? 'rotate-180 text-[var(--accent)]' : ''
+                }`}
+              />
+            )}
+          </button>
+        </DropdownMenu.Trigger>
+        {showClear && (
+          <button
+            type="button"
+            title="清空"
+            aria-label="清空"
+            disabled={disabled}
+            onClick={handleClear}
+            className={`absolute top-1/2 ${ghost ? 'right-2' : 'right-2.5'} flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-sm text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)] disabled:pointer-events-none disabled:opacity-50`}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
 
       <DropdownMenu.Portal>
         <DropdownMenu.Content

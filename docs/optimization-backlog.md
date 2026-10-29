@@ -29,7 +29,7 @@
 | O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 已修复 |
 | O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 已修复 |
 | O-12 | P2     | 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏  | 小—中       | 已修复 |
-| O-13 | P2     | `Select` 在 `<button>` 内嵌交互元素                     | 小          | 待修   |
+| O-13 | P2     | `Select` 在 `<button>` 内嵌交互元素                     | 小          | 已修复 |
 | O-14 | P2     | 11 个提交未推送；macOS/Linux 运行时未验证               | —           | 待处理 |
 
 ---
@@ -174,10 +174,11 @@
 
 ### O-13 `Select` 在 `<button>` 内嵌交互元素
 
-- **证据**：`frontend/src/components/ui/Select.tsx:82`（`showClear` 时在 `DropdownMenu.Trigger` 渲染的原生 `<button>` 内放置 `<span role="button" tabIndex={0}>`）。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`frontend/src/components/ui/Select.tsx:82`（`showClear` 时在 `DropdownMenu.Trigger` 渲染的原生 `<button>` 内放置 `<span role="button" tabIndex={0}>`）。
 - **影响**：嵌套交互控件不符合 HTML/ARIA，读屏与点击事件行为不稳定。
-- **最小修复**：清空按钮移到 trigger 之外，或把 trigger 改为非 button 的 `role="combobox"` 容器。
-- **验收**：键盘 Tab/Enter/Space 与读屏语义正常；现有选择器行为不回归。
+- **实际修复**：触发器外面包一层 `relative` 容器；清空控件改为容器内、触发器之外的兄弟原生 `<button>`，绝对定位覆盖在触发器右端（视觉位置不变），带 `aria-label="清空"` 与 `disabled` 联动；触发器有值可清空时不再渲染 chevron，文本区留出 `pr-5` 避免与清空按钮重叠。选择、键盘激活与菜单宽度（`--radix-dropdown-menu-trigger-width`）都仍由原来的触发器承担。
+- **验收**：新增 `Select.test.tsx`：断言触发器内部没有任何可聚焦控件、清空按钮不是触发器的后代、点击清空回调 `''` 且不打开菜单、无值时可清空控件不出现。`bun run test`（19 个文件 131 项）、`tsc --noEmit`、`eslint --max-warnings 0` 通过；把清空控件放回触发器内时第一条用例失败。
 
 ### O-14 交付与平台验证状态
 
