@@ -1144,6 +1144,47 @@ func TestDownload_AdaptiveConcurrencyUnderRateLimit(t *testing.T) {
 	}
 }
 
+// TestDownloadRateLimitedRetriesYieldConcurrencySlots 固定限流重试的收敛语义：
+// 源站只允许 1 个并发、每个成功请求占住 40ms，退避只有 10ms。占着名额重试的分片会在
+// 名额释放前把 3 次尝试全部撞成 429（Windows CI 上失败的就是这条路径）；退避期间让出
+// 名额后，重试按收缩后的上限排队，6 个分片全部完成。
+func TestDownloadRateLimitedRetriesYieldConcurrencySlots(t *testing.T) {
+	restore := hls.SetRetryBaseDelayForTest(10 * time.Millisecond)
+	defer restore()
+
+	var active atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if active.Add(1) > 1 {
+			active.Add(-1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		defer active.Add(-1)
+		time.Sleep(40 * time.Millisecond)
+		_, _ = fmt.Fprintf(w, "data-%s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	var sb strings.Builder
+	sb.WriteString("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-VERSION:3\n")
+	for i := range 6 {
+		_, _ = fmt.Fprintf(&sb, "#EXTINF:6.000,\nseg%d.ts\n", i)
+	}
+	sb.WriteString("#EXT-X-ENDLIST\n")
+
+	pl := parseBody(t, server.URL+"/media.m3u8", sb.String())
+	dir := t.TempDir()
+	inputs, err := newTestFetcher().Download(context.Background(), pl, dir, 3, nil)
+	if err != nil {
+		t.Fatalf("expected rate-limited retries to wait for a free slot, got: %v", err)
+	}
+	for _, name := range inputs.Segments {
+		if _, statErr := os.Stat(filepath.Join(dir, name)); statErr != nil {
+			t.Fatalf("missing segment %s: %v", name, statErr)
+		}
+	}
+}
+
 // TestDownload_KeepAliveConnectionReuseAndStaleSelfHealing 验证 P2-2：
 //  1. 连续下载多个小分片时复用底层 TCP/TLS Keep-Alive 连接（新建连接数远小于分片请求数）；
 //  2. 当服务端在某个分片响应后主动掐断空闲连接或中途重置连接时，Fetcher 自动驱逐陈旧连接并立即自愈重连，

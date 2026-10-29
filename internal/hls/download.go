@@ -223,6 +223,35 @@ func (g *segmentFlowGate) onSuccess() {
 	}
 }
 
+// yield 在退避期间让出并发名额：源站限流时占着名额重试，只会让其他分片继续撞上 429，
+// 收缩后的上限也就永远落不了地。退避结束（或 ctx 取消、gate 关闭）后名额会重新计回，
+// 调用方的 release 因此仍然只需调用一次。返回错误表示这次重试不应继续。
+func (g *segmentFlowGate) yield(ctx context.Context, delay time.Duration) error {
+	g.mu.Lock()
+	g.active--
+	g.cond.Broadcast()
+	g.mu.Unlock()
+
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for !g.closed && ctx.Err() == nil && g.active >= g.currentLimit {
+		g.cond.Wait()
+	}
+	g.active++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if g.closed {
+		return context.Canceled
+	}
+	return nil
+}
+
 // withRequestTimeout 给一次 HLS 请求套上单次超时。调用方负责在函数体里用它返回的 ctx
 // 发起请求并读完全部响应体——超时一旦到期，ctx 取消会同时打断读取中的 body。
 func withRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -748,10 +777,16 @@ func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest st
 		}
 		if attempt+1 < segmentFetchAttempts {
 			delay := segmentRetryBackoff(attempt)
-			select {
-			case <-ctx.Done():
-				return 0, ctx.Err()
-			case <-time.After(delay):
+			if gate != nil {
+				if err := gate.yield(ctx, delay); err != nil {
+					return 0, err
+				}
+			} else {
+				select {
+				case <-ctx.Done():
+					return 0, ctx.Err()
+				case <-time.After(delay):
+				}
 			}
 		}
 	}
