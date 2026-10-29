@@ -296,6 +296,53 @@ func TestQueueController_SubmitDoesNotHoldQueueLockWhileEngineWorks(t *testing.T
 	}
 }
 
+// 取消预下载同样是一次引擎调用：它可能要等运行中的任务停下来。队列锁不能跨过它，
+// 否则下一次浏览器交接会排在取消后面，超过 2.5 秒的交接预算。
+func TestQueueController_CancelCurrentDoesNotHoldQueueLockWhileEngineCancels(t *testing.T) {
+	ctx := context.Background()
+	eng := newBlockingEngine("CancelPreDownload")
+	qc, tmpDir := setupQueueWithEngine(t, eng, newRecordingWindowView(), newAsyncOps())
+
+	preDownload := true
+	if _, err := qc.Enqueue(ctx, DownloadRequest{
+		URL:         "https://example.com/pre.zip",
+		Directory:   tmpDir,
+		PreDownload: &preDownload,
+	}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	waitForPreDownloadTaskID(t, qc)
+
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- qc.CancelCurrent(ctx) }()
+	eng.waitFor(t, "CancelPreDownload")
+
+	assertQueueResponsive(t, qc, ctx, tmpDir)
+
+	eng.release("CancelPreDownload")
+	select {
+	case err := <-cancelled:
+		if err != nil {
+			t.Fatalf("cancel failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel never returned after the engine was released")
+	}
+}
+
+// waitForPreDownloadTaskID 等到预下载任务真的启动（队列项拿到任务 ID）。
+func waitForPreDownloadTaskID(t *testing.T, qc *QueueController) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if item, _ := qc.GetActive(); item != nil && item.PreDownloadTaskID != "" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("预下载任务一直没有启动")
+}
+
 // 交接过来的链接在登记时就已经探过一次（带上这一项的 Referer/Cookie），提交直接用那次结果
 // 建任务：整个提交过程不再有第二次探测，这正是「提交是瞬时的」的由来。
 func TestQueueController_SubmitReusesRegistrationProbe(t *testing.T) {

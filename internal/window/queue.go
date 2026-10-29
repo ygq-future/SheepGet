@@ -833,8 +833,16 @@ func (qc *QueueController) beginSubmitItem(ctx context.Context, itemID string, s
 func (qc *QueueController) CancelCurrent(ctx context.Context) error {
 	qc.mu.Lock()
 	actions := newWindowActions(qc.windowView)
-	defer actions.run(qc.runOps)
-	defer qc.mu.Unlock()
+	var preDownloadTaskID string
+	// 先解锁再执行窗口副作用与引擎取消：两者都可能长时间不返回，握着队列锁会让
+	// 下一次浏览器交接排在后面（ADR-0005 决策 1）。
+	defer func() {
+		qc.mu.Unlock()
+		actions.run(qc.runOps)
+		if preDownloadTaskID != "" {
+			_ = qc.intake.CancelPreDownload(ctx, preDownloadTaskID)
+		}
+	}()
 
 	if len(qc.items) == 0 {
 		actions.hide()
@@ -856,9 +864,7 @@ func (qc *QueueController) CancelCurrent(ctx context.Context) error {
 		active.probeCancel()
 		active.probeCancel = nil
 	}
-	if active.PreDownloadTaskID != "" {
-		_ = qc.intake.CancelPreDownload(ctx, active.PreDownloadTaskID)
-	}
+	preDownloadTaskID = active.PreDownloadTaskID
 
 	// Remove cancelled item from queue
 	qc.items = append(qc.items[:qc.activeIndex], qc.items[qc.activeIndex+1:]...)

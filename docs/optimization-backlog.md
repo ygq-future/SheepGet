@@ -20,7 +20,7 @@
 | O-01 | P0     | 扩展未声明 `cookies` 权限，Cookie 转发恒为空            | 1 行 + 用例 | 已修复 |
 | O-02 | P0     | 直接点击交接失败后，回退的原生下载被扩展取消            | 小          | 已修复 |
 | O-03 | P0     | 媒体处理阶段无法暂停/删除，删除的任务会被写回           | 小          | 已修复 |
-| O-04 | P0     | 队列锁跨越引擎取消调用，最长阻塞 5 秒                   | 小          | 待修   |
+| O-04 | P0     | 队列锁跨越引擎取消调用，最长阻塞 5 秒                   | 小          | 已修复 |
 | O-05 | P1     | 分片热路径在 `coord.mu` 内写盘、克隆任务并落库          | 小—中       | 待修   |
 | O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 待修   |
 | O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 待修   |
@@ -72,11 +72,12 @@
 
 ### O-04 队列锁跨越引擎取消调用
 
+- **状态**：已修复（2026-10-29）。
 - **现象**：文件信息窗口取消当前项时，在持有队列锁的情况下调用引擎取消预下载，最长等待 5 秒。
-- **证据**：`internal/window/queue.go:833-861`（`CancelCurrent` 全程持锁，`defer qc.mu.Unlock()`）；`:859-861` 调用 `intake.CancelPreDownload`；`internal/engine/manager.go:892-907` 内部 `waitTaskIdle(taskID, 5*time.Second)`。
+- **证据（修复前）**：`internal/window/queue.go` 的 `CancelCurrent` 全程持锁，并在锁内调用 `intake.CancelPreDownload`；`internal/engine/manager.go` 的 `CancelPreDownload` 内部 `waitTaskIdle(taskID, 5*time.Second)`。
 - **影响**：违反 ADR-0005 决策 1「队列锁不跨越引擎调用」（`docs/adr/0005-browser-extension-integration-architecture.md:33`）。取消预下载期间新的浏览器交接会在 `Enqueue` 处排队，可能超过扩展 2.5 秒的交接超时，回到“两边都拿不到下载”的失败模式。
-- **最小修复**：锁内只取出 `PreDownloadTaskID` 并推进队列，锁外调用 `CancelPreDownload`（可复用窗口副作用队列或独立 goroutine）。
-- **验收**：新增用例断言取消期间 `Enqueue` 不被阻塞；`CancelCurrent` 的队列语义（当前项移除、下一项推进）保持不变。
+- **实际修复**：`CancelCurrent` 在锁内只记录 `PreDownloadTaskID` 并完成队列推进；defer 中先解锁，再执行窗口副作用，最后调用 `CancelPreDownload`。队列语义（当前项移除、下一项推进、提交中拒绝取消）保持不变。
+- **验收**：新增 `TestQueueController_CancelCurrentDoesNotHoldQueueLockWhileEngineCancels`，用 `blockingEngine("CancelPreDownload")` 卡住引擎调用，再断言 `Enqueue` 在 500ms 内返回；临时恢复锁内调用时该用例失败，恢复后 `go test ./internal/window` 49 项通过，全量 `go test ./...` 27 个包 522 项通过。
 
 ---
 
