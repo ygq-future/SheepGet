@@ -45,7 +45,7 @@ Vite 与 React 插件配套升级，依据[Vite 迁移指南](https://vite.dev/g
 | 环回契约镜像           | `scripts/protocol.mjs --check`（stage `protocol`）                                | `internal/protocol` 与两处生成的 TS 镜像           | 默认 / error    | 端点、头、端口与事件名改一处未同步即失败；扩展 ID 由扩展公钥重新推导并比对                         |
 | 提交信息               | 根依赖中固定的 commitlint                                                         | 实际消息或整个提交范围                             | commit-msg / CI | 合法和非法输入已验证；不经 bun x 动态取包                                                          |
 | Git hooks              | 入库的 .githooks + bootstrap                                                      | 当前仓库                                           | 本地            | 已配置；克隆后必须执行 bootstrap                                                                   |
-| CI                     | GitHub Actions 三平台矩阵与 required 汇总                                         | Windows、macOS、Ubuntu                             | 合并/发布前     | 工作流已配置，远端执行与分支保护待验证                                                             |
+| CI                     | GitHub Actions 三平台矩阵与 required 汇总                                         | Windows、macOS、Ubuntu                             | 合并/发布前     | 远端已在 `main` 推送与 `v1.0.11`、`ext-v1.0.7` 打 tag 后实际执行并全绿；分支保护规则仍未验证       |
 
 ## 检查范围与生成输入
 
@@ -83,7 +83,7 @@ CI 使用固定 action 提交、固定工具版本和冻结安装，按以下依
 3. 每个平台仅在本平台打包成功后归档 build/bin 并上传至该次 Actions 运行的 Artifacts。归档使用 tar.gz 保留可执行权限与应用包结构，名称包含系统和架构，保留 14 天；缺少上传文件直接失败。产物是应用构建结果，不包含签名、公证或 GitHub Release 发布。
 4. required 汇总 quality 与 build；只有两组矩阵全部成功（包括上传）才成功。它必须被仓库分支保护设为必需检查才能阻止合并。
 
-Ubuntu 24.04 依赖 GTK4 与 WebKitGTK 6.0（libgtk-4-dev、libwebkitgtk-6.0-dev）。远端 workflow 首次执行、实际上传和保护规则仍需用户授权提交/推送后验证。
+Ubuntu 24.04 依赖 GTK4 与 WebKitGTK 6.0（libgtk-4-dev、libwebkitgtk-6.0-dev）。远端 workflow 已在 2026-10-29 的推送与 tag 上实际执行（见下方验证记录）；分支保护规则仍需在仓库设置中确认。
 
 ## 验证记录
 
@@ -97,4 +97,10 @@ Ubuntu 24.04 依赖 GTK4 与 WebKitGTK 6.0（libgtk-4-dev、libwebkitgtk-6.0-dev
 - Go 与前端业务测试实际执行并通过；质量设施自测不是业务测试替代品。
 - `GOOS=darwin GOARCH=arm64 go build ./internal/...` 与 `GOOS=linux GOARCH=amd64 go build ./internal/...` 通过，业务包已不含平台专属编译依赖（平台能力按构建约束分文件）。完整应用的三平台构建仍须各平台原生 runner：Wails v3 依赖 cgo 与平台工具链，自 Windows 交叉编译不具备该条件。
 
-macOS/Linux 运行结果及远端强制执行均未观察到，不能标为已通过。未建立历史问题忽略基线。
+远端执行结果（2026-10-29，GitHub Actions）：
+
+- `Release` run `40867720058`（tag `v1.0.11`）：Quality Gate 与 Build & Package 的 Windows x64、macOS Apple Silicon、Linux x86_64 六个 job 全部 success，发布页上传 11 个分发包与 `SHA256SUMS.txt`。
+- `Release Extension` run `40867719146`（tag `ext-v1.0.7`）：协议镜像校验、扩展类型检查与 126 项测试通过后产出 `SheepGet_1.0.7_extension-chrome-mv3.zip`。
+- `Quality` run `40869822708`（`main` 推送 `254e406`）：三平台质量门禁 success。首次推送（`61248c7`）在 Windows 上失败，原因是 zip 聚合测试夹具每次请求都用 `time.Now()` 作 `Last-Modified`，探测与下载跨秒即被判“文件已变”；固定 modtime 后复跑通过。
+
+macOS/Linux 的实机运行结果仍未观察，不能标为已通过；云端门禁与发布成功只证明构建、打包与自动化验收通过。未建立历史问题忽略基线。
