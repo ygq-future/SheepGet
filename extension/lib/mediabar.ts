@@ -1,11 +1,36 @@
 import { formatBytes, type MediaResource } from './media';
 import { isExtensionContextValid, safeSendMessage } from './runtime';
+import { createThrottledRunner } from './throttle';
 import type { HandoverResponse, HLSVariantOption } from './types';
 
 export const MEDIA_BAR_MARGIN = 10;
 export const MEDIA_BAR_VIEWPORT_PADDING = 8;
 export const MEDIA_BAR_MIN_VIDEO_WIDTH = 100;
 export const MEDIA_BAR_MIN_VIDEO_HEIGHT = 60;
+/** 页面 DOM 变更后重扫播放器的最小间隔：高变更页面（弹幕、聊天、虚拟列表）每秒能抛上千条记录。 */
+export const MEDIA_BAR_SCAN_INTERVAL_MS = 200;
+
+/**
+ * 一条变更记录是否完全由我们自己插入/移除的悬浮条宿主引起。
+ *
+ * 悬浮条本身就是插进 body 的节点，不排除掉的话「插入悬浮条」会再触发一次全页扫描，
+ * 页面越活跃扫描越频繁。
+ */
+export function isOwnMutation(
+  record: Pick<MutationRecord, 'addedNodes' | 'removedNodes'>,
+  hosts: WeakSet<Node>,
+): boolean {
+  if (record.addedNodes.length === 0 && record.removedNodes.length === 0) {
+    return true;
+  }
+  for (const node of record.addedNodes) {
+    if (!hosts.has(node)) return false;
+  }
+  for (const node of record.removedNodes) {
+    if (!hosts.has(node)) return false;
+  }
+  return true;
+}
 
 export interface RectLike {
   top: number;
@@ -163,6 +188,11 @@ export class MediaBarManager {
   private intersectionObserver?: IntersectionObserver;
   private resizeObserver?: ResizeObserver;
   private mutationObserver: MutationObserver | null = null;
+  private scanRunner: ReturnType<typeof createThrottledRunner> | null = null;
+  // 自己插进页面的悬浮条宿主：它们引起的 DOM 变更不该再触发一次全页扫描。
+  // 用 WeakSet 而不是在卸载时删除：移除记录是异步送达的，删除之后就认不出那是我们自己的节点了；
+  // WeakSet 也不会让已卸载的节点留下来。
+  private hosts = new WeakSet<Node>();
   private availableResources: MediaResource[] = [];
   private frame = 0;
   private allDismissed = false;
@@ -191,9 +221,14 @@ export class MediaBarManager {
   start() {
     this.scanVideos();
 
-    // Observe DOM mutations for dynamically inserted players
-    this.mutationObserver = new MutationObserver(() => {
-      this.scanVideos();
+    // 动态插入的播放器靠 DOM 变更发现。高变更页面每秒能抛出上千条记录，因此：
+    // 1) 自己插入的悬浮条宿主不算变更；2) 扫描按固定间隔合并，且不会被持续变更饿死。
+    this.scanRunner = createThrottledRunner(() => this.scanVideos(), MEDIA_BAR_SCAN_INTERVAL_MS);
+    this.mutationObserver = new MutationObserver((records) => {
+      if (records.every((record) => isOwnMutation(record, this.hosts))) {
+        return;
+      }
+      this.scanRunner?.trigger();
     });
     this.mutationObserver.observe(document.body || document.documentElement, {
       childList: true,
@@ -216,6 +251,8 @@ export class MediaBarManager {
     this.intersectionObserver?.disconnect();
     this.resizeObserver?.disconnect();
     this.mutationObserver?.disconnect();
+    this.scanRunner?.cancel();
+    this.scanRunner = null;
     document.removeEventListener('scroll', this.handleViewportChange, { capture: true });
     window.removeEventListener('resize', this.handleViewportChange);
     document.removeEventListener('fullscreenchange', this.handleViewportChange);
@@ -509,6 +546,7 @@ export class MediaBarManager {
     };
 
     this.players.set(target, tracked);
+    this.hosts.add(container);
     document.body.appendChild(container);
 
     this.associateResource(tracked);

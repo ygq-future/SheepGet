@@ -26,7 +26,7 @@
 | O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 已修复 |
 | O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 已修复 |
 | O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 已修复 |
-| O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 待修   |
+| O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 已修复 |
 | O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 待修   |
 | O-12 | P2     | 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏  | 小—中       | 待修   |
 | O-13 | P2     | `Select` 在 `<button>` 内嵌交互元素                     | 小          | 待修   |
@@ -137,10 +137,14 @@
 
 ### O-10 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次
 
-- **证据**：`extension/lib/mediabar.ts:195-200`（`MutationObserver` 监听 `document.body` 的 `childList + subtree`，每次变更同步 `scanVideos()`）；`:468-487`（`scanVideos` 每次 `querySelectorAll('video')`）；`:482` 向 `body` 插入悬浮条本身也会触发一次观察。`extension/entrypoints/content.ts:239`（`DOMContentLoaded` 上报一次页面上下文，无 `popstate`/History API 监听）。
-- **影响**：弹幕、聊天、虚拟列表等高 DOM 变更页面会持续全页扫描；站内切换视频后，桌面端拿到的标题、页面 URL 与 Referer 仍是上一个视频的。
-- **最小修复**：观察回调用微任务或 150–300ms 定时器合并；忽略悬浮条自身的插入；SPA 用 `popstate` + `history.pushState/replaceState` 补丁（或 `<title>` 观察）重新上报页面上下文。
-- **验收**：在持续变动的页面上观察 CPU 与扫描次数；站内切换视频后交接请求的 `pageUrl`/`pageTitle`/`referer` 跟着更新。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`extension/lib/mediabar.ts`（`MutationObserver` 监听 `document.body` 的 `childList + subtree`，每次变更同步 `scanVideos()`；`scanVideos` 每次 `querySelectorAll('video')`；向 `body` 插入悬浮条本身也会触发一次观察）。`extension/entrypoints/content.ts`（`DOMContentLoaded` 上报一次页面上下文，无 `popstate`/History API 监听）。
+- **影响**：弹幕、聊天、虚拟列表等高 DOM 变更页面会持续全页扫描；站内切换视频后，桌面端拿到的标题与页面 URL 仍是上一个视频的。
+- **实际修复**：
+  1. 悬浮条的 body 观察改走 `createThrottledRunner`（200ms）：首次触发立即扫描，窗口内的变更合并成一次尾随执行，持续变更不会饿死扫描。新增 `isOwnMutation`：由自己插入/移除的悬浮条宿主引起的变更不再触发扫描（宿主记在 `WeakSet` 里，移除记录异步送达时仍能认出来）。
+  2. 页面上下文改为 `createPageContextReporter`：按「URL + 标题」去重；在 `popstate`/`hashchange`、`<head>` 的标题与 og:title 改写、以及 body DOM 变化（路由切换必然伴随）后重新比对，SPA 站内切换后交接请求的 `pageUrl`/`pageTitle` 跟着更新。内容脚本与页面脚本不在同一个 JS 世界，补丁 `history.pushState/replaceState` 拦不到页面自己的调用，因此没有采用该方案。
+- **验收**：新增 `throttle.test.ts`（首触发立即、窗口内合并、持续变更不饿死、`cancel` 丢弃尾随）、`pageContext.test.ts`（首次上报、未变不重复、URL 或标题变化重新上报）、`mediabar.test.ts` 的 `isOwnMutation` 用例（自己的宿主不算、混合变更要扫、无节点增删交给扫描）。`bun run compile` 与 `bun run test`（18 个文件 126 项）通过。
+- **顺带发现（未修）**：`content.ts` 里 `REPORT_DOM_MEDIA` 的观察仍是 300ms 纯防抖，在持续变更的页面上会被一直推迟。改成节流会带来每 300ms 一条消息的持续流量，需要与 background 侧的合并策略一起设计，留作后续。
 
 ---
 

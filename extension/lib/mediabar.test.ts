@@ -7,6 +7,7 @@ import {
   shouldShowDismissAll,
   MediaBarManager,
   extractMediaUrls,
+  isOwnMutation,
 } from './mediabar';
 
 interface Box {
@@ -24,6 +25,35 @@ const BAR = { width: 150, height: 26 };
 function box(over: Partial<Box> = {}): Box {
   return { top: 100, right: 800, bottom: 500, left: 200, width: 600, height: 400, ...over };
 }
+
+describe('mediabar mutation filtering', () => {
+  const record = (added: Node[], removed: Node[] = []) =>
+    ({ addedNodes: added, removedNodes: removed }) as unknown as MutationRecord;
+
+  it('忽略自己插入/移除的悬浮条宿主', () => {
+    const hosts = new WeakSet<Node>();
+    const host = {} as Node;
+    hosts.add(host);
+
+    assert.equal(isOwnMutation(record([host]), hosts), true, '插入自己的悬浮条不算页面变更');
+    assert.equal(isOwnMutation(record([], [host]), hosts), true, '移除自己的悬浮条同样不算');
+  });
+
+  it('页面自己的节点变更仍然触发重扫', () => {
+    const hosts = new WeakSet<Node>();
+    const host = {} as Node;
+    hosts.add(host);
+    const pageNode = {} as Node;
+
+    assert.equal(isOwnMutation(record([pageNode]), hosts), false);
+    assert.equal(isOwnMutation(record([host, pageNode]), hosts), false, '混合变更必须重扫');
+    assert.equal(isOwnMutation(record([], [pageNode]), hosts), false);
+  });
+
+  it('没有节点增删的记录（文本/属性变更）交给扫描器判断', () => {
+    assert.equal(isOwnMutation(record([]), new WeakSet<Node>()), true);
+  });
+});
 
 describe('mediabar positioning logic', () => {
   it('anchors the bar above the player, right-aligned to its right edge', () => {

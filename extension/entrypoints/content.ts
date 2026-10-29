@@ -4,6 +4,8 @@ import { safeSendMessage } from '../lib/runtime';
 import { KEY_MASKS, keyStateReply, normalizeKeyName, updateKeyMask } from '../lib/shortcuts';
 import { decideTakeover } from '../lib/rules';
 import { DEFAULT_TAKEOVER_CONFIG, STORAGE_KEYS } from '../lib/storage';
+import { createThrottledRunner } from '../lib/throttle';
+import { createPageContextReporter } from '../lib/pageContext';
 import type {
   BackgroundMessage,
   DirectClickHandoverMessage,
@@ -22,6 +24,9 @@ declare global {
     __SHEEPGET_CONTENT_CLEANUP__?: () => void;
   }
 }
+
+/** 路由切换后标题常晚一拍才写入：页面上下文上报按这个窗口合并。 */
+const PAGE_CONTEXT_COALESCE_MS = 300;
 
 export default defineContentScript({
   matches: ['*://*/*'],
@@ -84,6 +89,8 @@ export default defineContentScript({
     }
 
     const mediaBar = new MediaBarManager();
+    let pageContextRunner: ReturnType<typeof createThrottledRunner> | undefined;
+    let titleObserver: MutationObserver | undefined;
 
     const cleanup = () => {
       try {
@@ -97,6 +104,8 @@ export default defineContentScript({
       try {
         domMediaObserver?.disconnect();
         clearTimeout(domMediaTimer);
+        titleObserver?.disconnect();
+        pageContextRunner?.cancel();
       } catch {}
 
       try {
@@ -237,20 +246,41 @@ export default defineContentScript({
 
     // 上报页面真实标题与 URL：HLS 清单的 URL 末段往往是 index.m3u8，真正的视频名
     // 只存在于页面标题里（og:title / <title>）。background 据此给本标签页的资源命名。
-    // 标题可能在 media script 注入后仍被 SPA 改写，这里延迟到 DOM 就绪后再报一次。
-    function reportPageContext() {
-      const msg: ExtensionMessage = {
-        type: 'REPORT_PAGE_CONTEXT',
-        pageTitle: inferPageTitle(document),
-        pageUrl: location.href,
-      };
-      safeSendMessage(msg);
-    }
+    //
+    // SPA 站内切换不会触发导航事件、也不会重跑内容脚本：pushState/replaceState 只改 URL 与标题。
+    // 内容脚本与页面脚本不在同一个 JS 世界，补丁 history 拦不到页面自己的调用，因此改用
+    // 能观察到的信号：标题改写、前进/后退、hash 变化，以及页面 DOM 变化（路由切换必然伴随）。
+    // 合并成一个窗口后再读一次，只有 URL 或标题真的变了才上报。
+    const reportPageContext = createPageContextReporter(
+      () => ({ pageTitle: inferPageTitle(document), pageUrl: location.href }),
+      ({ pageTitle, pageUrl }) => {
+        const msg: ExtensionMessage = {
+          type: 'REPORT_PAGE_CONTEXT',
+          pageTitle,
+          pageUrl,
+        };
+        safeSendMessage(msg);
+      },
+    );
+    pageContextRunner = createThrottledRunner(reportPageContext, PAGE_CONTEXT_COALESCE_MS);
+    const requestPageContext = () => pageContextRunner?.trigger();
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', reportPageContext, { once: true, signal });
+      document.addEventListener('DOMContentLoaded', requestPageContext, { once: true, signal });
     } else {
-      reportPageContext();
+      requestPageContext();
     }
+    window.addEventListener('popstate', requestPageContext, { signal });
+    window.addEventListener('hashchange', requestPageContext, { signal });
+    try {
+      titleObserver = new MutationObserver(requestPageContext);
+      titleObserver.observe(document.head || document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['content'],
+      });
+    } catch {}
 
     // Initialize media floating bar manager
     const startMediaBar = () => {
@@ -290,6 +320,8 @@ export default defineContentScript({
     let domMediaObserver: MutationObserver | undefined;
     try {
       domMediaObserver = new MutationObserver(() => {
+        // 路由切换会改写 DOM 而不一定改标题：顺带比对一次页面上下文。
+        requestPageContext();
         clearTimeout(domMediaTimer);
         domMediaTimer = window.setTimeout(() => {
           reportDomMedia();
