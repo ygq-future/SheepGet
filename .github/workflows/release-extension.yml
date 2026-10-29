@@ -19,9 +19,44 @@ permissions:
   contents: write
 
 jobs:
+  # 扩展发布曾经直接打包上传：类型检查、测试与协议镜像校验都不跑。发布前先把这些
+  # 桌面端门禁里同样的检查跑一遍，任何一项失败都不再产出可下载的包。
+  quality:
+    name: Extension Quality Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.2'
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          bun install --frozen-lockfile --cwd extension
+
+      - name: Check protocol mirror
+        run: node scripts/protocol.mjs --check
+
+      - name: Typecheck extension
+        run: bun run --cwd extension compile
+
+      - name: Test extension
+        run: bun run --cwd extension test
+
   build-and-release:
     name: Build & Package Extension
+    needs: [quality]
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

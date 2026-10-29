@@ -12,6 +12,8 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    # 卡住的测试会一直占到 Actions 的默认上限；给每次运行一个明确的预算。
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -26,7 +28,14 @@ jobs:
         with:
           bun-version: '1.4.2'
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev pkg-config ffmpeg
+      - if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+      # 媒体处理的独立校验依赖 ffmpeg/ffprobe；装不上就让这里失败，而不是让用例静默跳过。
+      - run: ffmpeg -version
+      - run: ffprobe -version
       - run: node scripts/bootstrap.mjs --ci
       - name: Check sources and validation builds
         run: node scripts/quality-gate.mjs
@@ -47,6 +56,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -81,6 +91,7 @@ jobs:
     if: always()
     needs: [quality, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Require all platform checks
         env:

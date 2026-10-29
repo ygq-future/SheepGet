@@ -27,7 +27,7 @@
 | O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 已修复 |
 | O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 已修复 |
 | O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 已修复 |
-| O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 待修   |
+| O-11 | P2     | CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁与测试   | 小          | 已修复 |
 | O-12 | P2     | 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏  | 小—中       | 待修   |
 | O-13 | P2     | `Select` 在 `<button>` 内嵌交互元素                     | 小          | 待修   |
 | O-14 | P2     | 11 个提交未推送；macOS/Linux 运行时未验证               | —           | 待处理 |
@@ -152,10 +152,14 @@
 
 ### O-11 CI 未安装 ffmpeg、无超时；扩展 release 绕过门禁
 
-- **证据**：`internal/media/process_test.go:50-89`（缺少 `ffprobe`/`ffmpeg` 时 `t.Skip`）；`.github/workflows/quality.yml:32`（未安装 ffmpeg）；`quality.yml`、`release.yml` 均无 `timeout-minutes`；`.github/workflows/release-extension.yml:24-42`（仅安装依赖、`wxt zip`、上传，未跑类型检查/测试/协议镜像校验）。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`internal/media/process_test.go:50-89`（缺少 `ffprobe`/`ffmpeg` 时 `t.Skip`）；`.github/workflows/quality.yml:32`（未安装 ffmpeg）；`quality.yml`、`release.yml` 均无 `timeout-minutes`；`.github/workflows/release-extension.yml:24-42`（仅安装依赖、`wxt zip`、上传，未跑类型检查/测试/协议镜像校验）。
 - **影响**：媒体处理“独立解码校验”在 CI 永远跳过，封装正确性只剩同一套库自证；死锁或卡住的测试可以消耗到 Actions 默认上限；扩展可以在零测试状态下直接发布。
-- **最小修复**：各平台 runner 安装 ffmpeg/ffprobe；为所有 job 增加 `timeout-minutes`；`release-extension.yml` 增加质量前置 job（`compile`、`bun test`、`node scripts/protocol.mjs --check`）。
-- **验收**：CI 日志中不再出现媒体用例的 skip；扩展 release 在测试失败时阻断。
+- **实际修复**：
+  1. `quality.yml` 与 `release.yml` 的质量 job 按 runner 安装 ffmpeg（Linux `apt`、macOS `brew`、Windows `choco`），随后执行 `ffmpeg -version` 与 `ffprobe -version`——装不上就让 job 失败，不再让媒体用例静默 `t.Skip`。
+  2. 两个工作流的所有 job 增加 `timeout-minutes`（质量 30、构建 30/60、汇总 5）；`release-extension.yml` 两个 job 各 20 分钟。
+  3. `release-extension.yml` 新增 `quality` 前置 job：冻结锁文件安装依赖、`node scripts/protocol.mjs --check`、`bun run --cwd extension compile`、`bun run --cwd extension test`；`build-and-release` 以 `needs: [quality]` 依赖它，测试失败时不再产出可下载的包。
+- **验收**：`actionlint -shellcheck= -pyflakes=` 通过、Prettier 对 `.github` 检查通过；安装与校验步骤在本地无法执行（需要 GitHub runner），以工作流定义与静态检查为证据。CI 日志中媒体用例不再 skip、扩展 release 在测试失败时阻断，需在远端首次运行后确认。
 
 ### O-12 前端零组件测试；剪贴板死锁用例未接 watcher；监听器泄漏
 
