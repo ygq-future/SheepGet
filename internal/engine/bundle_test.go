@@ -18,6 +18,11 @@ import (
 	"sheep-get/internal/task"
 )
 
+// 成员下载用 If-Unmodified-Since 校验版本，探测与下载拿到的 Last-Modified 必须一致。
+// ServeContent 把传入的 modtime 写进该响应头，这里用固定时间：用 time.Now() 时探测与
+// 下载一旦跨秒，成员就会被判成“文件已变”（Windows CI 上已复现）。
+var bundleTestModTime = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
 type bundleTestServer struct {
 	*httptest.Server
 	files map[string][]byte
@@ -38,7 +43,7 @@ func newBundleTestServer(t *testing.T) *bundleTestServer {
 			http.Error(w, "boom", http.StatusForbidden)
 			return
 		}
-		http.ServeContent(w, r, name, time.Now().Add(-time.Hour), bytes.NewReader(data))
+		http.ServeContent(w, r, name, bundleTestModTime, bytes.NewReader(data))
 	}))
 	t.Cleanup(ts.Close)
 	return ts
