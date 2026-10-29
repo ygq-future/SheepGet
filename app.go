@@ -516,6 +516,7 @@ func (a *App) ListTasks() ([]*task.Task, error) {
 }
 
 // migrateHistoricalTasksCategory 检查历史任务并补齐或纠偏分类（仅在启动时进行一次性迁移固化）。
+// 变更先攒在一起再写一次盘：逐条 Save 会为每条记录重写整个库，历史任务越多启动越慢。
 func (a *App) migrateHistoricalTasksCategory(ctx context.Context) {
 	if a.store == nil || a.settings == nil {
 		return
@@ -524,6 +525,7 @@ func (a *App) migrateHistoricalTasksCategory(ctx context.Context) {
 	if err != nil || len(tasks) == 0 {
 		return
 	}
+	var changed []*task.Task
 	downloadCfg := a.settings.Get().Download
 	for _, t := range tasks {
 		if t.Filename == "" {
@@ -533,15 +535,21 @@ func (a *App) migrateHistoricalTasksCategory(ctx context.Context) {
 		case "":
 			cat, _ := downloadCfg.ResolveDestination(t.Filename)
 			t.CategoryID = cat.ID
-			_ = a.store.Save(ctx, t)
+			changed = append(changed, t)
 		case "builtin-file":
 			// 若历史任务被误赋予兜底的 builtin-file，但其实际文件名能明确命中具体业务分类，进行自动纠偏固化
 			cat, matched := downloadCfg.ResolveCategory(t.Filename)
 			if matched && cat.ID != "builtin-file" {
 				t.CategoryID = cat.ID
-				_ = a.store.Save(ctx, t)
+				changed = append(changed, t)
 			}
 		}
+	}
+	if len(changed) == 0 {
+		return
+	}
+	if err := a.store.SaveMany(ctx, changed); err != nil {
+		a.log().Warn("failed to persist migrated task categories", "tasks", len(changed), "err", err)
 	}
 }
 

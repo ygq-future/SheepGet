@@ -23,7 +23,7 @@
 | O-04 | P0     | 队列锁跨越引擎取消调用，最长阻塞 5 秒                   | 小          | 已修复 |
 | O-05 | P1     | 分片热路径在 `coord.mu` 内写盘、克隆任务并落库          | 小—中       | 已修复 |
 | O-06 | P1     | 进度落盘节流判据错误，高速下载时每 60ms 全库重写        | 小          | 已修复 |
-| O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 待修   |
+| O-07 | P1     | `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条全库重写 | 小          | 已修复 |
 | O-08 | P1     | HLS 每个分片复制整份进度位图                            | 小          | 待修   |
 | O-09 | P1     | 进度事件触发全列表排序与整树重渲染；窗口高度逐帧 IPC    | 中          | 待修   |
 | O-10 | P1     | 扩展悬浮条 DOM 观察未节流；SPA 页面上下文只上报一次     | 小          | 待修   |
@@ -105,10 +105,14 @@
 
 ### O-07 `FileTaskStore.Save` 持锁做磁盘写；启动迁移逐条重写
 
-- **证据**：`internal/task/store.go:102-108`（持 `s.mu` 完成 `json.Marshal` 与 `atomicfile.Write`，后者在 Windows 上还带重试退避）；`app.go:518-545`（启动时对每个需要迁移的任务调用一次 `Save`）。
-- **影响**：任意 `Get/List` 都会在磁盘写期间阻塞；历史任务越多，启动时的全库重写次数越多。
-- **最小修复**：`Save` 在锁内更新内存并复制快照，锁外序列化与写盘（独立 `persistMu` 串行化写）；启动迁移合并为一次写盘，或在 `load` 阶段完成迁移后只写一次。
-- **验收**：新增用例断言写盘期间 `Get/List` 不被阻塞（可用可控的写盘钩子）；启动迁移用例断言只发生一次持久化。
+- **状态**：已修复（2026-10-29）。
+- **证据（修复前）**：`internal/task/store.go` 的 `Save` 持 `s.mu` 完成 `json.Marshal` 与 `atomicfile.Write`（后者在 Windows 上还带重试退避）；`app.go` 的 `migrateHistoricalTasksCategory` 对每个需要迁移的任务调用一次 `Save`。
+- **影响**：任意 `Get/List` 都会在磁盘写期间阻塞；历史任务越多，启动时的全库重写次数越多（N 条记录 N 次 O(N) 序列化）。
+- **实际修复**：
+  1. 内存状态带 `revision`：`Save` / `SaveMany` / `Delete` 在锁内更新内存并取走一份可序列化快照，序列化与写盘在独立 `persistMu` 下于锁外完成。`Get` / `List` 不再等写盘。
+  2. 落盘带版本守卫：`revision <= persistedRevision` 的快照直接跳过。并发写盘时后取的快照可能先落盘，没有守卫的话先取的旧快照会把磁盘写回旧内容。
+  3. 新增 `TaskStore.SaveMany`；启动分类迁移把变更攒成一批，只写一次盘。写盘失败改为记录警告，不再静默丢弃。
+- **验收**：新增 `TestFileTaskStoreReadsDoNotWaitForDiskWrite`（写盘卡住时 `Get`/`List` 仍立即返回；恢复锁内写盘后 2 秒超时失败）、`TestFileTaskStoreStaleSnapshotDoesNotOverwriteNewer`（去掉版本守卫后旧快照覆盖新状态，用例失败）、`TestApp_StartupMigrationPersistsOnce`（三条历史任务只发生一次批量落盘；改回逐条 `Save` 时失败）。
 
 ### O-08 HLS 每个分片复制整份进度位图
 

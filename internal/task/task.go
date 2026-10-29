@@ -157,6 +157,8 @@ func (t *Task) Clone() *Task {
 // TaskStore defines the storage interface for persisting and querying tasks.
 type TaskStore interface {
 	Save(ctx context.Context, t *Task) error
+	// SaveMany 持久化一批变更，调用方只需要一次写盘。
+	SaveMany(ctx context.Context, tasks []*Task) error
 	Get(ctx context.Context, id string) (*Task, error)
 	List(ctx context.Context) ([]*Task, error)
 	Delete(ctx context.Context, id string) error

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1194,6 +1195,73 @@ func TestApp_Startup_CorrectsMismatchedBuiltinFileCategory(t *testing.T) {
 	}
 	if savedReal.CategoryID != "builtin-file" {
 		t.Errorf("savedReal.CategoryID = %q, want %q", savedReal.CategoryID, "builtin-file")
+	}
+}
+
+// persistCountingStore 记录写盘调用次数，其余行为原样转发。
+type persistCountingStore struct {
+	task.TaskStore
+	saves     atomic.Int32
+	bulkSaves atomic.Int32
+}
+
+func (s *persistCountingStore) Save(ctx context.Context, t *task.Task) error {
+	s.saves.Add(1)
+	return s.TaskStore.Save(ctx, t)
+}
+
+func (s *persistCountingStore) SaveMany(ctx context.Context, tasks []*task.Task) error {
+	s.bulkSaves.Add(1)
+	return s.TaskStore.SaveMany(ctx, tasks)
+}
+
+// TestApp_StartupMigrationPersistsOnce 固定启动迁移的写盘次数：多条历史任务合并成一次写盘，
+// 而不是每条重写一遍整个库。
+func TestApp_StartupMigrationPersistsOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	base, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to init store: %v", err)
+	}
+	ctx := context.Background()
+
+	seeds := []*task.Task{
+		{ID: "legacy_video", Filename: "legacy_video.mp4", Status: task.StatusCompleted},
+		{ID: "legacy_audio", Filename: "song.mp3", Status: task.StatusCompleted},
+		{ID: "legacy_file", Filename: "index.mp4", CategoryID: "builtin-file", Status: task.StatusCompleted},
+	}
+	for _, seed := range seeds {
+		if err := base.Save(ctx, seed); err != nil {
+			t.Fatalf("failed to seed %s: %v", seed.ID, err)
+		}
+	}
+
+	store := &persistCountingStore{TaskStore: base}
+	settingsSvc := config.NewSettingsService(filepath.Join(tmpDir, "config.json"), tmpDir, tmpDir)
+	app := &App{store: store, settings: settingsSvc}
+
+	app.migrateHistoricalTasksCategory(ctx)
+
+	if got := store.bulkSaves.Load(); got != 1 {
+		t.Fatalf("expected one bulk persist for %d migrated tasks, got %d", len(seeds), got)
+	}
+	if got := store.saves.Load(); got != 0 {
+		t.Fatalf("expected no per-task persist during migration, got %d", got)
+	}
+
+	// 三条都固化进了库，并且真的落到了文件里。
+	reloaded, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("failed to reload store: %v", err)
+	}
+	for _, seed := range seeds {
+		got, err := reloaded.Get(ctx, seed.ID)
+		if err != nil {
+			t.Fatalf("failed to read %s: %v", seed.ID, err)
+		}
+		if got.CategoryID == "" || got.CategoryID == "builtin-file" {
+			t.Errorf("%s kept CategoryID %q, want a concrete category", seed.ID, got.CategoryID)
+		}
 	}
 }
 
