@@ -770,7 +770,17 @@ async function handleDirectClickHandover(
     },
   };
 
-  return await dispatchHandover(handoverReq, HANDOVER_TIMEOUT_MS, 'direct-click-takeover');
+  const response = await dispatchHandover(
+    handoverReq,
+    HANDOVER_TIMEOUT_MS,
+    'direct-click-takeover',
+  );
+  if (!response.accepted) {
+    // 交接没有成功：这次点击已经被 preventDefault，回退下载由内容脚本重新发起。
+    // 继续把这个 URL 留在防重表里，回退下载会在 onCreated 被当成重复项取消。
+    recentDirectHandoverUrls.delete(url);
+  }
+  return response;
 }
 
 /** 拉取一份清单的可选清晰度：带 cookies/referer 转发给桌面端解析。 */

@@ -199,10 +199,21 @@ export default defineContentScript({
             pageTitle: document.title,
             referrer: document.referrer,
           };
+          const fallbackUrl = targetUrl;
           safeSendMessage<HandoverResponse>(handoverMsg, (resp) => {
-            // 若交接被桌面端拒绝且原因属于桌面端未连接（离线），回退将链接放行还给浏览器
+            // 桌面端离线：把这次点击交还给浏览器。不能直接 location.assign ——
+            // 交接开始时已把 URL 记入 onCreated 的防重表，回退产生的下载会被当成重复项取消。
             if (resp && !resp.accepted && resp.failure === 'not_delivered') {
-              window.location.assign(targetUrl!);
+              const downloadName = el instanceof HTMLAnchorElement ? el.download : '';
+              safeSendMessage<HandoverResponse>(
+                {
+                  type: 'TRIGGER_BROWSER_DOWNLOAD',
+                  url: fallbackUrl,
+                  filename: downloadName || undefined,
+                },
+                undefined,
+                { onContextInvalidated: cleanup },
+              );
             }
           });
         }
