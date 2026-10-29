@@ -187,7 +187,7 @@
 - **影响**：已完成的架构深化与修复尚未推送；三平台“能构建”不等于“能运行”，托盘、窗口、更新器、剪贴板等平台差异仍未在 macOS/Linux 实机验收。
 - **实际处理**：
   1. 推送 `main`（`61248c7`，29 个提交），随后补测修复 `254e406`；远端 `Quality` 三平台矩阵实际执行；
-  2. 发布 `v1.0.11` 与 `ext-v1.0.7`：`Release` run `40867720058` 的 Quality Gate 与 Build & Package 六个 job 全部 success，发布页上传 Windows x64/ARM64、macOS aarch64/x64/universal、Linux AppImage/deb/tar.gz 共 11 个分发包与 `SHA256SUMS.txt`；`Release Extension` run `40867719146` 先跑协议镜像校验、类型检查与 126 项测试，再产出 `SheepGet_1.0.7_extension-chrome-mv3.zip`；
+  2. 发布 `v1.0.11` 与 `ext-v1.0.7`：`Release` run `40888489924`（覆盖同日首次发布 `40867720058`）的 Quality Gate 与 Build & Package 六个 job 全部 success，发布页上传 Windows x64/ARM64、macOS aarch64/x64/universal、Linux AppImage/deb/tar.gz 共 11 个分发包与 `SHA256SUMS.txt`；`Release Extension` run `40867719146` 先跑协议镜像校验、类型检查与 126 项测试，再产出 `SheepGet_1.0.7_extension-chrome-mv3.zip`；
   3. 首次云端执行在 Windows 上暴露 zip 聚合测试夹具缺陷（`ServeContent` 每次请求用 `time.Now()` 作 modtime，探测与下载跨秒即被判“文件已变”），固定 modtime 后 `Quality` run `40869822708` 三平台 success。
 - **验收**：云端打包与 publish 成功（上述 run 与发布页）；`docs/agents/quality.md` 的验证记录同步登记远端执行结果，仍保留“macOS/Linux 实机未观察”的边界声明。
 
