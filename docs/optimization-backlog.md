@@ -17,7 +17,7 @@
 
 | 编号 | 优先级 | 问题                                                    | 规模        | 状态       |
 | ---- | ------ | ------------------------------------------------------- | ----------- | ---------- |
-| O-01 | P0     | 扩展未声明 `cookies` 权限，Cookie 转发恒为空            | 1 行 + 用例 | 待修       |
+| O-01 | P0     | 扩展未声明 `cookies` 权限，Cookie 转发恒为空            | 1 行 + 用例 | 已修复     |
 | O-02 | P0     | 直接点击交接失败后，回退的原生下载被扩展取消            | 小          | 已实机确认 |
 | O-03 | P0     | 媒体处理阶段无法暂停/删除，删除的任务会被写回           | 小          | 待修       |
 | O-04 | P0     | 队列锁跨越引擎取消调用，最长阻塞 5 秒                   | 小          | 待修       |
@@ -41,8 +41,8 @@
 - **现象**：扩展在 6 处调用 `chrome.cookies.getAll` 收集 Cookie 随交接转发，但 manifest 的 `permissions` 没有 `cookies`。
 - **证据**：`extension/wxt.config.ts:20-28`（权限清单无 `cookies`）；`extension/entrypoints/background.ts:695`、`:739`、`:780`、`:815`、`:1319`（调用点，均被空 `catch` 包裹）；构建产物 `build/dist-extension/chrome-mv3/manifest.json` 同样缺失。Chrome 官方文档要求使用 `chrome.cookies` 必须声明 `"cookies"` 权限并提供对应 host 权限（host 权限已有 `<all_urls>`）。
 - **影响**：生产环境 `chrome.cookies` 未绑定，异常被吞掉后 `cookiesStr` 恒为空。需要登录或防盗链的直链、HLS 清单与媒体请求拿不到 Cookie，表现为 403 或下载到错误内容。与 README「源网页 URL 与防盗链 Referer 补全」中的 Cookie 部分不符。
-- **最小修复**：`wxt.config.ts` 的 `permissions` 增加 `'cookies'`；补一条用例断言 Cookie 进入 `HandoverRequest.credentials.cookies`。
-- **验收**：加载重新构建的扩展，在需要登录的站点触发一次交接，桌面端收到的请求上下文包含 Cookie；用例在缺少权限的模拟下失败、加上权限后通过。
+- **最小修复**：`wxt.config.ts` 的 `permissions` 增加 `'cookies'`；门禁 stage `extensionBuild` 检查构建产物 manifest 含 `cookies`；`extension/lib/handoverCookies.test.ts` 断言 Cookie 进入 `HandoverRequest.credentials.cookies`。
+- **验收**：加载重新构建的扩展，在需要登录的站点触发一次交接，桌面端收到的请求上下文包含 Cookie；缺少权限时门禁在 `extensionBuild` 阶段失败。
 
 ### O-02 直接点击交接失败后，回退下载被扩展取消
 

@@ -17,6 +17,8 @@ export default defineConfig({
     // downloads.ui 的 setUiOptions 作用于整个 profile，会压制未接管与快捷键放行的下载反馈。
     // alarms 用于链路保活探测：桌面端重启会换端口，服务 worker 被挂起后单靠启动时
     // 那一次初始化无法发现，需要周期性重算链路状态（见 entrypoints/background.ts）。
+    // cookies 是 chrome.cookies 的硬性前置：没有它 API 不会绑定，交接请求里的
+    // Cookie 恒为空，需要登录/防盗链的链接与清单只能拿到 403。
     permissions: [
       'downloads',
       'webRequest',
@@ -25,6 +27,7 @@ export default defineConfig({
       'tabs',
       'scripting',
       'alarms',
+      'cookies',
     ],
     host_permissions: ['<all_urls>'],
     icons: {

@@ -159,6 +159,16 @@ const stages = {
   },
   extensionBuild() {
     run('bun', ['run', 'build'], { cwd: join(root, 'extension'), quiet: true });
+    // chrome.cookies 不会在缺少 manifest 权限时绑定；构建产物才是扩展真正加载的那份清单，
+    // 因此在这里核对，而不是在源码里维护第二份权限声明。
+    const manifestPath = join(root, 'build', 'dist-extension', 'chrome-mv3', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const permissions = Array.isArray(manifest.permissions) ? manifest.permissions : [];
+    if (!permissions.includes('cookies')) {
+      throw new Error(
+        'extension manifest must declare the "cookies" permission: chrome.cookies is unavailable without it',
+      );
+    }
   },
   goAnalysis() {
     run(exe('golangci-lint'), ['config', 'verify'], { quiet: true });
