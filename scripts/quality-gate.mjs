@@ -92,7 +92,9 @@ function tests() {
     node('node_modules/vitest/vitest.mjs', ['run'], { cwd: join(root, 'frontend') });
   else console.log('PARTIAL: frontend behavior tests pending (scaffold-only contract)');
   if (!goTests.length) console.log('PARTIAL: Go behavior tests pending (scaffold-only contract)');
-  run('bun', ['test'], { cwd: join(root, 'extension'), quiet: true });
+  // 每个测试文件一份独立全局：Service Worker 入口的模块状态（如接管规则的就绪标记）
+  // 不能从一个文件泄漏到另一个文件，否则用例结果会随文件执行顺序变化。
+  run('bun', ['run', 'test'], { cwd: join(root, 'extension'), quiet: true });
 }
 
 const stages = {

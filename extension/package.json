@@ -8,6 +8,7 @@
     "build": "wxt build",
     "compile": "wxt prepare && tsc --noEmit",
     "typecheck": "tsc --noEmit",
+    "test": "bun test --isolate",
     "zip": "wxt zip"
   },
   "dependencies": {
