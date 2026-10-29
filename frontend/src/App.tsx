@@ -12,6 +12,7 @@ import {
   ResumeTask,
   RetryTask,
   RetryProcessingTask,
+  SealBundleTask,
   GetServerStatus,
 } from '../bindings/sheep-get/app';
 import { Events } from '@wailsio/runtime';
@@ -270,6 +271,14 @@ export function App() {
     });
   }, []);
 
+  // Agent 忘记发送 zipFinal 时，用户可以手动闭合批次；闭合后立即进入下载队列。
+  const handleSealBundle = useCallback((t: task.Task) => {
+    SealBundleTask(t.id).catch((err: unknown) => {
+      console.error('Failed to seal zip bundle:', err);
+      showToast('打包失败', 'error');
+    });
+  }, []);
+
   // 列表顺序在事件回调里要用（Shift 连选），但它每次进度事件后都会换一个新数组。
   // 用 ref 跟随最新顺序，回调本身只随选择状态变化：一次进度更新不再让整列任务项重渲染。
   const orderedTaskIdsRef = useRef<string[]>([]);
@@ -386,7 +395,8 @@ export function App() {
       (t) =>
         t.status === task.Status.StatusDownloading ||
         t.status === task.Status.StatusProcessing ||
-        t.status === task.Status.StatusQueued,
+        t.status === task.Status.StatusQueued ||
+        t.status === task.Status.StatusCollecting,
     );
     if (hasActive) {
       void ShowProgressWindow('');
@@ -874,6 +884,7 @@ export function App() {
                     onResume={handleResumeTask}
                     onPause={handlePauseTask}
                     onRetry={handleRetryTask}
+                    onSeal={handleSealBundle}
                   />
                 ))}
               </AnimatePresence>

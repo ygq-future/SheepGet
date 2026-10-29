@@ -189,6 +189,9 @@ type Manager struct {
 	probeCacheMu sync.Mutex
 	probeCache   map[string]probeCacheEntry
 	probeFlight  map[string]*probeFlightCall
+	// bundleMu 串行化同一进程内的成员登记与闭合：Agent 可能并发发送多个成员，
+	// 两个请求同时读到旧列表会丢掉其中一个。它不保护任务对象本身，只保护登记这段读改写。
+	bundleMu sync.Mutex
 }
 
 // SetLogger 设定任务日志出口，并同步给底层的传输器——两者的日志出口永远是同一个。
@@ -256,7 +259,9 @@ func (m *Manager) AddListener(l TaskListener) {
 // 而发出事件的这一方随后还会继续改写自己的任务对象（状态、错误信息、分片进度）。共享同一个
 // 对象就是一次数据竞争——监听者读到正在被改写的结构，还可能收到自相矛盾的载荷。
 func (m *Manager) notify(t *task.Task) {
-	m.notifyPayload(t.Clone())
+	// EventView 对普通任务就是 Clone；对 zip 聚合任务会剥掉成员明细，
+	// 避免状态事件把整张成员表（含请求头）反复发给界面。
+	m.notifyPayload(t.EventView())
 }
 
 // notifyPayload 广播一份已经确定不会再被改写的载荷；调用方负责保证这一点。
@@ -617,7 +622,7 @@ func (m *Manager) cleanStaleDuplicateRecords(ctx context.Context, excludeID, url
 		if et.ID == excludeID || et.URL != url {
 			continue
 		}
-		if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
+		if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing || et.Status == task.StatusCollecting {
 			continue
 		}
 		isSameDest := SamePath(et.Directory, dir) && SameFilename(et.Filename, filename)
@@ -679,7 +684,7 @@ func (m *Manager) ReuseExistingFile(ctx context.Context, req ReuseRequest) (*tas
 			if et.ID == taskID || et.URL != t.URL {
 				continue
 			}
-			if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing {
+			if et.Status == task.StatusDownloading || et.Status == task.StatusQueued || et.Status == task.StatusProcessing || et.Status == task.StatusCollecting {
 				continue
 			}
 			targetFilePath := filepath.Join(et.Directory, et.Filename)
@@ -738,7 +743,7 @@ func (m *Manager) CleanMissingNumberedCopies(ctx context.Context, urlStr, dir, f
 			continue
 		}
 		// Do not delete active downloading/queued/processing tasks
-		if t.Status == task.StatusDownloading || t.Status == task.StatusQueued || t.Status == task.StatusProcessing {
+		if t.Status == task.StatusDownloading || t.Status == task.StatusQueued || t.Status == task.StatusProcessing || t.Status == task.StatusCollecting {
 			continue
 		}
 		// Check if file exists on disk
@@ -1301,6 +1306,9 @@ func (m *Manager) Pause(ctx context.Context, id string) error {
 	if t.Status == task.StatusCompleted {
 		return nil
 	}
+	if t.IsBundle() && !t.Bundle.Sealed {
+		return errors.New("zip 批次仍在收集成员，无需暂停")
+	}
 
 	t.Status = task.StatusPaused
 	t.Speed = 0
@@ -1320,6 +1328,10 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	}
 
 	if t.Status == task.StatusCompleted || t.Status == task.StatusDownloading {
+		return nil
+	}
+	// 收集中的批次没有传输可继续；它要么等 Agent 闭合，要么由用户手动打包。
+	if t.IsBundle() && !t.Bundle.Sealed {
 		return nil
 	}
 	if t.Status == task.StatusError {
@@ -1346,6 +1358,9 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 	}
 	if t.FailurePhase == task.FailurePhaseProcessing {
 		return ErrProcessingRetryRequired
+	}
+	if t.IsBundle() {
+		return m.retryBundle(ctx, t)
 	}
 	// 用户手动重试时，先清除上一轮失败残留的代理回退/直连标记，保证重新从首选代理开始按序轮询
 	t.DirectTransfer = false
@@ -1390,7 +1405,7 @@ func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
 	if t.FailurePhase != task.FailurePhaseProcessing {
 		return ErrNotProcessingFailure
 	}
-	if !t.IsHLS() || !t.TransferDone {
+	if !t.NeedsProcessing() || !t.TransferDone {
 		// 没有处理阶段的任务谈不上「仅重试处理」；分片不在就不能假装它还在。
 		return ErrNotProcessingFailure
 	}
@@ -1410,6 +1425,13 @@ func (m *Manager) RetryProcessing(ctx context.Context, id string) error {
 // Delete removes task from store and stops running transfer.
 func (m *Manager) Delete(ctx context.Context, id string) error {
 	_ = m.Pause(ctx, id)
+
+	// zip 聚合的暂存目录是内部数据：无论用户是否勾选「删除磁盘文件」都要清掉。
+	// 先等这次运行真正退出，避免迟到的成员写入把刚删掉的目录重新建出来。
+	if t, err := m.store.Get(ctx, id); err == nil && t.IsBundle() {
+		m.waitTaskIdle(id, 2*time.Second)
+		m.removeBundleStaging(t)
+	}
 
 	// 先立墓碑再删库：在途的进度/收尾写库看到墓碑就不再写，
 	// 否则被取消的协程会把刚删掉的任务重新插回去。
@@ -1608,18 +1630,18 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	m.schedule()
 
 	var processErr error
-	// 已被删除的任务不再进入媒体处理：删除是终止性的，没必要再为它生成成品。
-	if transferErr == nil && t.IsHLS() && !m.taskDeleted(taskID) {
+	// 已被删除的任务不再进入处理：删除是终止性的，没必要再为它生成成品。
+	if transferErr == nil && t.NeedsProcessing() && !m.taskDeleted(taskID) {
 		t.Status = task.StatusProcessing
 		t.UpdatedAt = time.Now()
 		if m.saveIfPresent(bgCtx, t) {
 			m.notify(t)
 		}
 
-		processErr = m.runMediaProcessing(ctx, t)
+		processErr = m.runProcessing(ctx, t)
 		if processErr == nil {
-			// 成品已经生成，分片不再有任何用途。
-			m.removeSegmentDir(t)
+			// 成品已经生成，分片/暂存不再有任何用途。
+			m.removeProcessingInputs(t)
 		}
 	}
 	t.ElapsedNano = baseElapsed + time.Since(taskStarted).Nanoseconds()
@@ -1643,6 +1665,13 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	case processErr != nil && m.pausedElsewhere(bgCtx, taskID):
 		t.Status = task.StatusPaused
 		t.FailurePhase = task.FailurePhaseNone
+	case processErr != nil && errors.Is(processErr, ErrBundleInputsMissing):
+		// 打包前发现成员文件缺失：这不是打包本身的错，而是传输结果不完整。
+		// 归到传输失败，界面才会给出「重试下载」而不是「重试处理」。
+		t.Status = task.StatusError
+		t.FailurePhase = task.FailurePhaseTransfer
+		t.TransferDone = false
+		t.ErrorMsg = processErr.Error()
 	case processErr != nil:
 		t.Status = task.StatusError
 		t.FailurePhase = task.FailurePhaseProcessing
@@ -1692,9 +1721,12 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	m.schedule()
 }
 
-// runTransfer 执行任务的传输阶段：HLS 任务下载分片，其余任务走 HTTP 传输。
+// runTransfer 执行任务的传输阶段：zip 聚合下载成员，HLS 任务下载分片，其余任务走 HTTP 传输。
 // t 是这次传输的工作副本，sink 是它对外发布的唯一出口。
 func (m *Manager) runTransfer(ctx context.Context, t *task.Task, sink TransferSink) error {
+	if t.IsBundle() {
+		return m.runBundleTransfer(ctx, t, sink)
+	}
 	if !t.IsHLS() {
 		return m.downloader.Download(ctx, t, sink)
 	}
@@ -1704,6 +1736,23 @@ func (m *Manager) runTransfer(ctx context.Context, t *task.Task, sink TransferSi
 	}
 	t.MediaInputs = inputs
 	return nil
+}
+
+// runProcessing 执行传输之后的处理阶段：zip 聚合打包成品，HLS 合并音视频。
+func (m *Manager) runProcessing(ctx context.Context, t *task.Task) error {
+	if t.IsBundle() {
+		return m.runBundlePackaging(ctx, t)
+	}
+	return m.runMediaProcessing(ctx, t)
+}
+
+// removeProcessingInputs 在成品生成成功后清理处理阶段的输入。
+func (m *Manager) removeProcessingInputs(t *task.Task) {
+	if t.IsBundle() {
+		m.removeBundleStaging(t)
+		return
+	}
+	m.removeSegmentDir(t)
 }
 
 // canceledOrPaused 判断一次失败是不是这次运行的上下文被取消（暂停或退出）导致的。

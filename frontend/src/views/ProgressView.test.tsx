@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { ProgressView } from './ProgressView';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { Event } from '../lib/protocol.generated';
@@ -8,6 +8,7 @@ import { Event } from '../lib/protocol.generated';
 const bindings = vi.hoisted(() => ({
   listTasks: vi.fn(),
   hideProgressWindow: vi.fn(),
+  sealBundleTask: vi.fn(),
 }));
 
 // 进度窗口的行为由事件驱动：把注册进来的处理函数留下，测试才能像桌面端那样推一条任务更新。
@@ -29,6 +30,7 @@ vi.mock('../../bindings/sheep-get/app', () => ({
   ResumeTask: vi.fn(),
   RetryTask: vi.fn(),
   RetryProcessingTask: vi.fn(),
+  SealBundleTask: bindings.sealBundleTask,
 }));
 
 // 运行时的真实入口带副作用（会尝试连接开发服务器），而生成模型只需要 Create 的编解码辅助。
@@ -86,6 +88,7 @@ describe('ProgressView', () => {
     eventHandlers.clear();
     bindings.listTasks.mockReset();
     bindings.hideProgressWindow.mockReset();
+    bindings.sealBundleTask.mockReset();
   });
 
   it('renders an active download from the task list', async () => {
@@ -106,6 +109,39 @@ describe('ProgressView', () => {
 
     await vi.waitFor(() => expect(bindings.hideProgressWindow).toHaveBeenCalled());
     expect(screen.queryByText('movie.mp4')).toBeNull();
+  });
+
+  it('renders a collecting zip batch and seals it on demand', async () => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const collecting = new taskModels.Task({
+      id: 'task-collecting',
+      filename: 'model-pack.zip',
+      directory: 'C:/Downloads',
+      status: taskModels.Status.StatusCollecting,
+      totalBytes: 2048,
+      downloaded: 0,
+      bundle: new taskModels.ZipBundle({
+        zipId: 'pack-1',
+        name: 'model-pack.zip',
+        filesTotal: 3,
+        filesDone: 0,
+        knownBytes: 2048,
+        sealed: false,
+      }),
+      createdAt: '2026-10-29T00:00:00.000Z',
+      updatedAt: '2026-10-29T00:00:00.000Z',
+    });
+    bindings.listTasks.mockResolvedValue([collecting]);
+
+    render(<ProgressView />);
+
+    expect(await screen.findByText('model-pack.zip')).toBeTruthy();
+    expect(screen.getByText('收集中')).toBeTruthy();
+    expect(screen.getByText('已收集 3 个文件')).toBeTruthy();
+    expect(screen.getByText('等待确认')).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle('立即打包并开始下载'));
+    await vi.waitFor(() => expect(bindings.sealBundleTask).toHaveBeenCalledWith('task-collecting'));
   });
 
   it('drops the completed card when the task itself disabled keep completed info', async () => {

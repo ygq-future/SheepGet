@@ -61,10 +61,11 @@ describe('ProgressView active task sorting and rules (Ticket 03)', () => {
     expect(sorted.map((t) => t.id)).toEqual(['known', 'un2', 'un1']);
   });
 
-  it('strictly follows status priority: Processing > Downloading > Queued > Paused > Error', () => {
+  it('strictly follows status priority: Processing > Downloading > Collecting > Queued > Paused > Error', () => {
     const taskError = createTask('err', taskModels.Status.StatusError, 0, 100);
     const taskPaused = createTask('paused', taskModels.Status.StatusPaused, 50, 100);
     const taskQueued = createTask('queued', taskModels.Status.StatusQueued, 0, 100);
+    const taskCollecting = createTask('collecting', taskModels.Status.StatusCollecting, 0, 100);
     const taskDownloading = createTask('dl', taskModels.Status.StatusDownloading, 30, 100);
     const taskProcessing = createTask('proc', taskModels.Status.StatusProcessing, 100, 100);
 
@@ -72,11 +73,19 @@ describe('ProgressView active task sorting and rules (Ticket 03)', () => {
       taskError,
       taskPaused,
       taskQueued,
+      taskCollecting,
       taskDownloading,
       taskProcessing,
     ]);
 
-    expect(sorted.map((t) => t.id)).toEqual(['proc', 'dl', 'queued', 'paused', 'err']);
+    expect(sorted.map((t) => t.id)).toEqual([
+      'proc',
+      'dl',
+      'collecting',
+      'queued',
+      'paused',
+      'err',
+    ]);
   });
 
   it('selects the retry action from the recorded failure phase, not from error text', () => {

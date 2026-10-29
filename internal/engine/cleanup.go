@@ -92,7 +92,8 @@ func isTaskActive(t *task.Task) bool {
 	if t == nil {
 		return false
 	}
-	return t.Status == task.StatusDownloading || t.Status == task.StatusQueued || t.Status == task.StatusProcessing
+	return t.Status == task.StatusDownloading || t.Status == task.StatusQueued ||
+		t.Status == task.StatusProcessing || t.Status == task.StatusCollecting
 }
 
 // taskTimestamp returns the creation time of a task as the primary indicator for age.

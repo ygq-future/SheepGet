@@ -6,5 +6,7 @@ export {
     FailurePhase,
     ProgressDisplay,
     Status,
-    Task
+    Task,
+    ZipBundle,
+    ZipMember
 } from "./models.js";

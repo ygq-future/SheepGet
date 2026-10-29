@@ -28,6 +28,39 @@ func TestRender_WithAPIKey(t *testing.T) {
 	if !strings.Contains(content, "Fixed API Key configured in Settings") {
 		t.Errorf("expected fixed API key note")
 	}
+	if !strings.Contains(content, "description: Download files, media, HLS (.m3u8) streams, or many related small files") {
+		t.Errorf("expected zip aggregation trigger in the skill description")
+	}
+	if !strings.Contains(content, "## Zip Aggregation") {
+		t.Errorf("expected zip aggregation section")
+	}
+	if !strings.Contains(content, `"zipFinal": true`) || !strings.Contains(content, "zipId") {
+		t.Errorf("expected zipId/zipFinal guidance")
+	}
+	if !strings.Contains(content, "Never rename members") {
+		t.Errorf("expected member naming constraint")
+	}
+	if !strings.Contains(content, "Batch boundary: usage scenario, not source or file type") {
+		t.Errorf("expected the batch boundary rule")
+	}
+	if !strings.Contains(content, "Different hosts are still one batch") {
+		t.Errorf("expected cross-host batching guidance")
+	}
+	if !strings.Contains(content, "nested archive") {
+		t.Errorf("expected nested archive guidance")
+	}
+	if !strings.Contains(content, "Never create a second zip task") {
+		t.Errorf("expected the no-split rule")
+	}
+	if !strings.Contains(content, "ask before creating a second zip task") {
+		t.Errorf("expected the ambiguity rule")
+	}
+	if !strings.Contains(content, "Plan before sealing") || !strings.Contains(content, "irreversible") {
+		t.Errorf("expected the sealing irreversibility warning")
+	}
+	if !strings.Contains(content, "Breeze-TTS-2") {
+		t.Errorf("expected the cross-host example")
+	}
 }
 
 func TestRender_WithoutAPIKey(t *testing.T) {

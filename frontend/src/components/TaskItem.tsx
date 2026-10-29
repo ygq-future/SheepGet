@@ -30,6 +30,7 @@ interface TaskItemProps {
   onResume?: (task: task.Task) => void;
   onPause?: (task: task.Task) => void;
   onRetry?: (task: task.Task) => void;
+  onSeal?: (task: task.Task) => void;
 }
 
 /**
@@ -49,7 +50,26 @@ export const TaskItem = memo(function TaskItem({
   onResume,
   onPause,
   onRetry,
+  onSeal,
 }: TaskItemProps) {
+  const bundle = t.bundle ?? null;
+  // 收集阶段还没有下载字节：此时的大小是「已探测到的成员大小之和」，
+  // 全部成员都未知时显示未知，而不是拿 0 B 冒充。
+  const sizeBytes =
+    t.status === task.Status.StatusCollecting
+      ? (bundle?.knownBytes ?? 0)
+      : t.totalBytes > 0
+        ? t.totalBytes
+        : t.downloaded;
+  const sizeText =
+    t.status === task.Status.StatusCollecting && sizeBytes <= 0
+      ? '未知大小'
+      : formatBytes(sizeBytes);
+  const bundleFilesText = bundle
+    ? bundle.filesDone > 0
+      ? `${bundle.filesDone}/${bundle.filesTotal} 文件`
+      : `${bundle.filesTotal} 个文件`
+    : '';
   const percent =
     t.totalBytes > 0 ? Math.min(100, Math.round((t.downloaded / t.totalBytes) * 100)) : 0;
   // 未知大小的任务不显示虚假的 0%，与进度窗口的「未知大小」文案保持一致。
@@ -95,6 +115,13 @@ export const TaskItem = memo(function TaskItem({
 
   const renderStatus = () => {
     switch (t.status) {
+      case task.Status.StatusCollecting:
+        return (
+          <span className="flex items-center gap-1 font-mono text-[11px] text-sky-400">
+            <Loader2 className="h-2.5 w-2.5 animate-spin" />
+            <span>收集中</span>
+          </span>
+        );
       case task.Status.StatusCompleted:
         return (
           <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-500">
@@ -129,14 +156,17 @@ export const TaskItem = memo(function TaskItem({
         return (
           <span className="flex items-center gap-1 font-mono text-[11px] text-sky-400">
             <Loader2 className="h-2.5 w-2.5 animate-spin" />
-            <span>处理中</span>
+            <span>{bundle ? '打包中' : '处理中'}</span>
           </span>
         );
       case task.Status.StatusError:
         return (
           <span
             className="flex items-center gap-1 font-mono text-[11px] text-rose-500"
-            title={t.errorMsg || (isProcessingFailure(t) ? '处理失败' : '下载失败')}
+            title={
+              t.errorMsg ||
+              (isProcessingFailure(t) ? (bundle ? '打包失败' : '处理失败') : '下载失败')
+            }
           >
             <AlertCircle className="h-2.5 w-2.5" />
             <span>失败</span>
@@ -188,7 +218,10 @@ export const TaskItem = memo(function TaskItem({
       <div className="flex shrink-0 items-center gap-3">
         {/* File size and optional media duration */}
         <div className="text-right font-mono text-[11px] text-[var(--text-secondary)]">
-          <span>{formatBytes(t.totalBytes > 0 ? t.totalBytes : t.downloaded)}</span>
+          <span>{sizeText}</span>
+          {bundle && t.status !== task.Status.StatusCompleted && (
+            <span className="text-[10px] text-[var(--text-muted)]"> · {bundleFilesText}</span>
+          )}
           {durationText && (
             <span className="text-violet-600 dark:text-violet-400"> · {durationText}</span>
           )}
@@ -220,6 +253,7 @@ export const TaskItem = memo(function TaskItem({
           onResume={onResume}
           onPause={onPause}
           onRetry={onRetry}
+          onSeal={onSeal}
         />
       </div>
     </motion.div>

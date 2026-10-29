@@ -394,6 +394,14 @@ export function ScanCleanup(opts: engine$0.CleanupScanOptions): $CancellableProm
     });
 }
 
+/**
+ * SealBundleTask closes a zip aggregation batch that is still collecting members.
+ * 它是 Agent 忘记发送 zipFinal 时的人工安全阀：闭合后批次立即排队下载。
+ */
+export function SealBundleTask(id: string): $CancellablePromise<void> {
+    return $Call.ByID(3540951013, id);
+}
+
 export function SelectDirectory(defaultDir: string): $CancellablePromise<string> {
     return $Call.ByID(1735672136, defaultDir);
 }

@@ -39,6 +39,10 @@ describe('getTaskControlAction', () => {
     expect(getTaskControlAction(createTask({ status: task.Status.StatusCompleted }))).toBeNull();
     expect(getTaskControlAction(createTask({ status: task.Status.StatusProcessing }))).toBeNull();
   });
+
+  it('returns null for collecting zip batches: they have no transfer to pause or resume', () => {
+    expect(getTaskControlAction(createTask({ status: task.Status.StatusCollecting }))).toBeNull();
+  });
 });
 
 describe('executeTaskControlAction', () => {

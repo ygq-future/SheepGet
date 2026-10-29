@@ -477,8 +477,8 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 			},
 			protocol.PathTasks: map[string]any{
 				"post": map[string]any{
-					"summary":     "Create and start a direct download task",
-					"description": "Directly triggers a download without prompting the FileInfo window. Displays progress window if enabled.",
+					"summary":     "Create and start a direct download task, or register a zip bundle member",
+					"description": "Directly triggers a download without prompting the FileInfo window. Displays progress window if enabled. When zipId is present the file is registered into a single zip aggregation task instead: no per-file task is created, and the batch starts downloading only after a member is sent with zipFinal=true. The batch boundary is the user usage scenario, not the download source: model weights from HuggingFace, a runtime from a GitHub release, and a vendor CDN file can share one zipId, and an already-zipped dependency can be nested inside the outer zip. Do not split the same model/app into multiple zip tasks unless the user explicitly asks for separate archives.",
 					"requestBody": map[string]any{
 						"required": true,
 						"content": map[string]any{
@@ -504,6 +504,22 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 											"additionalProperties": map[string]any{"type": "string"},
 											"description":          "Optional custom HTTP headers (Cookie, Referer, etc.).",
 										},
+										"zipId": map[string]any{
+											"type":        "string",
+											"description": "Aggregate this file into one zip task. Omit for a normal download. Reuse the same id for every file in the batch.",
+										},
+										"zipName": map[string]any{
+											"type":        "string",
+											"description": "Final zip filename (a .zip suffix is added when missing). Set it on the first member (defaults to <zipId>.zip); later members must match it.",
+										},
+										"zipPath": map[string]any{
+											"type":        "string",
+											"description": "Path of this file inside the zip (forward slashes). Defaults to the member filename. Parent directories are implied.",
+										},
+										"zipFinal": map[string]any{
+											"type":        "boolean",
+											"description": "Set to true only on the last member. It seals the batch and starts the download; further members with the same zipId are rejected.",
+										},
 										"showProgressWindow": map[string]any{
 											"type":        "boolean",
 											"description": "Per-request override of the auto-show progress window setting. Omit to follow the Settings Center.",
@@ -523,7 +539,10 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 					},
 					"responses": map[string]any{
 						"201": map[string]any{
-							"description": "Download task successfully created and started",
+							"description": "Download task created and started, or zip member registered. Zip responses carry zipTaskId plus zip/member summaries and an empty taskId.",
+						},
+						"409": map[string]any{
+							"description": "Zip batch conflict: already sealed, name/directory mismatch, or duplicate member path.",
 						},
 						"400": map[string]any{
 							"description": "Invalid input or unsupported URL scheme",
@@ -695,7 +714,12 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.handler.HandleCreateTask(r.Context(), &req)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
+		status := http.StatusBadRequest
+		var coded interface{ HTTPStatus() int }
+		if errors.As(err, &coded) {
+			status = coded.HTTPStatus()
+		}
+		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2448,6 +2449,91 @@ func TestApp_DirectDownloadKeepsVariantsAsSeparateTasks(t *testing.T) {
 		if saved.Media == nil || saved.Media.Variant.URI != want.variant {
 			t.Errorf("task %s media = %+v, want variant %q", want.id, saved.Media, want.variant)
 		}
+	}
+}
+
+// zip 聚合从 HTTP 入口到打包是一条完整链路：成员不建任务，闭合后只留一个任务，
+// 完成后成品是一个包含全部成员的 zip。
+func TestApp_ZipBundleRegistrationCreatesOneTask(t *testing.T) {
+	app, store, _ := newTestApp(t)
+	app.onShowProgress = func(string) {}
+	srv := serveRangedPayload([]byte("payload"), "", 0)
+	t.Cleanup(srv.Close)
+
+	ctx := context.Background()
+	first, err := app.handleCreateTask(ctx, &server.CreateTaskRequest{
+		URL:      srv.URL + "/a.bin",
+		Filename: "a.bin",
+		ZipID:    "app-pack",
+		ZipName:  "app-pack",
+		ZipPath:  "app-pack/a.bin",
+	})
+	if err != nil {
+		t.Fatalf("register first member: %v", err)
+	}
+	if first.TaskID != "" || first.ZipTaskID == "" || first.Zip == nil || first.Zip.Sealed {
+		t.Fatalf("unexpected first response: %+v", first)
+	}
+	if first.Member == nil || first.Member.Path != "app-pack/a.bin" {
+		t.Fatalf("unexpected member summary: %+v", first.Member)
+	}
+
+	second, err := app.handleCreateTask(ctx, &server.CreateTaskRequest{
+		URL:      srv.URL + "/b.bin",
+		Filename: "b.bin",
+		ZipID:    "app-pack",
+		ZipName:  "app-pack",
+		ZipPath:  "app-pack/b.bin",
+		ZipFinal: true,
+	})
+	if err != nil {
+		t.Fatalf("register final member: %v", err)
+	}
+	if second.ZipTaskID != first.ZipTaskID || second.Zip == nil || !second.Zip.Sealed {
+		t.Fatalf("unexpected final response: %+v", second)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	var saved *task.Task
+	for time.Now().Before(deadline) {
+		got, err := store.Get(ctx, first.ZipTaskID)
+		if err == nil && got.Status == task.StatusCompleted {
+			saved = got
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if saved == nil {
+		last, _ := store.Get(ctx, first.ZipTaskID)
+		t.Fatalf("bundle did not complete in time: %+v", last)
+	}
+
+	all, err := app.ListTasks()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(all) != 1 || all[0].ID != first.ZipTaskID {
+		t.Fatalf("expected exactly one bundle task, got %+v", all)
+	}
+	// 列表读取走事件视图：成员明细（含请求头）不进入前端，但持久化里必须还在。
+	if all[0].Bundle == nil || len(all[0].Bundle.Members) != 0 {
+		t.Fatalf("expected ListTasks to strip bundle members, got %+v", all[0].Bundle)
+	}
+	if len(saved.Bundle.Members) != 2 {
+		t.Fatalf("expected stored bundle to keep members, got %+v", saved.Bundle)
+	}
+
+	zipPath := filepath.Join(saved.Directory, saved.Filename)
+	if _, err := os.Stat(zipPath); err != nil {
+		t.Fatalf("zip not created: %v", err)
+	}
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("open zip: %v", err)
+	}
+	defer func() { _ = zr.Close() }()
+	if len(zr.File) != 2 || zr.File[0].Name != "app-pack/a.bin" || zr.File[1].Name != "app-pack/b.bin" {
+		t.Fatalf("unexpected zip entries: %+v", zr.File)
 	}
 }
 

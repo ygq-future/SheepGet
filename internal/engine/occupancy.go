@@ -53,7 +53,7 @@ func (o Occupancy) Taken(dir, name string) bool {
 			continue
 		}
 		switch t.Status {
-		case task.StatusDownloading, task.StatusQueued, task.StatusProcessing:
+		case task.StatusDownloading, task.StatusQueued, task.StatusProcessing, task.StatusCollecting:
 			return true
 		}
 	}

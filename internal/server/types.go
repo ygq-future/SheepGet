@@ -53,6 +53,14 @@ type CreateTaskRequest struct {
 	Filename  string            `json:"filename,omitempty"`
 	Directory string            `json:"directory,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
+	// ZipID 把这次下载登记进一个 zip 聚合批次。为空时就是普通下载，行为完全不变。
+	ZipID string `json:"zipId,omitempty"`
+	// ZipName 是批次最终 zip 的文件名（可带 .zip）。首个成员生效，后续传了必须一致。
+	ZipName string `json:"zipName,omitempty"`
+	// ZipPath 是成员在 zip 内的相对路径；为空时用成员文件名。
+	ZipPath string `json:"zipPath,omitempty"`
+	// ZipFinal 表示这是批次的最后一个成员，登记后立即闭合并开始下载。
+	ZipFinal bool `json:"zipFinal,omitempty"`
 	// ShowProgressWindow 覆盖「自动显示下载进度窗口」。
 	ShowProgressWindow *bool `json:"showProgressWindow,omitempty"`
 	// KeepCompletedInfo 覆盖「保留完成信息」。
@@ -63,12 +71,38 @@ type CreateTaskRequest struct {
 }
 
 // CreateTaskResponse is returned upon successful task creation.
+//
+// zip 聚合请求不会为成员创建任务：TaskID 为空，ZipTaskID 指向唯一的批次任务。
 type CreateTaskResponse struct {
 	TaskID    string `json:"taskId"`
 	URL       string `json:"url"`
 	Filename  string `json:"filename"`
 	Directory string `json:"directory"`
 	Status    string `json:"status"`
+
+	ZipTaskID string          `json:"zipTaskId,omitempty"`
+	Zip       *ZipTaskState   `json:"zip,omitempty"`
+	Member    *ZipMemberState `json:"member,omitempty"`
+}
+
+// ZipTaskState 是 zip 聚合批次对外的摘要，界面与 Agent 都只依赖这份状态。
+type ZipTaskState struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Directory  string `json:"directory"`
+	Files      int    `json:"files"`
+	KnownBytes int64  `json:"knownBytes"`
+	TotalBytes int64  `json:"totalBytes"`
+	Sealed     bool   `json:"sealed"`
+	Status     string `json:"status"`
+}
+
+// ZipMemberState 是本次登记成员的结果；Duplicate 表示这是一次幂等重试。
+type ZipMemberState struct {
+	Filename   string `json:"filename"`
+	Path       string `json:"path"`
+	TotalBytes int64  `json:"totalBytes"`
+	Duplicate  bool   `json:"duplicate"`
 }
 
 // HLSVariantsRequest 是扩展悬浮条在交接前拉取清晰度列表的请求：清单地址加上取回清单

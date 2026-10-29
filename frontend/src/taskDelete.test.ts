@@ -36,6 +36,9 @@ describe('shouldDefaultDeleteDiskFileForTask', () => {
       true,
     );
     expect(shouldDefaultDeleteDiskFileForTask(createTask('5', task.Status.StatusError))).toBe(true);
+    expect(shouldDefaultDeleteDiskFileForTask(createTask('6', task.Status.StatusCollecting))).toBe(
+      true,
+    );
   });
 });
 

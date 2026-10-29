@@ -508,6 +508,15 @@ func (a *App) RetryProcessingTask(id string) error {
 	return a.manager.RetryProcessing(a.ctx, id)
 }
 
+// SealBundleTask closes a zip aggregation batch that is still collecting members.
+// 它是 Agent 忘记发送 zipFinal 时的人工安全阀：闭合后批次立即排队下载。
+func (a *App) SealBundleTask(id string) error {
+	if a.manager == nil {
+		return fmt.Errorf("download engine not initialized")
+	}
+	return a.manager.SealBundle(a.ctx, id)
+}
+
 func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 	if deleteDiskFile {
 		t, err := a.store.Get(a.ctx, id)
@@ -518,9 +527,20 @@ func (a *App) DeleteTask(id string, deleteDiskFile bool) error {
 	return a.manager.Delete(a.ctx, id)
 }
 
-// ListTasks lists all tasks
+// ListTasks lists all tasks.
+//
+// 交给前端的一律是事件视图：zip 聚合任务的成员明细（含成员请求头）只用于后端续传与打包，
+// 没有展示价值，也不能随一次列表读取进入前端进程。
 func (a *App) ListTasks() ([]*task.Task, error) {
-	return a.manager.List(a.ctx)
+	tasks, err := a.manager.List(a.ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*task.Task, len(tasks))
+	for i, t := range tasks {
+		out[i] = t.EventView()
+	}
+	return out, nil
 }
 
 // migrateHistoricalTasksCategory 检查历史任务并补齐或纠偏分类（仅在启动时进行一次性迁移固化）。

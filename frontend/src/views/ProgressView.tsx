@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Loader2,
   Layers,
+  Package,
 } from 'lucide-react';
 import { useSettingsStore } from '../stores/settings';
 import {
@@ -28,6 +29,7 @@ import {
   ResumeTask,
   RetryTask,
   RetryProcessingTask,
+  SealBundleTask,
   MinimiseProgressWindow,
   HideProgressWindow,
   SetProgressWindowHeight,
@@ -63,14 +65,16 @@ export function sortActiveTasks(taskList: taskModels.Task[]): taskModels.Task[] 
           return 1;
         case taskModels.Status.StatusDownloading:
           return 2;
-        case taskModels.Status.StatusQueued:
+        case taskModels.Status.StatusCollecting:
           return 3;
-        case taskModels.Status.StatusPaused:
+        case taskModels.Status.StatusQueued:
           return 4;
-        case taskModels.Status.StatusError:
+        case taskModels.Status.StatusPaused:
           return 5;
-        default:
+        case taskModels.Status.StatusError:
           return 6;
+        default:
+          return 7;
       }
     };
 
@@ -402,6 +406,14 @@ export function ProgressView() {
     }
   };
 
+  const handleSeal = async (t: taskModels.Task) => {
+    try {
+      await SealBundleTask(t.id);
+    } catch (err) {
+      console.error('Failed to seal zip bundle:', err);
+    }
+  };
+
   const sortedActive = useMemo(() => {
     const completedIds = new Set(completedTasks.map((c) => c.id));
     const nonCompleted = activeTasks.filter(
@@ -585,6 +597,8 @@ export function ProgressView() {
               <LayoutGroup id="active-tasks-list">
                 <AnimatePresence mode="popLayout">
                   {sortedActive.map((t) => {
+                    const isCollecting = t.status === taskModels.Status.StatusCollecting;
+                    const bundleKnown = t.bundle?.knownBytes ?? 0;
                     const isUnknownSize = t.totalBytes <= 0;
                     const percent =
                       t.totalBytes > 0
@@ -620,6 +634,12 @@ export function ProgressView() {
                               {t.filename}
                             </span>
                             {/* Status Badge */}
+                            {t.status === taskModels.Status.StatusCollecting && (
+                              <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 text-[9px] font-medium text-sky-400">
+                                <Loader2 className="h-2 w-2 animate-spin" />
+                                收集中
+                              </span>
+                            )}
                             {t.status === taskModels.Status.StatusDownloading && (
                               <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--border-focus)] bg-[var(--accent-muted)] px-1.5 text-[9px] font-medium text-[var(--accent)]">
                                 <span className="h-1 w-1 animate-pulse rounded-full bg-[var(--accent)]" />
@@ -629,7 +649,7 @@ export function ProgressView() {
                             {t.status === taskModels.Status.StatusProcessing && (
                               <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/15 px-1.5 text-[9px] font-medium text-cyan-400">
                                 <Loader2 className="h-2 w-2 animate-spin" />
-                                处理中
+                                {t.bundle ? '打包中' : '处理中'}
                               </span>
                             )}
                             {t.status === taskModels.Status.StatusQueued && (
@@ -647,13 +667,28 @@ export function ProgressView() {
                             {t.status === taskModels.Status.StatusError && (
                               <span className="py-0.2 inline-flex shrink-0 items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/15 px-1.5 text-[9px] font-medium text-rose-400">
                                 <AlertCircle className="h-2 w-2" />
-                                {isProcessingError ? '处理失败' : '下载失败'}
+                                {isProcessingError
+                                  ? t.bundle
+                                    ? '打包失败'
+                                    : '处理失败'
+                                  : '下载失败'}
                               </span>
                             )}
                           </div>
 
                           {/* Control Buttons */}
                           <div className="flex shrink-0 items-center gap-1">
+                            {t.status === taskModels.Status.StatusCollecting && (
+                              <button
+                                type="button"
+                                onClick={() => void handleSeal(t)}
+                                className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-sky-400 transition-colors hover:bg-sky-500/10 hover:text-sky-300"
+                                title="立即打包并开始下载"
+                              >
+                                <Package className="h-3 w-3" />
+                                <span>立即打包</span>
+                              </button>
+                            )}
                             {t.status === taskModels.Status.StatusDownloading && (
                               <button
                                 type="button"
@@ -680,10 +715,22 @@ export function ProgressView() {
                                 type="button"
                                 onClick={() => void handleRetry(t)}
                                 className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-sky-400 transition-colors hover:bg-sky-500/10 hover:text-sky-300"
-                                title={isProcessingError ? '仅重试媒体处理' : '重试下载'}
+                                title={
+                                  isProcessingError
+                                    ? t.bundle
+                                      ? '仅重试打包'
+                                      : '仅重试媒体处理'
+                                    : '重试下载'
+                                }
                               >
                                 <RotateCcw className="h-3 w-3" />
-                                <span>{isProcessingError ? '重试处理' : '重试'}</span>
+                                <span>
+                                  {isProcessingError
+                                    ? t.bundle
+                                      ? '重试打包'
+                                      : '重试处理'
+                                    : '重试'}
+                                </span>
                               </button>
                             )}
                           </div>
@@ -692,7 +739,11 @@ export function ProgressView() {
                         {/* Seamless Multi-Chunk Progress Bar with In-place Split Dividers */}
                         <div className="mt-1.5 space-y-1">
                           <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-subtle)] p-[0.5px]">
-                            {t.segmentDone && t.segmentDone.length > 1 ? (
+                            {isCollecting ? (
+                              /* 收集阶段没有下载字节：用不确定态表示「正在等待 Agent 登记」，
+                                 不伪造一个 0% 或持续增长的百分比。 */
+                              <div className="h-full w-full animate-pulse rounded-full bg-[var(--accent)]/30" />
+                            ) : t.segmentDone && t.segmentDone.length > 1 ? (
                               /* HLS 分段格子条：一格一分片（长清单按组聚合），完成一格亮一格。
                                  和普通 HTTP 的多线程分段同样的视觉——多路并发抓分片要看得见，
                                  不能是一根从头到尾的实心条。放最前：HLS 多数大小未知，
@@ -788,9 +839,38 @@ export function ProgressView() {
                           {/* Detail Metrics Row */}
                           <div className="flex items-center justify-between font-mono text-[10px] text-[var(--text-muted)]">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                              <span>{formatBytes(t.downloaded)}</span>
-                              <span>/</span>
-                              <span>{isUnknownSize ? '未知大小' : formatBytes(t.totalBytes)}</span>
+                              {isCollecting ? (
+                                <>
+                                  <span className="font-semibold text-[var(--text-secondary)]">
+                                    已收集 {t.bundle?.filesTotal ?? 0} 个文件
+                                  </span>
+                                  {bundleKnown > 0 && (
+                                    <>
+                                      <span>•</span>
+                                      <span>{formatBytes(bundleKnown)}</span>
+                                    </>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  <span>{formatBytes(t.downloaded)}</span>
+                                  <span>/</span>
+                                  <span>
+                                    {isUnknownSize ? '未知大小' : formatBytes(t.totalBytes)}
+                                  </span>
+                                </>
+                              )}
+                              {t.bundle &&
+                                (t.status === taskModels.Status.StatusDownloading ||
+                                  t.status === taskModels.Status.StatusProcessing ||
+                                  t.status === taskModels.Status.StatusPaused) && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="font-semibold text-[var(--text-secondary)]">
+                                      文件 {t.bundle.filesDone}/{t.bundle.filesTotal}
+                                    </span>
+                                  </>
+                                )}
                               {/* HLS 分片进度：分片是多路并发抓取的，把计数亮出来，
                                   「正在并发下载」对用户才是可见的，而不是看起来像单线程流。 */}
                               {(t.segmentsTotal ?? 0) > 0 && (
@@ -830,7 +910,11 @@ export function ProgressView() {
                                 )}
                             </div>
                             <div className="shrink-0">
-                              {isUnknownSize ? '未知大小' : `${percent}%`}
+                              {isCollecting
+                                ? '等待确认'
+                                : isUnknownSize
+                                  ? '未知大小'
+                                  : `${percent}%`}
                             </div>
                           </div>
 

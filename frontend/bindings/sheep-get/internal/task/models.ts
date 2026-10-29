@@ -124,6 +124,12 @@ export enum Status {
     StatusPaused = "paused",
     StatusCompleted = "completed",
     StatusError = "error",
+
+    /**
+     * StatusCollecting 是 zip 聚合任务在等待 Agent 登记完成员、尚未闭合时的状态。
+     * 它不占下载名额，也不会被调度器当成排队任务启动：此时还没有任何一个字节要传输。
+     */
+    StatusCollecting = "collecting",
 };
 
 /**
@@ -236,6 +242,12 @@ export class Task {
     "transferDone"?: boolean;
 
     /**
+     * Bundle 非空表示这是一条 zip 聚合任务：URL 为空，成员与批次事实都在这里。
+     * 成员不建独立任务，因此任务列表里只会看到这一条。
+     */
+    "bundle"?: ZipBundle | null;
+
+    /**
      * ProgressDisplay 是本次下载在下载进度窗口中的展示约定（HTTP 直连接口按次传入的覆盖）。
      * 为 nil 时完全跟随配置中心；有值时只覆盖给出的那几项。
      */
@@ -299,6 +311,7 @@ export class Task {
         const $$createField28_0 = $$createType4;
         const $$createField29_0 = $$createType6;
         const $$createField31_0 = $$createType8;
+        const $$createField32_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunks" in $$parsedSource) {
             $$parsedSource["chunks"] = $$createField24_0($$parsedSource["chunks"]);
@@ -312,10 +325,143 @@ export class Task {
         if ("mediaInputs" in $$parsedSource) {
             $$parsedSource["mediaInputs"] = $$createField29_0($$parsedSource["mediaInputs"]);
         }
+        if ("bundle" in $$parsedSource) {
+            $$parsedSource["bundle"] = $$createField31_0($$parsedSource["bundle"]);
+        }
         if ("progressDisplay" in $$parsedSource) {
-            $$parsedSource["progressDisplay"] = $$createField31_0($$parsedSource["progressDisplay"]);
+            $$parsedSource["progressDisplay"] = $$createField32_0($$parsedSource["progressDisplay"]);
         }
         return new Task($$parsedSource as Partial<Task>);
+    }
+}
+
+/**
+ * ZipBundle 是 zip 聚合任务的批次事实。一个批次只对应一个 Task：成员登记、下载与打包
+ * 都围绕它进行，任务列表与进度窗口因此只出现一条记录。
+ */
+export class ZipBundle {
+    "zipId": string;
+
+    /**
+     * RequestedName 是调用方请求的 zip 名字（清洗后），用于判断后续成员是否仍在同一批次；
+     * Name 是实际落点上的文件名（可能因占用而带上序号副本）。
+     */
+    "requestedName"?: string;
+    "name": string;
+    "sealed": boolean;
+    "filesTotal": number;
+    "filesDone": number;
+    "knownBytes": number;
+    "packagedFiles"?: number;
+    "members"?: ZipMember[];
+
+    /** Creates a new ZipBundle instance. */
+    constructor($$source: Partial<ZipBundle> = {}) {
+        if (!("zipId" in $$source)) {
+            this["zipId"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("sealed" in $$source)) {
+            this["sealed"] = false;
+        }
+        if (!("filesTotal" in $$source)) {
+            this["filesTotal"] = 0;
+        }
+        if (!("filesDone" in $$source)) {
+            this["filesDone"] = 0;
+        }
+        if (!("knownBytes" in $$source)) {
+            this["knownBytes"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ZipBundle instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ZipBundle {
+        const $$createField8_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("members" in $$parsedSource) {
+            $$parsedSource["members"] = $$createField8_0($$parsedSource["members"]);
+        }
+        return new ZipBundle($$parsedSource as Partial<ZipBundle>);
+    }
+}
+
+/**
+ * ZipMember 是 zip 聚合任务里的一个成员文件。
+ * 
+ * 成员不是独立任务：它没有自己的任务 ID、不广播自己的进度，只在所属 zip 任务里留下
+ * 续传与打包所需的元数据。Headers 是成员自己的请求上下文，事件载荷会把整个成员列表剥掉。
+ */
+export class ZipMember {
+    "url": string;
+    "finalUrl"?: string;
+    "entryPath": string;
+    "filename": string;
+    "stagingName": string;
+    "totalBytes": number;
+    "downloaded": number;
+    "done": boolean;
+    "error"?: string;
+    "resumable"?: boolean;
+    "etag"?: string;
+    "lastModified"?: string;
+    "chunks"?: Chunk[];
+
+    /**
+     * Headers 是该成员的请求上下文（Referer/Cookie/Authorization…）。它只用于重试与续传，
+     * 绝不进入任务事件：成员列表在广播前会被剥掉，避免把敏感头逐帧发给界面。
+     */
+    "headers"?: { [_ in string]?: string };
+    "directTransfer"?: boolean;
+    "proxyAddr"?: string;
+
+    /** Creates a new ZipMember instance. */
+    constructor($$source: Partial<ZipMember> = {}) {
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("entryPath" in $$source)) {
+            this["entryPath"] = "";
+        }
+        if (!("filename" in $$source)) {
+            this["filename"] = "";
+        }
+        if (!("stagingName" in $$source)) {
+            this["stagingName"] = "";
+        }
+        if (!("totalBytes" in $$source)) {
+            this["totalBytes"] = 0;
+        }
+        if (!("downloaded" in $$source)) {
+            this["downloaded"] = 0;
+        }
+        if (!("done" in $$source)) {
+            this["done"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ZipMember instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ZipMember {
+        const $$createField12_0 = $$createType1;
+        const $$createField13_0 = $$createType13;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("chunks" in $$parsedSource) {
+            $$parsedSource["chunks"] = $$createField12_0($$parsedSource["chunks"]);
+        }
+        if ("headers" in $$parsedSource) {
+            $$parsedSource["headers"] = $$createField13_0($$parsedSource["headers"]);
+        }
+        return new ZipMember($$parsedSource as Partial<ZipMember>);
     }
 }
 
@@ -327,5 +473,10 @@ const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = $Create.Array($Create.Any);
 const $$createType5 = hls$0.Inputs.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = ProgressDisplay.createFrom;
+const $$createType7 = ZipBundle.createFrom;
 const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = ProgressDisplay.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);
+const $$createType11 = ZipMember.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = $Create.Map($Create.Any, $Create.Any);

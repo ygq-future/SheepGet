@@ -291,4 +291,7 @@ func (m *Manager) RemoveTaskFiles(t *task.Task) {
 	if t.IsHLS() {
 		m.removeSegmentDir(t)
 	}
+	if t.IsBundle() {
+		m.removeBundleStaging(t)
+	}
 }

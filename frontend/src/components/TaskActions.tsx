@@ -9,6 +9,7 @@ import {
   Play,
   Pause,
   RotateCcw,
+  Package,
 } from 'lucide-react';
 import * as task from '../../bindings/sheep-get/internal/task/models';
 import { Browser, Clipboard } from '@wailsio/runtime';
@@ -23,6 +24,8 @@ export interface TaskActionsProps {
   onResume?: (task: task.Task) => void;
   onPause?: (task: task.Task) => void;
   onRetry?: (task: task.Task) => void;
+  /** 收集中的 zip 批次：立即闭合并开始下载。 */
+  onSeal?: (task: task.Task) => void;
   className?: string;
 }
 
@@ -35,6 +38,7 @@ export function TaskActions({
   onResume,
   onPause,
   onRetry,
+  onSeal,
   className = '',
 }: TaskActionsProps) {
   const fullPath = t.directory ? `${t.directory}/${t.filename}` : t.filename;
@@ -115,6 +119,13 @@ export function TaskActions({
     }
   };
 
+  const handleSeal = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (onSeal) {
+      onSeal(t);
+    }
+  };
+
   const isCompleted = t.status === task.Status.StatusCompleted;
 
   // 双击卡片本身会打开进度窗口（TaskItem 的 onDoubleClick），动作条浮在卡片上方，
@@ -125,6 +136,18 @@ export function TaskActions({
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
     >
+      {/* Seal a collecting zip batch: the Agent may have forgotten zipFinal. */}
+      {t.status === task.Status.StatusCollecting && onSeal && (
+        <button
+          type="button"
+          onClick={handleSeal}
+          className="rounded-md p-1 text-sky-500 transition-colors hover:bg-sky-500/15 hover:text-sky-400"
+          title="立即打包并开始下载"
+        >
+          <Package className="h-3.5 w-3.5" />
+        </button>
+      )}
+
       {/* Resume button for paused task */}
       {t.status === task.Status.StatusPaused && onResume && (
         <button
@@ -162,17 +185,19 @@ export function TaskActions({
         </button>
       )}
 
-      {/* Copy link button */}
-      <button
-        type="button"
-        onClick={(e) => {
-          void handleCopy(e);
-        }}
-        className="rounded-md p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]"
-        title="复制下载链接"
-      >
-        <Copy className="h-3.5 w-3.5" />
-      </button>
+      {/* Copy link button — zip batches have no single URL to copy. */}
+      {Boolean(t.url) && (
+        <button
+          type="button"
+          onClick={(e) => {
+            void handleCopy(e);
+          }}
+          className="rounded-md p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] hover:text-[var(--text-primary)]"
+          title="复制下载链接"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+      )}
 
       {/* Open source webpage */}
       {Boolean(t.pageUrl) && (

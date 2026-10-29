@@ -19,6 +19,9 @@ const (
 	StatusPaused      Status = "paused"
 	StatusCompleted   Status = "completed"
 	StatusError       Status = "error"
+	// StatusCollecting 是 zip 聚合任务在等待 Agent 登记完成员、尚未闭合时的状态。
+	// 它不占下载名额，也不会被调度器当成排队任务启动：此时还没有任何一个字节要传输。
+	StatusCollecting Status = "collecting"
 )
 
 // FailurePhase records which stage of the pipeline failed. 传输与处理是两条不同的失败路径：
@@ -53,6 +56,47 @@ type ProgressDisplay struct {
 	KeepCompletedInfo *bool `json:"keepCompletedInfo,omitempty"`
 	// FocusProgressWindowOnComplete 覆盖「完成后聚焦进度窗口」：完成时是否把窗口拉到最前。
 	FocusProgressWindowOnComplete *bool `json:"focusProgressWindowOnComplete,omitempty"`
+}
+
+// ZipMember 是 zip 聚合任务里的一个成员文件。
+//
+// 成员不是独立任务：它没有自己的任务 ID、不广播自己的进度，只在所属 zip 任务里留下
+// 续传与打包所需的元数据。Headers 是成员自己的请求上下文，事件载荷会把整个成员列表剥掉。
+type ZipMember struct {
+	URL          string  `json:"url"`
+	FinalURL     string  `json:"finalUrl,omitempty"`
+	EntryPath    string  `json:"entryPath"`
+	Filename     string  `json:"filename"`
+	StagingName  string  `json:"stagingName"`
+	TotalBytes   int64   `json:"totalBytes"`
+	Downloaded   int64   `json:"downloaded"`
+	Done         bool    `json:"done"`
+	Error        string  `json:"error,omitempty"`
+	Resumable    bool    `json:"resumable,omitempty"`
+	ETag         string  `json:"etag,omitempty"`
+	LastModified string  `json:"lastModified,omitempty"`
+	Chunks       []Chunk `json:"chunks,omitempty"`
+	// Headers 是该成员的请求上下文（Referer/Cookie/Authorization…）。它只用于重试与续传，
+	// 绝不进入任务事件：成员列表在广播前会被剥掉，避免把敏感头逐帧发给界面。
+	Headers        map[string]string `json:"headers,omitempty"`
+	DirectTransfer bool              `json:"directTransfer,omitempty"`
+	ProxyAddr      string            `json:"proxyAddr,omitempty"`
+}
+
+// ZipBundle 是 zip 聚合任务的批次事实。一个批次只对应一个 Task：成员登记、下载与打包
+// 都围绕它进行，任务列表与进度窗口因此只出现一条记录。
+type ZipBundle struct {
+	ZipID string `json:"zipId"`
+	// RequestedName 是调用方请求的 zip 名字（清洗后），用于判断后续成员是否仍在同一批次；
+	// Name 是实际落点上的文件名（可能因占用而带上序号副本）。
+	RequestedName string      `json:"requestedName,omitempty"`
+	Name          string      `json:"name"`
+	Sealed        bool        `json:"sealed"`
+	FilesTotal    int         `json:"filesTotal"`
+	FilesDone     int         `json:"filesDone"`
+	KnownBytes    int64       `json:"knownBytes"`
+	PackagedFiles int         `json:"packagedFiles,omitempty"`
+	Members       []ZipMember `json:"members,omitempty"`
 }
 
 // Task represents a download task in SheepGet.
@@ -121,6 +165,10 @@ type Task struct {
 	// 它是「传输已完成」这一事实的唯一记录——处理失败后不能靠重新传输来恢复。
 	TransferDone bool `json:"transferDone,omitempty"`
 
+	// Bundle 非空表示这是一条 zip 聚合任务：URL 为空，成员与批次事实都在这里。
+	// 成员不建独立任务，因此任务列表里只会看到这一条。
+	Bundle *ZipBundle `json:"bundle,omitempty"`
+
 	// ProgressDisplay 是本次下载在下载进度窗口中的展示约定（HTTP 直连接口按次传入的覆盖）。
 	// 为 nil 时完全跟随配置中心；有值时只覆盖给出的那几项。
 	ProgressDisplay *ProgressDisplay `json:"progressDisplay,omitempty"`
@@ -134,6 +182,16 @@ type Task struct {
 // IsHLS reports whether this task downloads an HLS playlist and therefore has a processing stage.
 func (t *Task) IsHLS() bool {
 	return t != nil && t.Media != nil
+}
+
+// IsBundle reports whether this task aggregates several files into one zip.
+func (t *Task) IsBundle() bool {
+	return t != nil && t.Bundle != nil
+}
+
+// NeedsProcessing reports whether the task has a stage after transfer (HLS muxing or zip packaging).
+func (t *Task) NeedsProcessing() bool {
+	return t.IsHLS() || t.IsBundle()
 }
 
 // EffectiveURL 返回本次下载实际应当连接的目标地址：若解析出了 FinalURL 则优先使用，否则使用原始 URL。
@@ -168,7 +226,49 @@ func (t *Task) Clone() *Task {
 	if t.RequestHeaders != nil {
 		cloned.RequestHeaders = t.RequestHeaders.Clone()
 	}
+	if t.Bundle != nil {
+		bundle := *t.Bundle
+		if len(t.Bundle.Members) > 0 {
+			bundle.Members = make([]ZipMember, len(t.Bundle.Members))
+			for i, member := range t.Bundle.Members {
+				if len(member.Chunks) > 0 {
+					member.Chunks = append([]Chunk(nil), member.Chunks...)
+				}
+				if member.Headers != nil {
+					headers := make(map[string]string, len(member.Headers))
+					for name, value := range member.Headers {
+						headers[name] = value
+					}
+					member.Headers = headers
+				}
+				bundle.Members[i] = member
+			}
+		}
+		cloned.Bundle = &bundle
+	}
 	return &cloned
+}
+
+// EventView 返回一份可以安全广播的副本：普通任务就是 Clone；zip 聚合任务剥掉成员明细，
+// 只留下文件计数与大小汇总。成员 URL、请求头与分片状态没有展示价值，却会让每一帧事件
+// 随成员数线性膨胀——聚合任务的事件载荷必须与成员数无关。
+func (t *Task) EventView() *Task {
+	if t == nil {
+		return nil
+	}
+	if t.Bundle == nil {
+		return t.Clone()
+	}
+	view := *t
+	bundle := *t.Bundle
+	bundle.Members = nil
+	view.Bundle = &bundle
+	view.Chunks = nil
+	view.SegmentDone = nil
+	if t.RequestHeaders != nil {
+		view.RequestHeaders = t.RequestHeaders.Clone()
+	}
+	return &view
 }
 
 // TaskStore defines the storage interface for persisting and querying tasks.

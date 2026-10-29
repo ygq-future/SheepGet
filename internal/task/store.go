@@ -79,8 +79,10 @@ func (s *FileTaskStore) load() error {
 		if len(pt.RawHeaders) > 0 {
 			t.RequestHeaders = credentials.New(pt.RawHeaders)
 		}
-		// As per spec A03 and A19: restart retains records, all wait for manual continuation
-		if t.Status == StatusDownloading || t.Status == StatusQueued {
+		// As per spec A03 and A19: restart retains records, all wait for manual continuation.
+		// processing 也要落到 paused：打包/合并只发生在一次运行的 goroutine 里，重启后没有
+		// 任何人在跑它；留在 processing 会得到一条永远「处理中」的任务。
+		if t.Status == StatusDownloading || t.Status == StatusQueued || t.Status == StatusProcessing {
 			t.Status = StatusPaused
 		}
 		t.Speed = 0

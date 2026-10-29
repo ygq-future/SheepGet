@@ -548,3 +548,73 @@ func TestServer_CreateTaskEndpoint(t *testing.T) {
 		t.Errorf("display overrides did not arrive intact: %+v", received)
 	}
 }
+
+func TestServer_CreateTaskZipFieldsAndConflictStatus(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionPath := filepath.Join(tempDir, "session.json")
+	mockH := &mockDownloadHandler{
+		createResp: &CreateTaskResponse{
+			ZipTaskID: "task_zip_1",
+			Filename:  "pack.zip",
+			Directory: tempDir,
+			Status:    "collecting",
+			Zip: &ZipTaskState{
+				ID:         "pack-1",
+				Name:       "pack.zip",
+				Directory:  tempDir,
+				Files:      2,
+				KnownBytes: 10,
+				TotalBytes: 10,
+				Status:     "collecting",
+			},
+			Member: &ZipMemberState{Filename: "a.txt", Path: "pack/a.txt", TotalBytes: 5},
+		},
+	}
+	srv := NewServer(sessionPath, mockH, &mockConfigProvider{})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+	body := `{"url":"https://example.com/a.txt","filename":"a.txt","zipId":"pack-1","zipName":"pack","zipPath":"pack/a.txt","zipFinal":false}`
+	req, _ := http.NewRequest("POST", baseURL+protocol.PathTasks, bytes.NewBufferString(body))
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+	}
+	var created CreateTaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if created.TaskID != "" || created.ZipTaskID != "task_zip_1" || created.Zip == nil || created.Member == nil {
+		t.Fatalf("unexpected zip response: %+v", created)
+	}
+	got := mockH.handledCreateReq
+	if got == nil || got.ZipID != "pack-1" || got.ZipName != "pack" || got.ZipPath != "pack/a.txt" || got.ZipFinal {
+		t.Fatalf("zip fields did not arrive intact: %+v", got)
+	}
+
+	// 引擎把批次冲突实现为带 HTTPStatus 的错误时，接口必须返回 409。
+	mockH.err = codedTestError{}
+	req, _ = http.NewRequest("POST", baseURL+protocol.PathTasks, bytes.NewBufferString(body))
+	req.Header.Set(protocol.HeaderToken, srv.SessionToken())
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("conflict request failed: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", resp2.StatusCode)
+	}
+}
+
+type codedTestError struct{}
+
+func (codedTestError) Error() string   { return "zip sealed" }
+func (codedTestError) HTTPStatus() int { return http.StatusConflict }

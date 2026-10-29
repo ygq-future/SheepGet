@@ -11,6 +11,7 @@ import (
 
 	"sheep-get/internal/config"
 	"sheep-get/internal/credentials"
+	"sheep-get/internal/engine"
 	"sheep-get/internal/intake"
 	"sheep-get/internal/server"
 	"sheep-get/internal/settingsapply"
@@ -111,6 +112,9 @@ func (a *App) handleCreateTask(ctx context.Context, req *server.CreateTaskReques
 	if req == nil {
 		return nil, fmt.Errorf("empty request")
 	}
+	if strings.TrimSpace(req.ZipID) != "" {
+		return a.registerBundleMember(ctx, req)
+	}
 	dlReq := window.DownloadRequest{
 		URL:       req.URL,
 		Filename:  req.Filename,
@@ -118,6 +122,79 @@ func (a *App) handleCreateTask(ctx context.Context, req *server.CreateTaskReques
 		Headers:   req.Headers,
 	}
 	return a.directDownload(ctx, dlReq, progressDisplayOverride(req))
+}
+
+// registerBundleMember 把一个成员登记进 zip 聚合批次。它不经过文件信息窗口，也不为
+// 成员创建任务：落点、分类与展示约定只在首个成员时解析一次，后续成员沿用批次的事实。
+func (a *App) registerBundleMember(ctx context.Context, req *server.CreateTaskRequest) (*server.CreateTaskResponse, error) {
+	if a.manager == nil {
+		return nil, fmt.Errorf("download engine not initialized")
+	}
+	if a.settings == nil {
+		return nil, fmt.Errorf("settings not initialized")
+	}
+
+	st := a.GetSettings()
+	zipID := strings.TrimSpace(req.ZipID)
+	zipName := engine.BundleFilename(req.ZipName, zipID)
+	dir := strings.TrimSpace(req.Directory)
+	cat, resolvedDir := st.Download.ResolveDestination(zipName)
+	categoryID := cat.ID
+	if dir == "" {
+		dir = resolvedDir
+	}
+
+	reg, err := a.manager.RegisterBundleMember(ctx, engine.BundleRegisterRequest{
+		ZipID:           zipID,
+		ZipName:         req.ZipName,
+		Directory:       dir,
+		CategoryID:      categoryID,
+		Final:           req.ZipFinal,
+		MaxConn:         st.Download.DefaultConnectionsPerTask,
+		ProgressDisplay: progressDisplayOverride(req),
+		Member: engine.BundleMemberRequest{
+			URL:       req.URL,
+			Filename:  req.Filename,
+			EntryPath: req.ZipPath,
+			Headers:   req.Headers,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// 只在创建批次时按设置呼出一次进度窗口；后续成员登记不再反复抢前台。
+	if reg.Created {
+		if show, _, _ := a.progressDisplay(reg.Task); show {
+			a.ShowProgressWindow(reg.Task.ID)
+		}
+	}
+
+	bundle := reg.Task.Bundle
+	return &server.CreateTaskResponse{
+		TaskID:    "",
+		URL:       req.URL,
+		Filename:  reg.Task.Filename,
+		Directory: reg.Task.Directory,
+		Status:    string(reg.Task.Status),
+		ZipTaskID: reg.Task.ID,
+		Zip: &server.ZipTaskState{
+			ID:         bundle.ZipID,
+			Name:       bundle.Name,
+			Directory:  reg.Task.Directory,
+			Files:      bundle.FilesTotal,
+			KnownBytes: bundle.KnownBytes,
+			TotalBytes: reg.Task.TotalBytes,
+			Sealed:     bundle.Sealed,
+			Status:     string(reg.Task.Status),
+		},
+		Member: &server.ZipMemberState{
+			Filename:   reg.Member.Filename,
+			Path:       reg.Member.EntryPath,
+			TotalBytes: reg.Member.TotalBytes,
+			Duplicate:  reg.Duplicate,
+		},
+	}, nil
 }
 
 // progressDisplayOverride 把接口按次传入的展示参数翻成任务上的覆盖。三项都没给时返回 nil，
