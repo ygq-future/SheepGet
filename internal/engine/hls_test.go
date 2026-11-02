@@ -144,3 +144,65 @@ func TestManager_HLSProcessingPreFlightDiskSpaceCheck(t *testing.T) {
 	}
 	t.Fatal("timed out waiting for HLS processing disk space failure")
 }
+
+// TestManager_HLSCompletedTaskAdoptsArtifactSize 固定完成态的大小事实：HLS 任务可能全程
+// 没探出总大小（逐分片探测超时或分片数超出探测上限），但成品已经落盘。完成时任务大小
+// 必须等于成品文件的字节数，否则进度窗口只能一直显示「未知大小」——大小明明就在磁盘上。
+func TestManager_HLSCompletedTaskAdoptsArtifactSize(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	mgr := engine.NewManager(store, nil, engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+
+	sample, err := os.ReadFile(filepath.Join("..", "media", "testdata", "h264_aac.ts"))
+	if err != nil {
+		t.Fatalf("read media sample: %v", err)
+	}
+
+	hlsTask := &task.Task{
+		ID:           "hls-unknown-size",
+		URL:          "https://example.com/media.m3u8",
+		Filename:     "clip.mp4",
+		Directory:    tmpDir,
+		Status:       task.StatusError,
+		FailurePhase: task.FailurePhaseProcessing,
+		TransferDone: true,
+		TotalBytes:   -1,
+		Media: &hls.Source{
+			PlaylistURL: "https://example.com/media.m3u8",
+			Segments:    1,
+		},
+		MediaInputs: &hls.Inputs{
+			Segments: []string{"seg_00000.ts"},
+		},
+	}
+	segDir := mgr.GetPartPath(hlsTask) + ".segments"
+	if err := os.MkdirAll(segDir, 0o755); err != nil {
+		t.Fatalf("mkdir segments: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(segDir, "seg_00000.ts"), sample, 0o644); err != nil {
+		t.Fatalf("write segment: %v", err)
+	}
+	if err := store.Save(context.Background(), hlsTask); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+
+	if err := mgr.RetryProcessing(context.Background(), hlsTask.ID); err != nil {
+		t.Fatalf("RetryProcessing: %v", err)
+	}
+	completed := waitForStatus(t, store, hlsTask.ID, 10*time.Second, task.StatusCompleted)
+
+	info, err := os.Stat(filepath.Join(tmpDir, "clip.mp4"))
+	if err != nil {
+		t.Fatalf("stat merged output: %v", err)
+	}
+	if completed.TotalBytes != info.Size() {
+		t.Fatalf("completed TotalBytes = %d, want artifact size %d", completed.TotalBytes, info.Size())
+	}
+	if completed.Downloaded != info.Size() {
+		t.Fatalf("completed Downloaded = %d, want artifact size %d", completed.Downloaded, info.Size())
+	}
+}

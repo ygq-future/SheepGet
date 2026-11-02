@@ -1679,6 +1679,7 @@ func (m *Manager) runTask(ctx context.Context, taskID string) {
 	default:
 		t.Status = task.StatusCompleted
 		t.FailurePhase = task.FailurePhaseNone
+		resolveCompletedSize(t)
 		if t.TotalBytes > 0 {
 			// For a known size the transfer is complete by definition; when the size was never
 			// known, keep the bytes actually written instead of reporting the unknown marker.
@@ -1789,6 +1790,22 @@ func (m *Manager) saveIfPresent(ctx context.Context, t *task.Task) bool {
 		return false
 	}
 	return true
+}
+
+// resolveCompletedSize 用成品的真实字节数补齐任务大小。
+//
+// 传输阶段没能确定总大小的任务（HLS 逐分片探测超时、批次里有未知成员）完成时不应该
+// 继续停留在「未知大小」：成品已经落盘，大小就是磁盘上的事实。只有连成品都读不到时
+// 才保持未知，界面据此继续显示「未知大小」而不是编一个数值。
+func resolveCompletedSize(t *task.Task) {
+	if t == nil || t.TotalBytes > 0 {
+		return
+	}
+	info, err := os.Stat(filepath.Join(t.Directory, t.Filename))
+	if err != nil || info.IsDir() || info.Size() <= 0 {
+		return
+	}
+	t.TotalBytes = info.Size()
 }
 
 // finalizeRun 把一次运行的最终结果写回存储。

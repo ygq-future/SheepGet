@@ -506,6 +506,9 @@ export function ProgressView() {
               <AnimatePresence mode="popLayout">
                 {completedTasks.map((t) => {
                   const isFocused = focusedTaskId === t.id;
+                  // 完成时的真实大小：任务可能全程没拿到总大小（HLS 逐分片探测超时），
+                  // 此时显示实际写入的字节数。这里不能用 `||`——未知标记是 -1，它是真值。
+                  const sizeBytes = t.totalBytes > 0 ? t.totalBytes : t.downloaded;
                   return (
                     <motion.div
                       key={t.id}
@@ -533,7 +536,7 @@ export function ProgressView() {
                           </div>
                           <div className="flex items-center gap-2 truncate text-[11px] text-[var(--text-secondary)]">
                             <span className="font-mono">
-                              {formatBytes(t.totalBytes || t.downloaded)}
+                              {sizeBytes > 0 ? formatBytes(sizeBytes) : '未知大小'}
                             </span>
                             {t.elapsedNano && t.elapsedNano > 0 && (
                               <>
