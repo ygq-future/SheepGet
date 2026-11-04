@@ -19,6 +19,7 @@ import {
   Loader2,
   Layers,
   Package,
+  Trash2,
 } from 'lucide-react';
 import { useSettingsStore } from '../stores/settings';
 import {
@@ -35,8 +36,11 @@ import {
   SetProgressWindowHeight,
   ToggleProgressWindowAlwaysOnTop,
   IsProgressWindowAlwaysOnTop,
+  DeleteTask,
 } from '../../bindings/sheep-get/app';
 import { ToastContainer, showToast } from '../components/ui/Toast';
+import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
+import { shouldDefaultDeleteDiskFileForTask } from '../lib/taskDelete';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed, formatTimeHMS } from '../lib/format';
 import { progressWindowHeightFor } from '../lib/windowSize';
@@ -116,6 +120,7 @@ export function ProgressView() {
   });
 
   const [alwaysOnTop, setAlwaysOnTop] = useState<boolean>(false);
+  const [deletingTask, setDeletingTask] = useState<taskModels.Task | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -147,8 +152,11 @@ export function ProgressView() {
   const globalKeepCompletedInfo = settings?.download?.keepCompletedInfo ?? true;
   const autoRemoveCompletedOnOpen = settings?.download?.autoRemoveCompletedOnOpen ?? false;
 
+  const isConfirmOpen = Boolean(deletingTask);
+
   // Dynamic window height observation
   // 窗口高度跟随内容自然高度，只受上限约束：超过上限后由内容区滚动，不再继续变高。
+  // 当删除确认弹窗打开时，窗口高度确保不低于 260px，避免弹窗在单任务卡片时被上下裁剪。
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
@@ -161,7 +169,10 @@ export function ProgressView() {
         const contentHeight = Math.ceil(
           entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height,
         );
-        const targetHeight = progressWindowHeightFor(contentHeight);
+        let targetHeight = progressWindowHeightFor(contentHeight);
+        if (isConfirmOpen) {
+          targetHeight = Math.max(targetHeight, 260);
+        }
         if (Math.abs(targetHeight - lastHeight) >= 2) {
           lastHeight = targetHeight;
           reporter.push(targetHeight);
@@ -174,7 +185,19 @@ export function ProgressView() {
       observer.disconnect();
       reporter.dispose();
     };
-  }, []);
+  }, [isConfirmOpen]);
+
+  // 当弹窗打开/关闭状态切换时，主动同步一次窗口高度
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const contentHeight = Math.ceil(el.offsetHeight || 0);
+    let targetHeight = progressWindowHeightFor(contentHeight);
+    if (isConfirmOpen) {
+      targetHeight = Math.max(targetHeight, 260);
+    }
+    void SetProgressWindowHeight(targetHeight);
+  }, [isConfirmOpen]);
 
   // Initial load and live event subscription
   useEffect(() => {
@@ -414,6 +437,35 @@ export function ProgressView() {
     }
   };
 
+  const performDeleteTask = async (targetId: string, deleteDiskFile: boolean) => {
+    try {
+      await DeleteTask(targetId, deleteDiskFile);
+      setActiveTasks((prev) => prev.filter((t) => t.id !== targetId));
+      setCompletedTasks((prev) => prev.filter((t) => t.id !== targetId));
+      showToast('任务已删除', 'success');
+    } catch (err) {
+      console.error('Failed to delete task in progress window:', err);
+      showToast('删除任务失败', 'error');
+    }
+  };
+
+  const handleDeleteTask = (t: taskModels.Task) => {
+    if (t.status === taskModels.Status.StatusError) {
+      // 下载异常的点击直接删掉
+      void performDeleteTask(t.id, true);
+      return;
+    }
+    // 正在运行中的或者是下载完成的提示二次弹窗，和主页的删除任务类似
+    setDeletingTask(t);
+  };
+
+  const handleConfirmDelete = async (deleteDiskFile: boolean) => {
+    if (!deletingTask) return;
+    const target = deletingTask;
+    setDeletingTask(null);
+    await performDeleteTask(target.id, deleteDiskFile);
+  };
+
   const sortedActive = useMemo(() => {
     const completedIds = new Set(completedTasks.map((c) => c.id));
     const nonCompleted = activeTasks.filter(
@@ -569,6 +621,15 @@ export function ProgressView() {
                           >
                             <Folder className="h-3 w-3 text-emerald-500" />
                             <span>打开文件夹</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTask(t)}
+                            title="删除任务"
+                            aria-label="删除任务"
+                            className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-rose-500/15 hover:text-rose-500"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
                           <button
                             type="button"
@@ -736,6 +797,15 @@ export function ProgressView() {
                                 </span>
                               </button>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteTask(t)}
+                              className="rounded-md p-1 text-[var(--text-muted)] transition-colors hover:bg-rose-500/15 hover:text-rose-500"
+                              title="删除任务"
+                              aria-label="删除任务"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           </div>
                         </div>
 
@@ -760,7 +830,11 @@ export function ProgressView() {
                                       <div
                                         key={i}
                                         className="relative h-full min-w-0 flex-1"
-                                        title={`分片 ${i + 1}/${cells.length}${ratio < 1 && ratio > 0 ? `（${Math.round(ratio * 100)}%）` : ''}`}
+                                        title={`分片 ${i + 1}/${cells.length}${
+                                          ratio < 1 && ratio > 0
+                                            ? `（${Math.round(ratio * 100)}%）`
+                                            : ''
+                                        }`}
                                       >
                                         {ratio > 0 && (
                                           <div
@@ -952,6 +1026,19 @@ export function ProgressView() {
       </main>
 
       <ToastContainer />
+      {/* Single Delete Confirm */}
+      <DeleteConfirmModal
+        open={Boolean(deletingTask)}
+        onOpenChange={(open) => {
+          if (!open) setDeletingTask(null);
+        }}
+        filename={deletingTask?.filename || ''}
+        count={1}
+        defaultDeleteDiskFile={shouldDefaultDeleteDiskFileForTask(deletingTask)}
+        onConfirm={(deleteDiskFile) => {
+          void handleConfirmDelete(deleteDiskFile);
+        }}
+      />
     </div>
   );
 }

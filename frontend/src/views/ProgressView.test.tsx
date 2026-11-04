@@ -9,6 +9,7 @@ const bindings = vi.hoisted(() => ({
   listTasks: vi.fn(),
   hideProgressWindow: vi.fn(),
   sealBundleTask: vi.fn(),
+  deleteTask: vi.fn(() => Promise.resolve()),
 }));
 
 // 进度窗口的行为由事件驱动：把注册进来的处理函数留下，测试才能像桌面端那样推一条任务更新。
@@ -31,6 +32,7 @@ vi.mock('../../bindings/sheep-get/app', () => ({
   RetryTask: vi.fn(),
   RetryProcessingTask: vi.fn(),
   SealBundleTask: bindings.sealBundleTask,
+  DeleteTask: bindings.deleteTask,
 }));
 
 // 运行时的真实入口带副作用（会尝试连接开发服务器），而生成模型只需要 Create 的编解码辅助。
@@ -89,6 +91,7 @@ describe('ProgressView', () => {
     bindings.listTasks.mockReset();
     bindings.hideProgressWindow.mockReset();
     bindings.sealBundleTask.mockReset();
+    bindings.deleteTask.mockReset();
   });
 
   it('renders an active download from the task list', async () => {
@@ -165,5 +168,91 @@ describe('ProgressView', () => {
 
     await vi.waitFor(() => expect(bindings.hideProgressWindow).toHaveBeenCalled());
     expect(screen.queryByText('quiet.mp4')).toBeNull();
+  });
+
+  it('deletes an error task directly without confirmation dialog', async () => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const errorTask = new taskModels.Task({
+      id: 'task-failed',
+      filename: 'orca-failed.exe',
+      directory: 'C:/Downloads',
+      status: taskModels.Status.StatusError,
+      totalBytes: 1024,
+      downloaded: 0,
+      errorMsg: 'server returned HTML page instead of expected binary file',
+      createdAt: '2026-10-29T00:00:00.000Z',
+      updatedAt: '2026-10-29T00:00:00.000Z',
+    });
+    bindings.listTasks.mockResolvedValue([errorTask]);
+
+    render(<ProgressView />);
+    expect(await screen.findByText('orca-failed.exe')).toBeTruthy();
+    expect(screen.getByText('下载失败')).toBeTruthy();
+
+    const deleteBtn = screen.getByTitle('删除任务');
+    fireEvent.click(deleteBtn);
+
+    await vi.waitFor(() => {
+      expect(bindings.deleteTask).toHaveBeenCalledWith('task-failed', true);
+    });
+    expect(screen.queryByText('确认删除下载任务')).toBeNull();
+  });
+
+  it('prompts confirmation modal for active downloading task and deletes on confirmation', async () => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const task = downloadingTask('orca-windows-setup.exe');
+    bindings.listTasks.mockResolvedValue([task]);
+
+    render(<ProgressView />);
+    expect(await screen.findByText('orca-windows-setup.exe')).toBeTruthy();
+    expect(screen.getByText('下载中')).toBeTruthy();
+
+    const deleteBtn = screen.getByTitle('删除任务');
+    fireEvent.click(deleteBtn);
+
+    expect(await screen.findByText('确认删除下载任务')).toBeTruthy();
+    expect(bindings.deleteTask).not.toHaveBeenCalled();
+
+    const confirmBtn = screen.getByRole('button', { name: /确认删除/ });
+    fireEvent.click(confirmBtn);
+
+    await vi.waitFor(() => {
+      expect(bindings.deleteTask).toHaveBeenCalledWith(task.id, true);
+    });
+  });
+
+  it('prompts confirmation modal for completed task and cancels without deletion', async () => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const completed = new taskModels.Task({
+      id: 'task-done',
+      filename: 'finished.zip',
+      directory: 'C:/Downloads',
+      status: taskModels.Status.StatusCompleted,
+      totalBytes: 4096,
+      downloaded: 4096,
+      createdAt: '2026-10-29T00:00:00.000Z',
+      updatedAt: '2026-10-29T00:00:00.000Z',
+    });
+    bindings.listTasks.mockResolvedValue([completed]);
+    render(<ProgressView />);
+
+    act(() => {
+      eventHandlers.get(Event.ProgressFocusCompleted)?.('task-done');
+    });
+
+    expect(await screen.findByText('finished.zip')).toBeTruthy();
+
+    const deleteBtn = screen.getByTitle('删除任务');
+    fireEvent.click(deleteBtn);
+
+    expect(await screen.findByText('确认删除下载任务')).toBeTruthy();
+
+    const cancelBtn = screen.getByRole('button', { name: '取消' });
+    fireEvent.click(cancelBtn);
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('确认删除下载任务')).toBeNull();
+    });
+    expect(bindings.deleteTask).not.toHaveBeenCalled();
   });
 });
