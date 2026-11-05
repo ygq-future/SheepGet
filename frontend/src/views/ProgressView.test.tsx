@@ -255,4 +255,25 @@ describe('ProgressView', () => {
     });
     expect(bindings.deleteTask).not.toHaveBeenCalled();
   });
+
+  it('dismisses in-card confirmation overlay when Escape is pressed', async () => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    const task = downloadingTask('orca-esc-test.exe');
+    bindings.listTasks.mockResolvedValue([task]);
+
+    render(<ProgressView />);
+    expect(await screen.findByText('orca-esc-test.exe')).toBeTruthy();
+
+    const deleteBtn = screen.getByTitle('删除任务');
+    fireEvent.click(deleteBtn);
+
+    expect(await screen.findByText('确认删除下载任务')).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('确认删除下载任务')).toBeNull();
+    });
+    expect(bindings.deleteTask).not.toHaveBeenCalled();
+  });
 });

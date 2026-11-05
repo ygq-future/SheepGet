@@ -38,6 +38,7 @@ export function Checkbox({
         role="checkbox"
         disabled={disabled}
         aria-checked={checked}
+        aria-label={label}
         onClick={handleClick}
         className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-md border transition-all duration-150 ${
           disabled

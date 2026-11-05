@@ -39,7 +39,7 @@ import {
   DeleteTask,
 } from '../../bindings/sheep-get/app';
 import { ToastContainer, showToast } from '../components/ui/Toast';
-import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
+import { ProgressTaskDeleteOverlay } from '../components/ProgressTaskDeleteOverlay';
 import { shouldDefaultDeleteDiskFileForTask } from '../lib/taskDelete';
 import * as taskModels from '../../bindings/sheep-get/internal/task/models';
 import { formatBytes, formatSpeed, formatTimeHMS } from '../lib/format';
@@ -152,11 +152,9 @@ export function ProgressView() {
   const globalKeepCompletedInfo = settings?.download?.keepCompletedInfo ?? true;
   const autoRemoveCompletedOnOpen = settings?.download?.autoRemoveCompletedOnOpen ?? false;
 
-  const isConfirmOpen = Boolean(deletingTask);
-
   // Dynamic window height observation
   // 窗口高度跟随内容自然高度，只受上限约束：超过上限后由内容区滚动，不再继续变高。
-  // 当删除确认弹窗打开时，窗口高度确保不低于 260px，避免弹窗在单任务卡片时被上下裁剪。
+  // 自定义横向删除确认弹窗高度仅 ~46px，在单任务最小自然高度下即可完整容纳，窗口高度无需突变放大。
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
@@ -169,10 +167,7 @@ export function ProgressView() {
         const contentHeight = Math.ceil(
           entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height,
         );
-        let targetHeight = progressWindowHeightFor(contentHeight);
-        if (isConfirmOpen) {
-          targetHeight = Math.max(targetHeight, 260);
-        }
+        const targetHeight = progressWindowHeightFor(contentHeight);
         if (Math.abs(targetHeight - lastHeight) >= 2) {
           lastHeight = targetHeight;
           reporter.push(targetHeight);
@@ -185,20 +180,7 @@ export function ProgressView() {
       observer.disconnect();
       reporter.dispose();
     };
-  }, [isConfirmOpen]);
-
-  // 当弹窗打开/关闭状态切换时，主动同步一次窗口高度
-  useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const contentHeight = Math.ceil(el.offsetHeight || 0);
-    let targetHeight = progressWindowHeightFor(contentHeight);
-    if (isConfirmOpen) {
-      targetHeight = Math.max(targetHeight, 260);
-    }
-    void SetProgressWindowHeight(targetHeight);
-  }, [isConfirmOpen]);
-
+  }, []);
   // Initial load and live event subscription
   useEffect(() => {
     void loadSettings();
@@ -572,7 +554,7 @@ export function ProgressView() {
                         layout: { type: 'spring', stiffness: 350, damping: 28 },
                         opacity: { duration: 0.15 },
                       }}
-                      className={`rounded-xl border p-2.5 text-xs shadow-xs transition-all ${
+                      className={`relative overflow-hidden rounded-xl border p-2.5 text-xs shadow-xs transition-all ${
                         isFocused
                           ? 'border-emerald-500 bg-emerald-500/15 ring-1 ring-emerald-500'
                           : 'border-emerald-500/30 bg-emerald-500/10'
@@ -641,6 +623,18 @@ export function ProgressView() {
                           </button>
                         </div>
                       </div>
+                      <AnimatePresence>
+                        {deletingTask?.id === t.id && (
+                          <ProgressTaskDeleteOverlay
+                            task={t}
+                            defaultDeleteDiskFile={shouldDefaultDeleteDiskFileForTask(t)}
+                            onConfirm={(deleteDiskFile) => {
+                              void handleConfirmDelete(deleteDiskFile);
+                            }}
+                            onCancel={() => setDeletingTask(null)}
+                          />
+                        )}
+                      </AnimatePresence>
                     </motion.div>
                   );
                 })}
@@ -682,7 +676,7 @@ export function ProgressView() {
                           layout: { type: 'spring', stiffness: 260, damping: 26 },
                           opacity: { duration: 0.2 },
                         }}
-                        className={`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 shadow-xs transition-colors hover:border-[var(--border-hover)] ${
+                        className={`relative overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5 shadow-xs transition-colors hover:border-[var(--border-hover)] ${
                           isFocused ? 'ring-1 ring-[var(--accent)]' : ''
                         }`}
                       >
@@ -1002,6 +996,18 @@ export function ProgressView() {
                             </div>
                           )}
                         </div>
+                        <AnimatePresence>
+                          {deletingTask?.id === t.id && (
+                            <ProgressTaskDeleteOverlay
+                              task={t}
+                              defaultDeleteDiskFile={shouldDefaultDeleteDiskFileForTask(t)}
+                              onConfirm={(deleteDiskFile) => {
+                                void handleConfirmDelete(deleteDiskFile);
+                              }}
+                              onCancel={() => setDeletingTask(null)}
+                            />
+                          )}
+                        </AnimatePresence>
                       </motion.div>
                     );
                   })}
@@ -1026,19 +1032,6 @@ export function ProgressView() {
       </main>
 
       <ToastContainer />
-      {/* Single Delete Confirm */}
-      <DeleteConfirmModal
-        open={Boolean(deletingTask)}
-        onOpenChange={(open) => {
-          if (!open) setDeletingTask(null);
-        }}
-        filename={deletingTask?.filename || ''}
-        count={1}
-        defaultDeleteDiskFile={shouldDefaultDeleteDiskFileForTask(deletingTask)}
-        onConfirm={(deleteDiskFile) => {
-          void handleConfirmDelete(deleteDiskFile);
-        }}
-      />
     </div>
   );
 }
