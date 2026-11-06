@@ -16,6 +16,7 @@ import (
 	"sheep-get/internal/atomicfile"
 	"sheep-get/internal/credentials"
 	"sheep-get/internal/logging"
+	"sheep-get/internal/ratelimit"
 	"sheep-get/internal/stallwatch"
 )
 
@@ -327,6 +328,7 @@ type Fetcher struct {
 	userAgt         string
 	mu              sync.Mutex
 	keys            map[string][]byte
+	limiter         *ratelimit.Limiter
 }
 
 // NewFetcher 构造一个属于某次任务的抓取器。creds 是这次请求的上下文（Referer/Cookie 等），
@@ -359,6 +361,14 @@ func (f *Fetcher) WithFallback(fallback *http.Client, onFallback func()) *Fetche
 			onFallback()
 		}
 	})
+}
+
+// WithLimiter 挂载全局带宽速率限制器。
+func (f *Fetcher) WithLimiter(lim *ratelimit.Limiter) *Fetcher {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.limiter = lim
+	return f
 }
 
 // WithFallbackChain 配置主客户端故障时的有序备用通道链（依次尝试后续自定义代理，最终尝试直连）。
@@ -843,6 +853,12 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	defer drainAndClose(resp.Body)
 	watch.Touch()
 	body := watch.Reader(resp.Body)
+	f.mu.Lock()
+	lim := f.limiter
+	f.mu.Unlock()
+	if lim != nil {
+		body = lim.Reader(ctx, body)
+	}
 
 	partPath := dest + ".part"
 	// 若上一次尝试已经完整下载并校验通过、仅在最终 Rename 时被外部句柄短暂阻塞，
@@ -890,7 +906,14 @@ func (f *Fetcher) readAll(ctx context.Context, seg Segment) ([]byte, error) {
 	}
 	defer drainAndClose(resp.Body)
 	watch.Touch()
-	data, readErr := io.ReadAll(watch.Reader(resp.Body))
+	body := watch.Reader(resp.Body)
+	f.mu.Lock()
+	lim := f.limiter
+	f.mu.Unlock()
+	if lim != nil {
+		body = lim.Reader(ctx, body)
+	}
+	data, readErr := io.ReadAll(body)
 	if readErr != nil {
 		return nil, watch.Err(ctx, readErr)
 	}

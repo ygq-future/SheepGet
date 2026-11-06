@@ -30,6 +30,7 @@ type Engine interface {
 	SetTempDirectory(dir string)
 	SetUseServerFileTime(enabled bool)
 	SetProxy(mode string, addrs ...string) error
+	SetSpeedLimit(limitKB int)
 }
 
 // Server 是本地环回通道。
@@ -239,6 +240,9 @@ func (a *Applier) applyLocked(next *config.Settings) error {
 	}
 	if first || prev.Download.UseServerFileTime != next.Download.UseServerFileTime {
 		a.deps.Engine.SetUseServerFileTime(next.Download.UseServerFileTime)
+	}
+	if first || prev.Download.SpeedLimitKB != next.Download.SpeedLimitKB {
+		a.deps.Engine.SetSpeedLimit(next.Download.SpeedLimitKB)
 	}
 	if first || !sameProxy(prev.Proxy, next.Proxy) {
 		addrs := next.Proxy.EffectiveCustomAddrs()

@@ -29,6 +29,7 @@ describe('settings models and defaults', () => {
       defaultDirectory: '/test/downloads',
       tempDirectory: '/test/temp',
       useServerFileTime: true,
+      speedLimitKB: 500,
       builtinCategories: [
         new configModels.CategoryConfig({
           id: 'builtin-video',
@@ -52,6 +53,7 @@ describe('settings models and defaults', () => {
     expect(download.defaultDirectory).toBe('/test/downloads');
     expect(download.tempDirectory).toBe('/test/temp');
     expect(download.useServerFileTime).toBe(true);
+    expect(download.speedLimitKB).toBe(500);
     expect(download.builtinCategories).toHaveLength(1);
     expect(download.customCategories).toHaveLength(1);
     expect(download.customCategories[0].name).toBe('工作文档');

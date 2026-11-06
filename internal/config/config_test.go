@@ -40,6 +40,9 @@ func TestDefaultSettings(t *testing.T) {
 	if s.Download.DefaultConnectionsPerTask != 32 {
 		t.Errorf("expected DefaultConnectionsPerTask 32, got %d", s.Download.DefaultConnectionsPerTask)
 	}
+	if s.Download.SpeedLimitKB != 0 {
+		t.Errorf("expected SpeedLimitKB 0 by default, got %d", s.Download.SpeedLimitKB)
+	}
 	if s.Download.DefaultDirectory != "/downloads" {
 		t.Errorf("expected /downloads, got %s", s.Download.DefaultDirectory)
 	}
@@ -158,6 +161,7 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 			DuplicateURLPolicy:        "invalid_policy",
 			MaxConcurrentDownloads:    -5,
 			DefaultConnectionsPerTask: 100, // too big
+			SpeedLimitKB:              -10, // negative should fall back to 0
 			DefaultDirectory:          "",
 			PreDownload:               false,
 			SkipFileInfoConfirm:       true, // should be reset because PreDownload is false
@@ -179,6 +183,9 @@ func TestSettingsValidation_Fallback(t *testing.T) {
 	}
 	if validated.Download.DefaultConnectionsPerTask != 32 {
 		t.Errorf("expected fallback to 32, got %d", validated.Download.DefaultConnectionsPerTask)
+	}
+	if validated.Download.SpeedLimitKB != 0 {
+		t.Errorf("expected fallback to 0 for SpeedLimitKB, got %d", validated.Download.SpeedLimitKB)
 	}
 	if validated.Download.DefaultDirectory != "/fallback/dir" {
 		t.Errorf("expected fallback dir, got %s", validated.Download.DefaultDirectory)

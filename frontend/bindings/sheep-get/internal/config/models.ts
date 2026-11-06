@@ -110,6 +110,7 @@ export class DownloadConfig {
     "skipFileInfoConfirm": boolean;
     "maxConcurrentDownloads": number;
     "defaultConnectionsPerTask": number;
+    "speedLimitKB": number;
     "defaultDirectory": string;
     "tempDirectory": string;
     "useServerFileTime": boolean;
@@ -141,6 +142,9 @@ export class DownloadConfig {
         }
         if (!("defaultConnectionsPerTask" in $$source)) {
             this["defaultConnectionsPerTask"] = 0;
+        }
+        if (!("speedLimitKB" in $$source)) {
+            this["speedLimitKB"] = 0;
         }
         if (!("defaultDirectory" in $$source)) {
             this["defaultDirectory"] = "";

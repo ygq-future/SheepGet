@@ -88,6 +88,7 @@ type DownloadConfig struct {
 	SkipFileInfoConfirm       bool               `json:"skipFileInfoConfirm"`
 	MaxConcurrentDownloads    int                `json:"maxConcurrentDownloads"`
 	DefaultConnectionsPerTask int                `json:"defaultConnectionsPerTask"`
+	SpeedLimitKB              int                `json:"speedLimitKB"`
 	DefaultDirectory          string             `json:"defaultDirectory"`
 	TempDirectory             string             `json:"tempDirectory"`
 	UseServerFileTime         bool               `json:"useServerFileTime"`
@@ -441,6 +442,7 @@ func DefaultSettings(defaultDownloadDir, defaultTempDir string) Settings {
 			SkipFileInfoConfirm:           false,
 			MaxConcurrentDownloads:        DefaultMaxConcurrentDownloads,
 			DefaultConnectionsPerTask:     DefaultConnectionsPerTask,
+			SpeedLimitKB:                  0,
 			DefaultDirectory:              defaultDownloadDir,
 			TempDirectory:                 defaultTempDir,
 			UseServerFileTime:             false,
@@ -518,6 +520,11 @@ func (s Settings) ValidateAndFallback(fallbackDownloadDir, fallbackTempDir strin
 	// Validate DefaultConnectionsPerTask (bounded 1-32)
 	if s.Download.DefaultConnectionsPerTask < 1 || s.Download.DefaultConnectionsPerTask > 32 {
 		s.Download.DefaultConnectionsPerTask = defaults.Download.DefaultConnectionsPerTask
+	}
+
+	// Validate SpeedLimitKB (>= 0)
+	if s.Download.SpeedLimitKB < 0 {
+		s.Download.SpeedLimitKB = 0
 	}
 
 	// Validate DefaultDirectory

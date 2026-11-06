@@ -874,3 +874,71 @@ func TestHTTPDownloader_SharedClientConnectionPoolReuse(t *testing.T) {
 		t.Fatalf("expected direct transfer tasks to reuse shared direct *http.Client pool")
 	}
 }
+
+func TestHTTPDownloader_SpeedLimitThrottling(t *testing.T) {
+	fileSize := 300 * 1024 // 300KB
+	payload := make([]byte, fileSize)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	etag := "\"speed-limit-etag\""
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", etag)
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+			return
+		}
+		var start, end int64
+		if _, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); err == nil {
+			if end >= int64(len(payload)) {
+				end = int64(len(payload)) - 1
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+			w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(payload[start : end+1])
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	dl := engine.NewHTTPDownloader(ts.Client())
+	dl.SetSpeedLimit(200) // 200 KB/s: 300KB 理论需耗时 > 500ms
+
+	taskItem := &task.Task{
+		ID:             "task-throttled",
+		URL:            ts.URL,
+		Directory:      tmpDir,
+		Filename:       "throttled.bin",
+		TotalBytes:     int64(fileSize),
+		MaxConcurrency: 2,
+		Resumable:      true,
+		ETag:           etag,
+	}
+
+	start := time.Now()
+	if err := dl.Download(context.Background(), taskItem, nil); err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 350*time.Millisecond {
+		t.Fatalf("expected rate-limited download to take at least 350ms, took %v", elapsed)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, "throttled.bin"))
+	if err != nil || !bytes.Equal(content, payload) {
+		t.Fatalf("downloaded content mismatch")
+	}
+}

@@ -73,6 +73,12 @@ func (s engineSettings) SetProxy(mode string, addrs ...string) error {
 	return s.manager.SetProxy(mode, addrs...)
 }
 
+func (s engineSettings) SetSpeedLimit(limitKB int) {
+	if s.manager != nil {
+		s.manager.SetSpeedLimit(limitKB)
+	}
+}
+
 // loopbackSettings 把设置推到本地环回通道。
 type loopbackSettings struct {
 	app *App

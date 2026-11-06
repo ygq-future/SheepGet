@@ -83,6 +83,9 @@ func (m *Manager) newHLSFetcherForTask(t *task.Task, creds credentials.RequestCr
 		}
 	}
 	f := hls.NewFetcher(client, creds)
+	if m.limiter != nil {
+		f.WithLimiter(m.limiter)
+	}
 	if len(targets) > 0 {
 		f.WithFallbackChain(targets, func(chosen hls.FallbackTarget) {
 			if t != nil {

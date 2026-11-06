@@ -22,6 +22,7 @@ import (
 
 	"sheep-get/internal/credentials"
 	"sheep-get/internal/logging"
+	"sheep-get/internal/ratelimit"
 	"sheep-get/internal/stallwatch"
 	"sheep-get/internal/task"
 )
@@ -312,6 +313,33 @@ type HTTPDownloader struct {
 	minSplitETA        time.Duration
 	stallTimeout       time.Duration
 	logger             atomic.Pointer[slog.Logger]
+	limiter            *ratelimit.Limiter
+}
+
+// SetLimiter 为下载器设置全局带宽速率限制器。
+func (d *HTTPDownloader) SetLimiter(lim *ratelimit.Limiter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.limiter = lim
+}
+
+// SetSpeedLimit 动态调整下载限制速率 (KB/s)。
+func (d *HTTPDownloader) SetSpeedLimit(limitKB int) {
+	d.mu.Lock()
+	lim := d.limiter
+	if lim == nil {
+		d.limiter = ratelimit.New(limitKB)
+		d.mu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+	lim.SetLimit(limitKB)
+}
+
+func (d *HTTPDownloader) getLimiter() *ratelimit.Limiter {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.limiter
 }
 
 // SetLogger 设定传输日志出口。未设定时丢弃全部日志。
@@ -1260,6 +1288,9 @@ func (d *HTTPDownloader) downloadSingleStream(ctx context.Context, t *task.Task,
 			}
 		}
 		body := watch.Reader(resp.Body)
+		if lim := d.getLimiter(); lim != nil {
+			body = lim.Reader(ctx, body)
+		}
 		buf := make([]byte, 64*1024)
 		var readErr error
 		checkedHTMLDisguise := false
@@ -2263,6 +2294,9 @@ func (coord *chunkCoordinator) downloadChunkStream(ctx context.Context, chunkIdx
 
 	coord.hasSucceededOnce.Store(true)
 	body := watch.Reader(resp.Body)
+	if lim := coord.downloader.getLimiter(); lim != nil {
+		body = lim.Reader(ctx, body)
+	}
 	buf := make([]byte, 64*1024)
 	offset := start
 	var streamEstablished bool

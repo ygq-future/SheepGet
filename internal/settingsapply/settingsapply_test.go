@@ -57,6 +57,9 @@ func (e fakeEngine) SetUseServerFileTime(enabled bool) {
 	e.rec.record("engine.filetime=%t", enabled)
 }
 
+func (e fakeEngine) SetSpeedLimit(limitKB int) {
+	e.rec.record("engine.speedlimit=%d", limitKB)
+}
 func (e fakeEngine) SetProxy(mode string, addrs ...string) error {
 	e.rec.record("engine.proxy=%s%v", mode, addrs)
 	return e.proxyErr
@@ -209,6 +212,7 @@ func TestNewPushesTheWholeSnapshot(t *testing.T) {
 		"engine.max=32",
 		"engine.temp=/temp",
 		"engine.filetime=false",
+		"engine.speedlimit=0",
 		"engine.proxy=system[]",
 		"updater.proxy=system[]",
 		"logging=false",
@@ -262,6 +266,18 @@ func TestOnlyChangedSectionsReachSubsystems(t *testing.T) {
 	assertCalls(t, s.rec.drain(), []string{
 		"store.port=9248",
 		fmt.Sprintf("server.takeover=%d/1", len(initial().Download.AllExtensions())),
+		"event.theme=light",
+	})
+
+	// 改限速：只有 engine 收到新限速。
+	st = s.store.Get()
+	st.Download.SpeedLimitKB = 512
+	if _, err := applier.Update(st); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+	assertCalls(t, s.rec.drain(), []string{
+		"store.port=9248",
+		"engine.speedlimit=512",
 		"event.theme=light",
 	})
 }

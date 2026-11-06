@@ -21,6 +21,7 @@ import (
 	"sheep-get/internal/hls"
 	"sheep-get/internal/logging"
 	"sheep-get/internal/mediainfo"
+	"sheep-get/internal/ratelimit"
 	"sheep-get/internal/task"
 )
 
@@ -49,6 +50,7 @@ type Config struct {
 	TempDirectory             string `json:"tempDirectory"`
 	UseServerFileTime         bool   `json:"useServerFileTime"`
 	DefaultConnectionsPerTask int    `json:"defaultConnectionsPerTask"`
+	SpeedLimitKB              int    `json:"speedLimitKB"`
 }
 
 // ProbeResult holds the probed metadata and duplicate-task state for a URL.
@@ -185,6 +187,7 @@ type Manager struct {
 	listeners    []TaskListener
 	wg           sync.WaitGroup
 	closed       bool
+	limiter      *ratelimit.Limiter
 	logger       atomic.Pointer[slog.Logger]
 	probeCacheMu sync.Mutex
 	probeCache   map[string]probeCacheEntry
@@ -243,7 +246,8 @@ func NewManager(store task.TaskStore, downloader *HTTPDownloader, cfg Config) *M
 	}
 	downloader.SetUseServerFileTime(cfg.UseServerFileTime)
 	downloader.SetDefaultConcurrency(cfg.DefaultConnectionsPerTask)
-
+	m.limiter = ratelimit.New(cfg.SpeedLimitKB)
+	downloader.SetLimiter(m.limiter)
 	go m.speedTicker()
 	return m
 }
@@ -251,6 +255,30 @@ func (m *Manager) AddListener(l TaskListener) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.listeners = append(m.listeners, l)
+}
+
+// SetSpeedLimit 动态配置下载速率限制 (KB/s)，0 表示不限速。
+func (m *Manager) SetSpeedLimit(limitKB int) {
+	m.mu.Lock()
+	m.config.SpeedLimitKB = limitKB
+	lim := m.limiter
+	dl := m.downloader
+	m.mu.Unlock()
+
+	if lim != nil {
+		lim.SetLimit(limitKB)
+	}
+	if dl != nil {
+		dl.SetSpeedLimit(limitKB)
+	}
+}
+
+// SpeedLimitKB 返回当前速率限制 (KB/s)。
+func (m *Manager) SpeedLimitKB() int {
+	if m.limiter != nil {
+		return m.limiter.LimitKB()
+	}
+	return 0
 }
 
 // notify 广播一次任务变化。

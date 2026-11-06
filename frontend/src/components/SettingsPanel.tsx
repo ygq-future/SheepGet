@@ -503,6 +503,7 @@ export function SettingsPanel({
   const [reorderedCategories, setReorderedCategories] = useState<
     configModels.CategoryConfig[] | null
   >(null);
+  const [speedLimitDraft, setSpeedLimitDraft] = useState<string | null>(null);
   const [serverPortDraft, setServerPortDraft] = useState<string | null>(null);
   const [apiKeyDraft, setAPIKeyDraft] = useState<string | null>(null);
   const [showAPIKey, setShowAPIKey] = useState(false);
@@ -605,6 +606,30 @@ export function SettingsPanel({
       showToast(`重启 HTTP 服务失败: ${String(err)}`, 'error');
     } finally {
       setRestartingServer(false);
+    }
+  };
+
+  const speedLimitValue =
+    speedLimitDraft ?? (download.speedLimitKB > 0 ? String(download.speedLimitKB) : '');
+
+  const handleSpeedLimitCommit = async (valStr: string) => {
+    const trimmed = valStr.trim();
+    const parsed = parseInt(trimmed, 10);
+    const limitKB = isNaN(parsed) || parsed <= 0 ? 0 : parsed;
+    setSpeedLimitDraft(null);
+    if (limitKB === (download.speedLimitKB || 0)) {
+      return;
+    }
+    try {
+      await updateSettings({
+        download: new configModels.DownloadConfig({
+          ...download,
+          speedLimitKB: limitKB,
+        }),
+      });
+      showToast(limitKB > 0 ? `下载限速已设置为 ${limitKB} KB/s` : '已取消下载速率限制', 'success');
+    } catch (err) {
+      showToast(`设置下载速率限制失败: ${String(err)}`, 'error');
     }
   };
 
@@ -1832,6 +1857,33 @@ export function SettingsPanel({
                     </div>
                     <span className="flex h-6 w-8 items-center justify-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-subtle)] font-mono text-xs font-semibold text-[var(--accent)]">
                       {download.defaultConnectionsPerTask}
+                    </span>
+                  </div>
+                </SettingRow>
+
+                <SettingRow
+                  label="下载速率限制"
+                  description="全局下载带宽速率上限，设为 0 或留空表示不限制"
+                >
+                  <div className="flex w-52 items-center gap-2">
+                    <div className="flex-1">
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="不限制"
+                        value={speedLimitValue}
+                        onChange={(e) => setSpeedLimitDraft(e.target.value.replace(/\D/g, ''))}
+                        onBlur={() => void handleSpeedLimitCommit(speedLimitValue)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            void handleSpeedLimitCommit(speedLimitValue);
+                          }
+                        }}
+                        className="text-right font-mono text-xs"
+                      />
+                    </div>
+                    <span className="shrink-0 font-mono text-xs text-[var(--text-muted)]">
+                      KB/s
                     </span>
                   </div>
                 </SettingRow>
