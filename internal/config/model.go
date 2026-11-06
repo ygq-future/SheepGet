@@ -294,7 +294,7 @@ func DefaultBuiltinCategories(defaultDownloadDir string) []CategoryConfig {
 			ID:         "builtin-file",
 			Name:       "文件",
 			Directory:  "Files",
-			Extensions: []string{"doc", "docx", "pdf", "xls", "xlsx", "ppt", "pptx", "epub"},
+			Extensions: []string{"doc", "docx", "pdf", "xls", "xlsx", "ppt", "pptx", "epub", "bin"},
 			IsBuiltin:  true,
 		},
 	}

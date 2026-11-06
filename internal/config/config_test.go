@@ -1007,7 +1007,7 @@ func TestDefaultBuiltinCategories_ZeroIntrusionExtensions(t *testing.T) {
 		"mkv", "avi", "ts", "m3u8",
 		"flac", "ape",
 		"psd", "ai", "raw", "tiff",
-		"doc", "docx", "pdf",
+		"doc", "docx", "pdf", "bin",
 	}
 	for _, ext := range expectedTakeoverExts {
 		if !have[ext] {
@@ -1060,5 +1060,11 @@ func TestResolveCategory_SemanticFallbackAndCustomPrecedence(t *testing.T) {
 	catImgFallback, ok := d.ResolveCategory("photo.jpeg")
 	if !ok || catImgFallback.ID != "builtin-image" {
 		t.Errorf("expected photo.jpeg to fallback to builtin-image, got %+v", catImgFallback)
+	}
+
+	// 5. 默认配置下，.bin 归入“文件”分类
+	catBin, ok := d.ResolveCategory("firmware.bin")
+	if !ok || catBin.ID != "builtin-file" || catBin.Directory != "Files" {
+		t.Errorf("expected firmware.bin to resolve to builtin-file, got %+v (ok=%v)", catBin, ok)
 	}
 }
