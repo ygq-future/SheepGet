@@ -97,11 +97,8 @@ function CaptionButton({
 export function TitleBarDragRegion({ className = '' }: { className?: string }) {
   return (
     <div
-      onPointerDown={() => {
-        window.dispatchEvent(new CustomEvent('wails:titlebar:pointerdown'));
-      }}
-      className={`min-w-0 flex-1 self-stretch [--wails-non-client-region:caption] ${className}`}
-      style={{ ['--wails-draggable' as string]: 'drag' }}
+      data-titlebar-drag
+      className={`min-w-0 flex-1 self-stretch [--wails-draggable:drag] [--wails-non-client-region:caption] ${className}`}
     />
   );
 }

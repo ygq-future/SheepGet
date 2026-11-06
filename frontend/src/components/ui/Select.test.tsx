@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Select } from './Select';
+import { resetOverlayLockForTesting } from '../../lib/overlay';
 
 const options = [{ value: 'a', label: '选项 A' }];
 
@@ -41,5 +42,19 @@ describe('Select', () => {
 
     expect(screen.queryByRole('button', { name: '清空' })).toBeNull();
     expect(container.querySelector('[data-select-trigger] svg')).not.toBeNull();
+  });
+
+  it('manages data-has-overlay on documentElement when opened and unmounted', () => {
+    resetOverlayLockForTesting();
+    expect(document.documentElement.getAttribute('data-has-overlay')).toBeNull();
+
+    const { unmount } = render(
+      <Select value="a" onChange={() => {}} options={options} defaultOpen />,
+    );
+
+    expect(document.documentElement.getAttribute('data-has-overlay')).toBe('true');
+
+    unmount();
+    expect(document.documentElement.getAttribute('data-has-overlay')).toBeNull();
   });
 });

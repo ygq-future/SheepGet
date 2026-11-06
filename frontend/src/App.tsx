@@ -522,6 +522,7 @@ export function App() {
         <div className="w-full space-y-2">
           {/* Brand Header: 收起时水平居中 */}
           <div
+            data-shell-header
             className={`flex h-10 items-center ${
               sidebarCollapsed ? 'w-full justify-center px-0' : 'gap-2.5 px-0.5'
             } overflow-hidden [--wails-draggable:drag]`}
@@ -721,7 +722,10 @@ export function App() {
       {/* Right Main Workspace */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Right Header Bar: Aligns perfectly on top of right workspace */}
-        <header className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 [--wails-draggable:drag]">
+        <header
+          data-shell-header
+          className="relative flex h-[var(--shell-titlebar-h)] w-full shrink-0 items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-app)]/40 pr-[calc(1rem+var(--shell-window-controls-w,0px))] pl-4 [--wails-draggable:drag]"
+        >
           {/* Header Left: Compact Select All & Selection Status */}
           <div className="flex items-center gap-2 [--wails-draggable:no-drag]">
             {filter !== 'settings' && (

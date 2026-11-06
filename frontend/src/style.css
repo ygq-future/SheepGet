@@ -92,6 +92,13 @@ html.is_mac {
   --sidebar-header-pt: 40px;
 }
 
+/* 当存在浮层展开时，临时解除标题栏的非客户区与拖拽属性，使全局空白区域恢复为普通网页客户区，接收外部点击关闭事件 */
+html[data-has-overlay='true'] [data-titlebar-drag],
+html[data-has-overlay='true'] [data-shell-header] {
+  --wails-non-client-region: none !important;
+  --wails-draggable: no-drag !important;
+}
+
 @layer base {
   * {
     box-sizing: border-box;

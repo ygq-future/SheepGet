@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { ChevronDown, Check, X } from 'lucide-react';
+import { acquireOverlayLock } from '../../lib/overlay';
 export interface SelectOption<T extends string | number> {
   value: T;
   label: string;
@@ -17,6 +18,7 @@ interface SelectProps<T extends string | number> {
   disabled?: boolean;
   /** ghost 只保留细边框与文字，不铺底色。 */
   ghost?: boolean;
+  defaultOpen?: boolean;
 }
 
 export function Select<T extends string | number>({
@@ -28,19 +30,16 @@ export function Select<T extends string | number>({
   clearable = false,
   disabled = false,
   ghost = false,
+  defaultOpen = false,
 }: SelectProps<T>) {
   const selectedOption = options.find((opt) => opt.value === value);
   const hasValue = value !== '' && value !== undefined && value !== null;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const showClear = clearable && Boolean(hasValue && selectedOption);
 
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
-    window.addEventListener('wails:titlebar:pointerdown', close);
-    return () => {
-      window.removeEventListener('wails:titlebar:pointerdown', close);
-    };
+    return acquireOverlayLock();
   }, [open]);
 
   const handleClear = () => {
