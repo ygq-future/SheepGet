@@ -1436,7 +1436,7 @@ export function SettingsPanel({
   const handlePrepareExtensionPage = async (browser: 'chrome' | 'edge') => {
     try {
       const address = await PrepareExtensionPage(browser);
-      showToast(`已复制 ${address}，切到浏览器地址栏按 Ctrl+V 回车`, 'success');
+      showToast(`已复制 ${address}：在浏览器中按 Ctrl+L 聚焦地址栏，再按 Ctrl+V、回车`, 'success');
     } catch (err) {
       const name = browser === 'edge' ? 'Edge' : 'Chrome';
       showToast(err instanceof Error ? err.message : String(err), 'error', `唤起 ${name} 失败`);
@@ -2181,9 +2181,9 @@ export function SettingsPanel({
                     </div>
                     <ol className="list-inside list-decimal space-y-1 pl-0.5 leading-relaxed text-[var(--text-secondary)]">
                       <li>
-                        点击「<strong>Chrome / Edge 扩展</strong>」，到地址栏按{' '}
-                        <strong>Ctrl+V</strong>、<strong>回车</strong>并在扩展页开启「
-                        <strong>开发者模式</strong>」。
+                        点击「<strong>Chrome / Edge 扩展</strong>」，在浏览器中按{' '}
+                        <strong>Ctrl+L</strong> 聚焦地址栏，再按 <strong>Ctrl+V</strong>、
+                        <strong>回车</strong>，并开启「<strong>开发者模式</strong>」。
                       </li>
                       <li>
                         点击「<strong>定位扩展目录</strong>」，系统将自动打开并高亮配套扩展文件夹。
