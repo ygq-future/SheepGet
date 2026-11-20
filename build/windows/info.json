@@ -1,10 +1,10 @@
 {
 	"fixed": {
-		"file_version": "1.0.12"
+		"file_version": "1.0.13"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "1.0.12",
+			"ProductVersion": "1.0.13",
 			"CompanyName": "SheepGet",
 			"FileDescription": "SheepGet",
 			"LegalCopyright": "Copyright © 2026 SheepGet",
