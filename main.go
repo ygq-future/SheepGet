@@ -86,7 +86,8 @@ func main() {
 	}
 	// Configure cross-platform system tray
 	systemTray := wailsApp.SystemTray.New()
-	systemTray.SetTooltip("SheepGet 下载管理器")
+	// 提示文案由 App 统一生成（版本 + 发现新版本提示），更新检查有结论后回写。
+	app.SetTrayTooltipUpdater(systemTray.SetTooltip)
 	if len(trayIcon) > 0 {
 		systemTray.SetIcon(trayIcon)
 	}

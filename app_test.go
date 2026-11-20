@@ -2377,6 +2377,50 @@ func TestApp_CachedAppUpdate(t *testing.T) {
 	}
 }
 
+// 托盘提示要同时承载版本与更新结论：注册时先写版本，后续检查结果回写时追加或撤下更新提示。
+func TestApp_TrayTooltipReflectsVersionAndUpdate(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	var (
+		mu      sync.Mutex
+		tooltip string
+	)
+	app.SetTrayTooltipUpdater(func(s string) {
+		mu.Lock()
+		tooltip = s
+		mu.Unlock()
+	})
+
+	current := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return tooltip
+	}
+
+	if got, want := current(), "SheepGet 下载管理器 v"+version.Version; got != want {
+		t.Fatalf("registered tooltip = %q, want %q", got, want)
+	}
+
+	app.updateMu.Lock()
+	app.cachedAppUpdate = &update.AppUpdateResult{HasUpdate: true, LatestVersion: "9.9.9"}
+	app.updateMu.Unlock()
+	app.refreshTrayTooltip()
+
+	want := "SheepGet 下载管理器 v" + version.Version + "（发现新版本 v9.9.9）"
+	if got := current(); got != want {
+		t.Fatalf("tooltip with update = %q, want %q", got, want)
+	}
+
+	app.updateMu.Lock()
+	app.cachedAppUpdate = &update.AppUpdateResult{HasUpdate: false, LatestVersion: "9.9.9"}
+	app.updateMu.Unlock()
+	app.refreshTrayTooltip()
+
+	if got, want := current(), "SheepGet 下载管理器 v"+version.Version; got != want {
+		t.Fatalf("tooltip after no-update result = %q, want %q", got, want)
+	}
+}
+
 // newHLSVariantServer 提供一份有两个清晰度的点播清单：主清单指向 720p 与 1080p，
 // 各有一份只含一个分片的媒体清单。直下载入口要真的读清单、解析清晰度、问分片大小。
 func newHLSVariantServer(t *testing.T) *httptest.Server {

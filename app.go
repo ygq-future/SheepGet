@@ -75,6 +75,7 @@ type App struct {
 	updater             *update.Service
 	updateMu            sync.RWMutex
 	cachedAppUpdate     *update.AppUpdateResult
+	trayTooltipUpdater  func(string)
 	completedNotified   sync.Map
 	onShowProgress      func(taskID string)
 }
@@ -1052,6 +1053,7 @@ func (a *App) CheckAppUpdate() (*update.AppUpdateResult, error) {
 		a.updateMu.Lock()
 		a.cachedAppUpdate = res
 		a.updateMu.Unlock()
+		a.refreshTrayTooltip()
 	}
 	return res, err
 }
@@ -1061,6 +1063,38 @@ func (a *App) GetCachedAppUpdate() *update.AppUpdateResult {
 	a.updateMu.RLock()
 	defer a.updateMu.RUnlock()
 	return a.cachedAppUpdate
+}
+
+// SetTrayTooltipUpdater 接上托盘提示的写入面，并立即写入当前提示：
+// 注册发生在更新检查回写之前也能先显示版本，之后每次检查结论都会回写。
+func (a *App) SetTrayTooltipUpdater(updater func(string)) {
+	a.updateMu.Lock()
+	a.trayTooltipUpdater = updater
+	res := a.cachedAppUpdate
+	a.updateMu.Unlock()
+	if updater != nil {
+		updater(trayTooltipText(res))
+	}
+}
+
+// refreshTrayTooltip 把最新的更新结论写回托盘提示；托盘尚未创建时什么都不做。
+func (a *App) refreshTrayTooltip() {
+	a.updateMu.RLock()
+	updater := a.trayTooltipUpdater
+	res := a.cachedAppUpdate
+	a.updateMu.RUnlock()
+	if updater != nil {
+		updater(trayTooltipText(res))
+	}
+}
+
+// trayTooltipText 是托盘悬浮提示的唯一文案来源：版本常驻，发现新版本时追加更新提示。
+func trayTooltipText(res *update.AppUpdateResult) string {
+	text := "SheepGet 下载管理器 v" + version.Version
+	if res != nil && res.HasUpdate && res.LatestVersion != "" {
+		text += "（发现新版本 v" + res.LatestVersion + "）"
+	}
+	return text
 }
 
 // automaticUpdateCheckInterval 是常驻运行期间的更新检查间隔。关闭主窗口后软件驻留托盘，
