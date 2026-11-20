@@ -22,6 +22,7 @@ export interface HandoverRequest {
   mediaMeta?: unknown;
   /** 悬浮条上已经选好的清晰度地址；多清晰度时在交接前选定。 */
   variantUri?: string;
+  audioUrl?: string;
 }
 
 /**

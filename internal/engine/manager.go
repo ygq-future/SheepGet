@@ -1158,6 +1158,7 @@ func (m *Manager) ResetAndDownloadWithNewURL(ctx context.Context, taskID, newURL
 // 的几层包装之间挑一个。
 type CreateRequest struct {
 	URL        string
+	AudioURL   string
 	Directory  string
 	Filename   string
 	MaxConn    int
@@ -1189,8 +1190,14 @@ func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task
 	// 都只在「什么都没给」时才去取，调用方手上的事实一律原样使用。
 	if probe == nil && probeErr == nil {
 		probe, probeErr = m.probeResource(ctx, urlStr, creds)
+		if probeErr == nil && probe != nil && req.AudioURL != "" && probe.HLS == nil {
+			if audioProbe, audioErr := m.probeResource(ctx, req.AudioURL, creds); audioErr == nil && audioProbe != nil && probe.TotalBytes > 0 && audioProbe.TotalBytes > 0 {
+				probe.TotalBytes += audioProbe.TotalBytes
+			} else {
+				probe.TotalBytes = -1
+			}
+		}
 	}
-	// 挡住重复链接：同一条清单的不同清晰度是不同的下载目标，因此这里和别的入口用同一套判定
 	// （FindDuplicateTaskWithVariant），不另写一份「只看 URL」的口径——那会把第二个清晰度
 	// 当成重复链接拒绝掉。
 	variantURI := ""
@@ -1219,6 +1226,7 @@ func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task
 			// As per A03: even if probe/network fails immediately upon manual confirmation, keep task with error
 			t := &task.Task{
 				ID:              nextTaskID(),
+				AudioURL:        req.AudioURL,
 				URL:             urlStr,
 				PageURL:         pageURL,
 				CategoryID:      categoryID,
@@ -1270,6 +1278,7 @@ func (m *Manager) CreateTask(ctx context.Context, req CreateRequest) (*task.Task
 
 	t := &task.Task{
 		ID:              nextTaskID(),
+		AudioURL:        req.AudioURL,
 		URL:             urlStr,
 		FinalURL:        finalURLFrom("", probe),
 		PageURL:         pageURL,
@@ -1756,6 +1765,9 @@ func (m *Manager) runTransfer(ctx context.Context, t *task.Task, sink TransferSi
 	if t.IsBundle() {
 		return m.runBundleTransfer(ctx, t, sink)
 	}
+	if t.IsPairedMedia() {
+		return m.runPairedMediaTransfer(ctx, t, sink)
+	}
 	if !t.IsHLS() {
 		return m.downloader.Download(ctx, t, sink)
 	}
@@ -1771,6 +1783,9 @@ func (m *Manager) runTransfer(ctx context.Context, t *task.Task, sink TransferSi
 func (m *Manager) runProcessing(ctx context.Context, t *task.Task) error {
 	if t.IsBundle() {
 		return m.runBundlePackaging(ctx, t)
+	}
+	if t.IsPairedMedia() {
+		return m.runPairedMediaProcessing(ctx, t)
 	}
 	return m.runMediaProcessing(ctx, t)
 }

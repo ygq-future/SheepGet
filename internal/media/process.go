@@ -48,6 +48,7 @@ const (
 type Input struct {
 	Init    []string
 	Parts   []string
+	Streams []string
 	Output  string
 	WorkDir string
 }
@@ -55,7 +56,7 @@ type Input struct {
 // Process 把分片处理成一份成品，写到 Output。
 // 失败时保留输入分片，由调用方决定是仅重试处理还是重新传输（ADR-0004）。
 func Process(ctx context.Context, in Input) error {
-	if len(in.Parts) == 0 {
+	if len(in.Parts) == 0 && len(in.Streams) == 0 {
 		return unsupportedf("没有可处理的媒体分片")
 	}
 
@@ -82,6 +83,17 @@ func Process(ctx context.Context, in Input) error {
 		if err := acc.addPart(path); err != nil {
 			return err
 		}
+	}
+	for _, path := range in.Streams {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := acc.addStream(path); err != nil {
+			return err
+		}
+	}
+	if len(in.Streams) >= 2 && !acc.hasTrack(kindVideo) {
+		return unsupportedf("未解析出有效的视频轨（可能误匹配了同一音频轨），已中止合并")
 	}
 
 	if err := acc.finalize(); err != nil {
@@ -204,6 +216,14 @@ func (a *accumulator) trackFor(kind trackKind, name string) *track {
 	t := &track{kind: kind, name: name}
 	a.tracks = append(a.tracks, t)
 	return t
+}
+func (a *accumulator) hasTrack(kind trackKind) bool {
+	for _, t := range a.tracks {
+		if t.kind == kind && len(t.samples) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // finalize 计算时间基准与每个样本的时长、呈现偏移。

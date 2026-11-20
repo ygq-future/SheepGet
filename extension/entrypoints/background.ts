@@ -290,8 +290,9 @@ export default defineBackground(() => {
     } else if (msg?.type === 'REPORT_PAGE_CONTEXT') {
       // content script 上报的页面标题/URL。iframe 也会上报，但主框架的标题才是视频名
       // 的可靠来源——只接受顶层框架的，避免把嵌入框架的空标题/重复标题盖掉真名。
-      if (sender.frameId === 0) {
-        applyPageContext(sender.tab?.id, msg.pageTitle, msg.pageUrl);
+      if (sender.frameId === 0 && sender.tab?.id !== undefined) {
+        applyPageContext(sender.tab.id, msg.pageTitle, msg.pageUrl);
+        void publishTabResources(sender.tab.id);
       }
       sendResponse(undefined);
     } else if (msg?.type === 'REPORT_DOM_MEDIA') {
@@ -399,6 +400,7 @@ export default defineBackground(() => {
       if (!details.url) return;
       let contentType = '';
       let contentLength = -1;
+      let contentRangeTotal = -1;
       let contentDisposition = '';
 
       if (details.responseHeaders) {
@@ -406,10 +408,17 @@ export default defineBackground(() => {
           const name = header.name.toLowerCase();
           if (name === 'content-type') contentType = header.value || '';
           if (name === 'content-length') contentLength = parseInt(header.value || '-1', 10);
+          if (name === 'content-range') {
+            const slashIdx = (header.value || '').lastIndexOf('/');
+            if (slashIdx !== -1) {
+              const parsed = parseInt((header.value || '').slice(slashIdx + 1).trim(), 10);
+              if (Number.isFinite(parsed) && parsed > 0) contentRangeTotal = parsed;
+            }
+          }
           if (name === 'content-disposition') contentDisposition = header.value || '';
         }
       }
-
+      const resolvedTotalBytes = contentRangeTotal > 0 ? contentRangeTotal : contentLength;
       // 下载的真实文件名往往只出现在响应头里（GitHub 资产链接的路径末段是一个 GUID），
       // 而 Chrome 在 onCreated 给出的只是从 URL 推出来的名字。先记下来，供接管判定与交接使用。
       const headerFilename = parseContentDispositionFilename(contentDisposition);
@@ -450,14 +459,20 @@ export default defineBackground(() => {
         tabId: details.tabId,
         filename: suggestedName,
         mimeType: detected.mime,
-        totalBytes: contentLength > 0 ? contentLength : undefined,
+        totalBytes: resolvedTotalBytes > 0 ? resolvedTotalBytes : undefined,
         isHls: detected.isHls,
         pageTitle: pageCtx?.title,
         pageUrl: pageCtx?.url,
         foundAt: Date.now(),
       };
-      if (!addResourceOnce(list, resource)) return undefined;
-      void updateBadge(details.tabId);
+      if (!addResourceOnce(list, resource)) {
+        const existing = list.find((r) => r.url === resource.url);
+        if (existing && resolvedTotalBytes > (existing.totalBytes ?? 0)) {
+          existing.totalBytes = resolvedTotalBytes;
+          void publishTabResources(details.tabId);
+        }
+        return undefined;
+      }
       // 预探测：时长与大小现在就在后台算好并缓存，面板打开时直接有结果，
       // 而不是每次打开都从头问一遍桌面端。
       scheduleMediaProbe(resource);
@@ -476,12 +491,17 @@ export default defineBackground(() => {
     tabPageContext.delete(tabId);
   });
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === 'loading' && changeInfo.url) {
-      tabMediaPool.delete(tabId);
-      tabPageContext.delete(tabId);
-      void updateBadge(tabId);
+    if (changeInfo.url) {
+      const prevUrl = tabPageContext.get(tabId)?.url;
+      if (
+        changeInfo.status === 'loading' ||
+        (prevUrl && urlPathnameChanged(prevUrl, changeInfo.url))
+      ) {
+        tabMediaPool.delete(tabId);
+        tabPageContext.delete(tabId);
+        void updateBadge(tabId);
+      }
     }
-    // 导航完成时校准一次角标：per-tab 角标可能在导航过程中被浏览器重置，
     // 资源池里已有的媒体数量就是此刻该显示的数字。
     if (changeInfo.status === 'complete') {
       void updateBadge(tabId);
@@ -521,25 +541,40 @@ async function publishTabResources(tabId: number) {
  * 资源池里的条目是在页面标题可读之前（onHeadersReceived）写进去的，标题只能后补；
  * 后到的资源在构建时也会读到已经缓存的标题（见 tabPageContext）。
  */
+function urlPathnameChanged(prevUrl: string, nextUrl: string): boolean {
+  try {
+    return new URL(prevUrl).pathname !== new URL(nextUrl).pathname;
+  } catch {
+    return prevUrl !== nextUrl;
+  }
+}
+
 function applyPageContext(tabId: number | undefined, pageTitle: string, pageUrl: string) {
   if (tabId === undefined || tabId < 0) return;
+  const prevCtx = tabPageContext.get(tabId);
+  if (prevCtx?.url && pageUrl && urlPathnameChanged(prevCtx.url, pageUrl)) {
+    tabMediaPool.delete(tabId);
+  }
   tabPageContext.set(tabId, { title: pageTitle, url: pageUrl });
 
   const list = tabMediaPool.get(tabId);
   if (!list) return;
+  const prevPrefix = prevCtx?.title ? sanitizeFilename(prevCtx.title) : '';
   for (const r of list) {
-    if (!r.pageTitle && pageTitle) r.pageTitle = pageTitle;
+    if (pageTitle) r.pageTitle = pageTitle;
     // pageUrl 始终用真实页面地址，不能用 m3u8 的清单地址冒充。
     r.pageUrl = pageUrl;
-    // 标题补到之后，之前按 index.m3u8 命名的 HLS 资源要重新用真名命名。
-    r.filename = suggestFilename(r.filename, { isHls: r.isHls, mime: r.mimeType }, pageTitle);
+    const urlBasename = r.url.split('?')[0]?.split('/').pop() || '';
+    const baseForSuggest =
+      prevPrefix && r.filename.startsWith(prevPrefix) && urlBasename ? urlBasename : r.filename;
+    r.filename = suggestFilename(baseForSuggest, { isHls: r.isHls, mime: r.mimeType }, pageTitle);
   }
 }
 
 /**
  * 生成建议文件名。命名来源优先级与 IDM 一致：
  *   1. 已经落定的文件名（Content-Disposition 头给出的真名）原样保留；
- *   2. 否则若 URL 末段是 index.m3u8 / stream.m3u8 这类占位名，且拿到了页面标题，
+ *   2. 否则若 URL 末段是 index.m3u8 / stream.m3u8 或数字 ID 的 .m4s 占位名，且拿到了页面标题，
  *      用标题 + 媒体后缀命名；
  *   3. 否则保留 URL 末段。
  */
@@ -550,10 +585,13 @@ function suggestFilename(
 ): string {
   const urlBasename = fallback.split('?')[0]?.split('/').pop() || '';
   const isPlaceholder =
-    !urlBasename || /^(index|stream|playlist|master|chunklist)\.m3u8?$/i.test(urlBasename);
+    !urlBasename ||
+    /^(index|stream|playlist|master|chunklist)\.m3u8?$/i.test(urlBasename) ||
+    /^\d[\d_-]*\.m4s$/i.test(urlBasename);
   if (!isPlaceholder || !pageTitle) return fallback;
 
-  const suffix = detected.isHls ? '.mp4' : `.${detected.mime.split('/').pop() || 'mp4'}`;
+  const isM4s = /\.m4s$/i.test(urlBasename);
+  const suffix = detected.isHls || isM4s ? '.mp4' : `.${detected.mime.split('/').pop() || 'mp4'}`;
   return sanitizeFilename(pageTitle + suffix);
 }
 
@@ -684,30 +722,104 @@ async function resolvePageUrl(tabId?: number): Promise<string | undefined> {
   return undefined;
 }
 
+function resolvePairedM4s(
+  clicked: MediaResource,
+  pool: MediaResource[] | undefined,
+): { video: MediaResource; audio?: MediaResource } {
+  const isM4s = (r: MediaResource) =>
+    r.filename.toLowerCase().endsWith('.m4s') || r.url.toLowerCase().includes('.m4s');
+  const streamKey = (url: string) => url.split('?')[0]?.split('/').pop()?.toLowerCase() || url;
+  if (!pool || pool.length === 0 || !isM4s(clicked)) {
+    return { video: clicked };
+  }
+
+  // 按 URL 路径文件名去重，防止同一条流的不同 CDN 镜像互相配对成「假双流」。
+  const byStream = new Map<string, MediaResource>();
+  for (const cand of pool) {
+    if (!isM4s(cand)) continue;
+    const key = streamKey(cand.url);
+    const prev = byStream.get(key);
+    if (!prev || (cand.totalBytes ?? 0) > (prev.totalBytes ?? 0) || cand.foundAt > prev.foundAt) {
+      byStream.set(key, cand);
+    }
+  }
+  byStream.set(streamKey(clicked.url), clicked);
+
+  const unique = Array.from(byStream.values());
+  if (unique.length < 2) {
+    return { video: clicked };
+  }
+
+  const clickedKey = streamKey(clicked.url);
+  const others = unique.filter((c) => streamKey(c.url) !== clickedKey);
+  if (others.length === 0) {
+    return { video: clicked };
+  }
+
+  // 1. 优先按明确 MIME 区分
+  if (clicked.mimeType.startsWith('audio/')) {
+    const videoCand = [...others].reverse().find((c) => !c.mimeType.startsWith('audio/'));
+    if (videoCand) return { video: videoCand, audio: clicked };
+  }
+  const explicitAudio = [...others].reverse().find((c) => c.mimeType.startsWith('audio/'));
+  if (explicitAudio) {
+    return { video: clicked, audio: explicitAudio };
+  }
+
+  // 2. B 站等 DASH 站点常返回通用 MIME：按体积区分（视频流通常远大于音频流）
+  const sized = unique.filter((c) => (c.totalBytes ?? 0) > 0);
+  sized.sort((a, b) => (b.totalBytes ?? 0) - (a.totalBytes ?? 0));
+  const largest = sized[0];
+  const smallest = sized[sized.length - 1];
+  if (
+    sized.length >= 2 &&
+    largest &&
+    smallest &&
+    streamKey(largest.url) !== streamKey(smallest.url)
+  ) {
+    return { video: largest, audio: smallest };
+  }
+  return { video: clicked };
+}
+
 async function handleMediaHandover(
   resource: MediaResource,
   variantUri?: string,
   preferredTabId?: number,
   preferredTarget?: DownloadTargetType,
 ): Promise<HandoverResponse> {
+  const { video: mainResource, audio: pairedAudio } = resolvePairedM4s(
+    resource,
+    tabMediaPool.get(preferredTabId ?? resource.tabId),
+  );
   let cookiesStr = '';
   try {
-    const cookies = await chrome.cookies.getAll({ url: resource.url });
+    const cookies = await chrome.cookies.getAll({ url: mainResource.url });
     cookiesStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
   } catch {
     // Ignore cookie error
   }
 
-  const livePageUrl = await resolvePageUrl(preferredTabId ?? resource.tabId);
+  const livePageUrl = await resolvePageUrl(preferredTabId ?? mainResource.tabId);
   const effectivePageUrl =
-    livePageUrl || (isValidWebPageUrl(resource.pageUrl) ? resource.pageUrl : undefined);
+    livePageUrl || (isValidWebPageUrl(mainResource.pageUrl) ? mainResource.pageUrl : undefined);
+
+  const baseTitle = mainResource.pageTitle?.trim();
+  const filenameSuggestion = pairedAudio
+    ? baseTitle
+      ? `${sanitizeFilename(baseTitle)}.mp4`
+      : mainResource.filename.replace(/\.m4s$/i, '.mp4')
+    : mainResource.filename;
 
   const handoverReq: HandoverRequest = {
     sourceType: 'resource_list',
-    url: resource.url,
-    filenameSuggestion: resource.filename,
-    totalBytes: resource.totalBytes,
-    mimeType: resource.mimeType,
+    url: mainResource.url,
+    filenameSuggestion,
+    totalBytes:
+      pairedAudio && mainResource.totalBytes && pairedAudio.totalBytes
+        ? mainResource.totalBytes + pairedAudio.totalBytes
+        : mainResource.totalBytes,
+    mimeType: mainResource.mimeType,
     pageContext: {
       pageUrl:
         effectivePageUrl || (isValidWebPageUrl(resource.pageUrl) ? resource.pageUrl : '') || '',
@@ -720,8 +832,9 @@ async function handleMediaHandover(
         ...(effectivePageUrl ? { Referer: effectivePageUrl } : {}),
       },
     },
-    mediaMeta: resource.isHls ? { isHls: true } : undefined,
+    mediaMeta: mainResource.isHls ? { isHls: true } : undefined,
     variantUri,
+    ...(pairedAudio ? { audioUrl: pairedAudio.url } : {}),
   };
 
   return await dispatchHandover(handoverReq, 3000, 'media-handover', preferredTarget);

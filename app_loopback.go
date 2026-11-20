@@ -96,6 +96,7 @@ func (a *App) handleHandover(_ context.Context, req *server.HandoverRequest) (*s
 		Filename:   req.FilenameSuggestion,
 		Headers:    headers,
 		VariantURI: req.VariantURI,
+		AudioURL:   req.AudioURL,
 		PageURL:    pageURL,
 	}
 	resp, err := a.TriggerDownload(dlReq)
@@ -117,6 +118,7 @@ func (a *App) handleCreateTask(ctx context.Context, req *server.CreateTaskReques
 	}
 	dlReq := window.DownloadRequest{
 		URL:       req.URL,
+		AudioURL:  req.AudioURL,
 		Filename:  req.Filename,
 		Directory: req.Directory,
 		Headers:   req.Headers,

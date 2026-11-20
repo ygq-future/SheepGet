@@ -35,6 +35,8 @@ type HandoverRequest struct {
 	// VariantURI 是扩展悬浮条上已经选好的清晰度（清单里的一个 EXT-X-STREAM-INF 地址）。
 	// 有它时桌面端不必再让用户选一次：多清晰度的选择已经发生在交接之前。
 	VariantURI string `json:"variantUri,omitempty"`
+	// AudioURL 是 DASH 等音视频分离场景下的伴随音频流地址（如 B 站 .m4s 音频轨）。
+	AudioURL string `json:"audioUrl,omitempty"`
 }
 
 // HandoverResponse is returned synchronously to confirm whether SheepGet accepted the download.
@@ -50,6 +52,7 @@ type HandoverResponse struct {
 // 它们只在任务上生效，不影响其它任务，也不改变已保存的全局设置。
 type CreateTaskRequest struct {
 	URL       string            `json:"url"`
+	AudioURL  string            `json:"audioUrl,omitempty"`
 	Filename  string            `json:"filename,omitempty"`
 	Directory string            `json:"directory,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`

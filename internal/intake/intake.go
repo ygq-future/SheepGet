@@ -63,6 +63,7 @@ const (
 // 没有推断。
 type Request struct {
 	URL        string
+	AudioURL   string
 	Headers    map[string]string
 	Filename   string
 	Directory  string
@@ -114,7 +115,8 @@ type Target struct {
 	// variantURI 是登记时扩展已经选好的清晰度；它决定探测阶段要不要顺手解析这一版。
 	variantURI string
 	// display 是入口带来的进度窗口展示覆盖，提交时原样落到任务上。
-	display *task.ProgressDisplay
+	display  *task.ProgressDisplay
+	audioURL string
 	// namedByRequest 记录名字是不是入口给的：用户自己填的名字不被探测结果替换。
 	namedByRequest bool
 	// dirFromCategory 记录目录是请求给的还是按分类裁出来的：只有后者会在名字变化后重算。
@@ -189,6 +191,7 @@ func (in *Intake) Begin(ctx context.Context, req Request, reserved engine.Reserv
 		MaxConn:        req.MaxConn,
 		mode:           req.Mode,
 		variantURI:     req.VariantURI,
+		audioURL:       strings.TrimSpace(req.AudioURL),
 		display:        req.ProgressDisplay,
 		namedByRequest: suggested != "",
 		TotalBytes:     -1,
@@ -248,7 +251,17 @@ func (in *Intake) Begin(ctx context.Context, req Request, reserved engine.Reserv
 // 联网，调用方必须在锁外调用。
 func (in *Intake) Probe(ctx context.Context, t Target) (*engine.ProbeResult, error) {
 	probe, err := in.eng.ProbeURL(ctx, t.URL, t.Headers)
-	if err != nil || probe == nil || probe.HLS == nil {
+	if err != nil || probe == nil {
+		return probe, err
+	}
+	if t.audioURL != "" && probe.HLS == nil {
+		if audioProbe, audioErr := in.eng.ProbeURL(ctx, t.audioURL, t.Headers); audioErr == nil && audioProbe != nil && probe.TotalBytes > 0 && audioProbe.TotalBytes > 0 {
+			probe.TotalBytes += audioProbe.TotalBytes
+		} else {
+			probe.TotalBytes = -1
+		}
+	}
+	if probe.HLS == nil {
 		return probe, err
 	}
 	if t.variantURI != "" {
@@ -400,6 +413,7 @@ func (in *Intake) StartPreDownload(ctx context.Context, t Target) (*task.Task, e
 func (in *Intake) createRequest(t Target, probe *engine.ProbeResult) engine.CreateRequest {
 	req := engine.CreateRequest{
 		URL:             t.URL,
+		AudioURL:        t.audioURL,
 		Directory:       t.Directory,
 		Filename:        t.Filename,
 		MaxConn:         t.MaxConn,

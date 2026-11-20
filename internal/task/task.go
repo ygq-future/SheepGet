@@ -164,6 +164,9 @@ type Task struct {
 	// TransferDone 表示 MediaInputs 已经全部就绪，剩下的只是处理。
 	// 它是「传输已完成」这一事实的唯一记录——处理失败后不能靠重新传输来恢复。
 	TransferDone bool `json:"transferDone,omitempty"`
+	// AudioURL 非空表示这是一条音视频分离流任务（如 B 站 DASH .m4s）：URL 为视频流，
+	// AudioURL 为伴随音频流，两者下载完成后交由 Media Processor 无损合并为 .mp4。
+	AudioURL string `json:"audioUrl,omitempty"`
 
 	// Bundle 非空表示这是一条 zip 聚合任务：URL 为空，成员与批次事实都在这里。
 	// 成员不建独立任务，因此任务列表里只会看到这一条。
@@ -184,6 +187,11 @@ func (t *Task) IsHLS() bool {
 	return t != nil && t.Media != nil
 }
 
+// IsPairedMedia reports whether this task downloads separate video and audio streams and muxes them into MP4.
+func (t *Task) IsPairedMedia() bool {
+	return t != nil && t.AudioURL != ""
+}
+
 // IsBundle reports whether this task aggregates several files into one zip.
 func (t *Task) IsBundle() bool {
 	return t != nil && t.Bundle != nil
@@ -191,7 +199,7 @@ func (t *Task) IsBundle() bool {
 
 // NeedsProcessing reports whether the task has a stage after transfer (HLS muxing or zip packaging).
 func (t *Task) NeedsProcessing() bool {
-	return t.IsHLS() || t.IsBundle()
+	return t.IsHLS() || t.IsBundle() || t.IsPairedMedia()
 }
 
 // EffectiveURL 返回本次下载实际应当连接的目标地址：若解析出了 FinalURL 则优先使用，否则使用原始 URL。

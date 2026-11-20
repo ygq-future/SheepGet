@@ -53,6 +53,7 @@ type DownloadRequest struct {
 	// VariantURI 是浏览器扩展在悬浮条上已经选好的清晰度（清单里的一个 EXT-X-STREAM-INF 地址）。
 	// 有它时这一项不必再问一次清晰度：多清晰度的选择已经发生在进入本窗口之前。
 	VariantURI string `json:"variantUri,omitempty"`
+	AudioURL   string `json:"audioUrl,omitempty"`
 	PageURL    string `json:"pageUrl,omitempty"`
 }
 
@@ -311,6 +312,7 @@ func (qc *QueueController) Enqueue(ctx context.Context, req DownloadRequest) (*D
 
 	target := qc.intake.Begin(ctx, intake.Request{
 		URL:        req.URL,
+		AudioURL:   req.AudioURL,
 		Headers:    req.Headers,
 		Filename:   req.Filename,
 		Directory:  req.Directory,

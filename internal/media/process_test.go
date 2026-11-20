@@ -301,3 +301,38 @@ func readPM4SamplePayloads(t *testing.T, path string) [][]byte {
 	}
 	return payloads
 }
+
+func TestProcess_SingleFileFMP4Stream(t *testing.T) {
+	initData, err := os.ReadFile(sampleFMP4Ini)
+	if err != nil {
+		t.Fatalf("read init: %v", err)
+	}
+	seg0, err := os.ReadFile(sampleFMP4A)
+	if err != nil {
+		t.Fatalf("read seg0: %v", err)
+	}
+	seg1, err := os.ReadFile(sampleFMP4B)
+	if err != nil {
+		t.Fatalf("read seg1: %v", err)
+	}
+
+	combined := append(append(initData, seg0...), seg1...)
+	streamPath := filepath.Join(t.TempDir(), "stream.m4s")
+	if err := os.WriteFile(streamPath, combined, 0o644); err != nil {
+		t.Fatalf("write stream: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out.mp4")
+	if err := media.Process(context.Background(), media.Input{
+		Streams: []string{streamPath},
+		Output:  out,
+		WorkDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Process Streams 失败: %v", err)
+	}
+
+	payloads := readPM4SamplePayloads(t, out)
+	if len(payloads) == 0 {
+		t.Fatal("成品没有写入任何样本")
+	}
+}
