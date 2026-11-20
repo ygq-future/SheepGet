@@ -783,6 +783,200 @@ func TestDownloadFailsFastWhenByteStreamStalls(t *testing.T) {
 	}
 }
 
+// TestFetcher_SwitchesFallbackProxyOnSegmentBodyStall 锁住「响应头已到、响应体停摆」的分片回退：
+// 主代理只发出一小段响应体就停住，空闲看门狗判定停摆后，Fetcher 必须像处理 502 一样沿回退链
+// 切到下一个可用代理，而不是在坏代理上耗尽重试次数。两个分片同时停摆时回退链只能推进一次，
+// 不能越过可用的 P2 直接掉到直连；落盘内容与 .part 清理也必须保持原有的完整性保证。
+func TestFetcher_SwitchesFallbackProxyOnSegmentBodyStall(t *testing.T) {
+	restoreTimeout := hls.SetRequestTimeoutForTest(5 * time.Second)
+	defer restoreTimeout()
+	oldIdle := hls.IdleTimeout()
+	hls.SetIdleTimeoutForTest(80 * time.Millisecond)
+	defer hls.SetIdleTimeoutForTest(oldIdle)
+	restoreDelay := hls.SetRetryBaseDelayForTest(5 * time.Millisecond)
+	defer restoreDelay()
+
+	const segCount = 2
+	payloads := make([]string, segCount)
+	for i := range payloads {
+		payloads[i] = fmt.Sprintf("segment-%d-payload", i)
+	}
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := range payloads {
+			if r.URL.Path == fmt.Sprintf("/seg%d.ts", i) {
+				_, _ = io.WriteString(w, payloads[i])
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	defer origin.Close()
+
+	var stalled atomic.Int32
+	release := make(chan struct{})
+	stallProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stalled.Add(1)
+		w.Header().Set("Content-Length", "4096")
+		_, _ = io.WriteString(w, "stalled-prefix")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(release)
+		stallProxy.Close()
+	}()
+
+	forward := &http.Transport{}
+	defer forward.CloseIdleConnections()
+	var p2Hits atomic.Int32
+	p2Proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p2Hits.Add(1)
+		outReq, reqErr := http.NewRequestWithContext(r.Context(), r.Method, r.URL.String(), nil)
+		if reqErr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		resp, respErr := forward.RoundTrip(outReq)
+		if respErr != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer p2Proxy.Close()
+
+	stallURL, err := url.Parse(stallProxy.URL)
+	if err != nil {
+		t.Fatalf("无效的停摆代理地址: %v", err)
+	}
+	stallClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(stallURL)}}
+	defer stallClient.CloseIdleConnections()
+	p2URL, err := url.Parse(p2Proxy.URL)
+	if err != nil {
+		t.Fatalf("无效的 P2 代理地址: %v", err)
+	}
+	p2Client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(p2URL)}}
+	defer p2Client.CloseIdleConnections()
+
+	var switches atomic.Int32
+	f := hls.NewFetcher(stallClient, credentials.New(nil)).WithFallbackChain([]hls.FallbackTarget{
+		{Client: p2Client, ProxyAddr: p2Proxy.URL},
+		{Client: origin.Client(), DirectTransfer: true},
+	}, func(hls.FallbackTarget) { switches.Add(1) })
+
+	segments := make([]hls.Segment, segCount)
+	for i := range segments {
+		segments[i] = hls.Segment{URI: fmt.Sprintf("%s/seg%d.ts", origin.URL, i)}
+	}
+	dir := t.TempDir()
+	inputs, err := f.Download(context.Background(), &hls.MediaPlaylist{Segments: segments}, dir, segCount, nil)
+	if err != nil {
+		t.Fatalf("分片停在响应体中途后应切到备用代理并完成下载: %v", err)
+	}
+	if stalled.Load() == 0 {
+		t.Fatal("主代理没有被分片请求命中，用例前提不成立")
+	}
+	if f.UsedFallback() {
+		t.Fatal("回退应停在可用的 P2，不能越过它直接掉到直连")
+	}
+	if got := f.SwitchedProxyAddr(); got != p2Proxy.URL {
+		t.Fatalf("停摆后应锁定到 P2 (%s)，实际 %q", p2Proxy.URL, got)
+	}
+	if switches.Load() != 1 {
+		t.Fatalf("并发停摆只应推进一次回退链，实际推进 %d 次", switches.Load())
+	}
+	if p2Hits.Load() == 0 {
+		t.Fatal("备用代理没有收到分片请求")
+	}
+	if len(inputs.Segments) != segCount {
+		t.Fatalf("应完成 %d 个分片，实际 %d", segCount, len(inputs.Segments))
+	}
+	for i, name := range inputs.Segments {
+		got, readErr := os.ReadFile(filepath.Join(dir, name))
+		if readErr != nil {
+			t.Fatalf("分片 %s 未落盘: %v", name, readErr)
+		}
+		if string(got) != payloads[i] {
+			t.Fatalf("分片 %s 内容被停摆的首轮尝试污染: %q", name, string(got))
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, name) + ".part"); !os.IsNotExist(statErr) {
+			t.Fatalf("停摆重试后不应遗留 .part 文件: %s", name)
+		}
+	}
+}
+
+// TestFetcher_BodyStallCancelDoesNotSwitchFallback 固定「取消优先于停摆」：
+// 用户暂停/退出导致的读取中断属于取消而不是网络故障，不能把任务白白切到备用代理。
+func TestFetcher_BodyStallCancelDoesNotSwitchFallback(t *testing.T) {
+	restoreTimeout := hls.SetRequestTimeoutForTest(10 * time.Second)
+	defer restoreTimeout()
+	oldIdle := hls.IdleTimeout()
+	hls.SetIdleTimeoutForTest(time.Minute)
+	defer hls.SetIdleTimeoutForTest(oldIdle)
+
+	release := make(chan struct{})
+	stallProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		_, _ = io.WriteString(w, "stalled-prefix")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(release)
+		stallProxy.Close()
+	}()
+
+	var fallbackHits atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits.Add(1)
+		_, _ = io.WriteString(w, "segment-payload")
+	}))
+	defer origin.Close()
+
+	stallURL, err := url.Parse(stallProxy.URL)
+	if err != nil {
+		t.Fatalf("无效的停摆代理地址: %v", err)
+	}
+	stallClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(stallURL)}}
+	defer stallClient.CloseIdleConnections()
+
+	f := hls.NewFetcher(stallClient, credentials.New(nil)).WithFallbackChain([]hls.FallbackTarget{
+		{Client: origin.Client(), DirectTransfer: true},
+	}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	pl := &hls.MediaPlaylist{Segments: []hls.Segment{{URI: origin.URL + "/seg0.ts"}}}
+	_, err = f.Download(ctx, pl, t.TempDir(), 1, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消应当作为取消返回，实际 %v", err)
+	}
+	if fallbackHits.Load() != 0 {
+		t.Fatalf("取消后不应尝试备用通道，实际命中 %d 次", fallbackHits.Load())
+	}
+	if f.UsedFallback() {
+		t.Fatal("取消不应触发回退切换")
+	}
+}
+
 func TestInspectAndResolveMasterWithSeparateAudio(t *testing.T) {
 	const servedMaster = `#EXTM3U
 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="中文",DEFAULT=YES,URI="audio/zh.m3u8"

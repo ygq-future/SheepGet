@@ -383,7 +383,14 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		m.probeCacheMu.Unlock()
 	}()
 
-	info, err := m.downloader.Probe(ctx, urlStr, creds)
+	var (
+		info *HTTPProbeInfo
+		err  error
+	)
+	isPlaylistURL := looksLikePlaylist(urlStr, "")
+	if !isPlaylistURL {
+		info, err = m.downloader.Probe(ctx, urlStr, creds)
+	}
 
 	probe := &ProbeResult{URL: urlStr, TotalBytes: -1}
 	if info != nil {
@@ -398,8 +405,10 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		probe.ProxyAddr = info.ProxyAddr
 	}
 
-	if looksLikePlaylist(urlStr, probe.ContentType) {
-		hlsProbe, hlsErr := m.inspectPlaylist(ctx, urlStr, creds)
+	if isPlaylistURL || looksLikePlaylist(urlStr, probe.ContentType) {
+		// 清单自己的字节数不是这次下载的大小；即使探测失败也不能把清单大小当成视频大小返回。
+		probe.TotalBytes = -1
+		hlsProbe, fetcher, inspectRes, hlsErr := m.inspectPlaylist(ctx, urlStr, creds)
 		if hlsErr != nil {
 			// 看起来是清单却读不出来，就不要把它当普通文件接着走：把一个 m3u8 下成成品文件
 			// 不是用户要的东西，按失败报出来更接近事实。
@@ -418,14 +427,12 @@ func (m *Manager) probeResource(ctx context.Context, urlStr string, creds creden
 		} else if hlsProbe.ProxyAddr != "" {
 			probe.ProxyAddr = hlsProbe.ProxyAddr
 		}
-		// 清单自己的字节数不是这次下载的大小——真正的分片要等清晰度选定后才知道。
-		probe.TotalBytes = -1
 		probe.Filename = HLSOutputName(urlStr, probe.Filename)
 
 		// 只有一版就没有选择可做，直接定下来。多清晰度时留在这里等用户选：
 		// 替用户在几版之间挑一个，等于替他做了一个他没做过的决定。
 		if len(hlsProbe.Variants) == 1 {
-			src, resolveErr := m.resolveHLS(ctx, urlStr, hlsProbe.Variants[0].URI, creds)
+			src, resolveErr := m.resolveHLSFromInspect(ctx, fetcher, urlStr, inspectRes, hlsProbe.Variants[0].URI)
 			if resolveErr != nil {
 				call.result = probe
 				call.err = resolveErr
@@ -1402,15 +1409,29 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 	// 用户手动重试时，先清除上一轮失败残留的代理回退/直连标记，保证重新从首选代理开始按序轮询
 	t.DirectTransfer = false
 	t.ProxyAddr = ""
-	// 若任务大小未知或之前失败，重试前重新探测一次元数据
-	if t.TotalBytes <= 0 && t.URL != "" {
+	// 若任务大小未知或之前失败（含尚未解析出 Media 的 HLS 任务），重试前重新探测一次元数据
+	if (t.TotalBytes <= 0 || (!t.IsHLS() && looksLikePlaylist(t.URL, ""))) && t.URL != "" {
 		var headers map[string]string
 		if t.RequestHeaders != nil {
 			headers = t.RequestHeaders.RawHeaders()
 		}
-		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if probe, probeErr := m.ProbeURL(probeCtx, t.URL, headers); probeErr == nil && probe != nil {
-			if probe.TotalBytes > 0 {
+		probeTimeout := 5 * time.Second
+		if looksLikePlaylist(t.URL, "") {
+			probeTimeout = 15 * time.Second
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		probe, probeErr := m.probeResource(probeCtx, t.URL, credentials.New(headers))
+		cancel()
+		if probeErr == nil && probe != nil {
+			if probe.HLS != nil && probe.HLS.Media != nil {
+				t.Media = probe.HLS.Media
+				t.TotalBytes = probe.HLS.Media.TotalBytes
+				t.Duration = probe.HLS.Media.Duration
+				t.Filename = HLSOutputName(t.URL, t.Filename)
+				if len(probe.HLS.Variants) > 1 {
+					t.Filename = HLSVariantFilename(t.Filename, probe.HLS.Media.Variant)
+				}
+			} else if probe.TotalBytes > 0 {
 				t.TotalBytes = probe.TotalBytes
 				t.Resumable = probe.Resumable
 			}
@@ -1423,8 +1444,15 @@ func (m *Manager) Retry(ctx context.Context, id string) error {
 			} else if probe.ProxyAddr != "" {
 				t.ProxyAddr = probe.ProxyAddr
 			}
+		} else if probeErr != nil && !t.IsHLS() && looksLikePlaylist(t.URL, "") {
+			t.Status = task.StatusError
+			t.FailurePhase = task.FailurePhaseTransfer
+			t.ErrorMsg = probeErr.Error()
+			t.UpdatedAt = time.Now()
+			_ = m.store.Save(ctx, t)
+			m.notify(t)
+			return nil
 		}
-		cancel()
 	}
 	_ = m.store.Save(ctx, t)
 	return m.Resume(ctx, id)
@@ -1769,7 +1797,27 @@ func (m *Manager) runTransfer(ctx context.Context, t *task.Task, sink TransferSi
 		return m.runPairedMediaTransfer(ctx, t, sink)
 	}
 	if !t.IsHLS() {
-		return m.downloader.Download(ctx, t, sink)
+		if looksLikePlaylist(t.EffectiveURL(), "") {
+			src, err := m.resolveHLS(ctx, t.EffectiveURL(), "", t.RequestHeaders)
+			if err != nil {
+				return err
+			}
+			t.Media = src
+			if src.TotalBytes > 0 {
+				t.TotalBytes = src.TotalBytes
+			}
+			if src.Duration > 0 {
+				t.Duration = src.Duration
+			}
+			if src.DirectTransfer {
+				t.DirectTransfer = true
+				t.ProxyAddr = ""
+			} else if src.ProxyAddr != "" {
+				t.ProxyAddr = src.ProxyAddr
+			}
+		} else {
+			return m.downloader.Download(ctx, t, sink)
+		}
 	}
 	inputs, err := m.runHLSTransfer(ctx, t, sink)
 	if err != nil {

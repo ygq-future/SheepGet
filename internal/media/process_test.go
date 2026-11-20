@@ -23,6 +23,7 @@ const (
 	sampleH265AAC = "testdata/h265_aac.ts"
 	sampleVideo   = "testdata/video_h264.ts"
 	sampleAudio   = "testdata/audio_aac.ts"
+	sampleH264ID3 = "testdata/h264_aac_id3.ts"
 	sampleFMP4Ini = "testdata/fmp4_init.mp4"
 	sampleFMP4A   = "testdata/fmp4_seg0.m4s"
 	sampleFMP4B   = "testdata/fmp4_seg1.m4s"
@@ -95,6 +96,22 @@ func decodeCleanly(t *testing.T, path string) {
 
 func TestProcessMPEGTSH264AndAAC(t *testing.T) {
 	out := mustProcess(t, []string{sampleH264AAC})
+
+	streams := decodeStreams(t, out)
+	if len(streams) != 2 {
+		t.Fatalf("期望两条轨（视频 + 音频），实际 %v", streams)
+	}
+	if streams[0] != "h264,video" || streams[1] != "aac,audio" {
+		t.Fatalf("轨道不对: %v", streams)
+	}
+	decodeCleanly(t, out)
+}
+
+// TestProcessMPEGTSWithTimedID3 覆盖 Apple HLS 的 timed ID3 元数据轨：分片里除了
+// H.264 + AAC 还有一条 stream_type 0x15 / metadata_descriptor 'ID3 ' 的轨。成品只应
+// 承载音视频，元数据轨被跳过而不是让整次处理失败。
+func TestProcessMPEGTSWithTimedID3(t *testing.T) {
+	out := mustProcess(t, []string{sampleH264ID3})
 
 	streams := decodeStreams(t, out)
 	if len(streams) != 2 {

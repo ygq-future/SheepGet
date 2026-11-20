@@ -10,9 +10,12 @@ import {
   shouldReverifyLink,
 } from '../lib/handover';
 import {
-  isMediaResponse,
+  buildMediaRequestHeaders,
   isHlsSegment,
+  isLikelyDomMediaUrl,
+  isMediaResponse,
   parseContentDispositionFilename,
+  suggestMediaFilename,
   type MediaResource,
 } from '../lib/media';
 import { decideTakeover, type TakeoverDecision } from '../lib/rules';
@@ -427,6 +430,12 @@ export default defineBackground(() => {
       }
 
       if (details.tabId < 0) return;
+      if (
+        typeof details.statusCode === 'number' &&
+        (details.statusCode < 200 || details.statusCode >= 300)
+      ) {
+        return;
+      }
 
       const detected = isMediaResponse(details.url, contentType);
       if (!detected.isMedia) return;
@@ -451,15 +460,20 @@ export default defineBackground(() => {
       // 命名优先级：Content-Disposition 头 → 页面标题（补上媒体后缀）→ URL 末段。
       // 标题可能尚未上报（媒体请求先于 content script 就绪），拿到时后补。
       const pageCtx = tabPageContext.get(details.tabId);
-      const suggestedName = suggestFilename(filename, detected, pageCtx?.title);
-
+      const suggestedName = suggestMediaFilename(
+        filename,
+        detected,
+        pageCtx?.title,
+        Boolean(headerFilename),
+        sanitizeFilename,
+      );
       const resource: MediaResource = {
         id: `${details.tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         url: details.url,
         tabId: details.tabId,
         filename: suggestedName,
         mimeType: detected.mime,
-        totalBytes: resolvedTotalBytes > 0 ? resolvedTotalBytes : undefined,
+        totalBytes: !detected.isHls && resolvedTotalBytes > 0 ? resolvedTotalBytes : undefined,
         isHls: detected.isHls,
         pageTitle: pageCtx?.title,
         pageUrl: pageCtx?.url,
@@ -467,7 +481,7 @@ export default defineBackground(() => {
       };
       if (!addResourceOnce(list, resource)) {
         const existing = list.find((r) => r.url === resource.url);
-        if (existing && resolvedTotalBytes > (existing.totalBytes ?? 0)) {
+        if (existing && !detected.isHls && resolvedTotalBytes > (existing.totalBytes ?? 0)) {
           existing.totalBytes = resolvedTotalBytes;
           void publishTabResources(details.tabId);
         }
@@ -559,40 +573,21 @@ function applyPageContext(tabId: number | undefined, pageTitle: string, pageUrl:
 
   const list = tabMediaPool.get(tabId);
   if (!list) return;
-  const prevPrefix = prevCtx?.title ? sanitizeFilename(prevCtx.title) : '';
   for (const r of list) {
     if (pageTitle) r.pageTitle = pageTitle;
     // pageUrl 始终用真实页面地址，不能用 m3u8 的清单地址冒充。
     r.pageUrl = pageUrl;
+    if (responseFilenames.lookup(r.url)) continue;
     const urlBasename = r.url.split('?')[0]?.split('/').pop() || '';
-    const baseForSuggest =
-      prevPrefix && r.filename.startsWith(prevPrefix) && urlBasename ? urlBasename : r.filename;
-    r.filename = suggestFilename(baseForSuggest, { isHls: r.isHls, mime: r.mimeType }, pageTitle);
+    const baseForSuggest = urlBasename || r.filename;
+    r.filename = suggestMediaFilename(
+      baseForSuggest,
+      { isHls: r.isHls, mime: r.mimeType },
+      pageTitle,
+      false,
+      sanitizeFilename,
+    );
   }
-}
-
-/**
- * 生成建议文件名。命名来源优先级与 IDM 一致：
- *   1. 已经落定的文件名（Content-Disposition 头给出的真名）原样保留；
- *   2. 否则若 URL 末段是 index.m3u8 / stream.m3u8 或数字 ID 的 .m4s 占位名，且拿到了页面标题，
- *      用标题 + 媒体后缀命名；
- *   3. 否则保留 URL 末段。
- */
-function suggestFilename(
-  fallback: string,
-  detected: { isHls: boolean; mime: string },
-  pageTitle?: string,
-): string {
-  const urlBasename = fallback.split('?')[0]?.split('/').pop() || '';
-  const isPlaceholder =
-    !urlBasename ||
-    /^(index|stream|playlist|master|chunklist)\.m3u8?$/i.test(urlBasename) ||
-    /^\d[\d_-]*\.m4s$/i.test(urlBasename);
-  if (!isPlaceholder || !pageTitle) return fallback;
-
-  const isM4s = /\.m4s$/i.test(urlBasename);
-  const suffix = detected.isHls || isM4s ? '.mp4' : `.${detected.mime.split('/').pop() || 'mp4'}`;
-  return sanitizeFilename(pageTitle + suffix);
 }
 
 /**
@@ -611,17 +606,26 @@ function applyDomMediaReport(tabId: number, resources: Array<{ url: string; file
   let changed = false;
 
   for (const item of resources) {
-    if (!item.url || !item.url.startsWith('http')) continue;
-    const isHls = item.url.includes('.m3u8');
+    if (!isLikelyDomMediaUrl(item.url, pageCtx?.url)) continue;
+    const urlDetected = isMediaResponse(item.url);
+    const isHls = urlDetected.isHls;
     const rawFallback =
       item.filename ||
       item.url.split('?')[0]?.split('/').pop() ||
       (isHls ? 'stream.m3u8' : 'media.mp4');
     const detected = {
       isHls,
-      mime: isHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
+      mime: isHls
+        ? urlDetected.mime || 'application/vnd.apple.mpegurl'
+        : urlDetected.mime || 'video/mp4',
     };
-    const suggestedName = suggestFilename(rawFallback, detected, pageCtx?.title);
+    const suggestedName = suggestMediaFilename(
+      rawFallback,
+      detected,
+      pageCtx?.title,
+      Boolean(item.filename),
+      sanitizeFilename,
+    );
 
     const resource: MediaResource = {
       id: `${tabId}_dom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -827,10 +831,7 @@ async function handleMediaHandover(
     },
     credentials: {
       cookies: cookiesStr,
-      headers: {
-        'User-Agent': navigator.userAgent,
-        ...(effectivePageUrl ? { Referer: effectivePageUrl } : {}),
-      },
+      headers: buildMediaRequestHeaders(effectivePageUrl),
     },
     mediaMeta: mainResource.isHls ? { isHls: true } : undefined,
     variantUri,
@@ -872,14 +873,7 @@ async function handleDirectClickHandover(
     },
     credentials: {
       cookies: cookiesStr,
-      headers: {
-        'User-Agent': navigator.userAgent,
-        ...(msg.referrer
-          ? { Referer: msg.referrer }
-          : effectivePageUrl
-            ? { Referer: effectivePageUrl }
-            : {}),
-      },
+      headers: buildMediaRequestHeaders(effectivePageUrl, msg.referrer),
     },
   };
 
@@ -912,10 +906,7 @@ async function fetchHLSVariants(url: string, pageUrl?: string): Promise<HLSVaria
   }
   const resp = await client.fetchHLSVariants(url, {
     cookies: cookiesStr,
-    headers: {
-      'User-Agent': navigator.userAgent,
-      ...(pageUrl ? { Referer: pageUrl } : {}),
-    },
+    headers: buildMediaRequestHeaders(pageUrl),
   });
   return resp ?? { variants: [] };
 }
@@ -953,10 +944,7 @@ async function fetchMediaProbe(req: {
     },
     {
       cookies: cookiesStr,
-      headers: {
-        'User-Agent': navigator.userAgent,
-        ...(req.pageUrl ? { Referer: req.pageUrl } : {}),
-      },
+      headers: buildMediaRequestHeaders(req.pageUrl),
     },
   );
 }

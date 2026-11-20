@@ -1,12 +1,15 @@
 package media
 
 import (
+	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
+	"github.com/asticode/go-astits"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
 	mp4codecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
@@ -36,7 +39,13 @@ func (a *accumulator) readTSFile(path string) error {
 		return unsupportedf("%s 里没有声明任何媒体轨", filepath.Base(path))
 	}
 
+	// 解封装库只把每个 ES 归到码点，不暴露 PMT 里的 stream_type 与描述符。识别
+	// Apple HLS 的 timed ID3 元数据轨需要在 PES 级别看 PMT 声明，因此遇到无法归类
+	// 的轨时用 astits 单独读一遍 PMT。读不出来时保持原有行为：真正不支持的轨仍然
+	// 明确报错；全是受支持码点时则完全不做这次额外解析。
 	seen := map[trackKind]bool{}
+	var pmtStreams map[uint16]*astits.PMTElementaryStream
+	var pmtLoaded bool
 	for _, src := range srcTracks {
 		switch codec := src.Codec.(type) {
 		case *mpegtscodecs.H264:
@@ -70,6 +79,18 @@ func (a *accumulator) readTSFile(path string) error {
 			})
 
 		default:
+			// 分片里常带一条 timed ID3 元数据轨（Apple 的 HLS 时间戳就是放在这里）。
+			// 成品只承载音视频，元数据轨直接跳过；其它不支持的码点仍然明确报错。
+			if !pmtLoaded {
+				pmtLoaded = true
+				pmtStreams, err = readPMTStreams(path)
+				if err != nil {
+					return fmt.Errorf("读取 %s 的节目表失败: %w", filepath.Base(path), err)
+				}
+			}
+			if isTimedID3Metadata(pmtStreams[src.PID]) {
+				continue
+			}
 			return unsupportedf("%s 里的 %s 不在首期支持范围内（支持 H.264/H.265 + AAC）",
 				filepath.Base(path), mpegtsCodecName(src.Codec))
 		}
@@ -223,6 +244,110 @@ func (t *track) ensureMP4Codec() error {
 	return nil
 }
 
+const (
+	// metadataDescriptorTag 是 ISO/IEC 13818-1 的 metadata_descriptor。
+	metadataDescriptorTag = 0x26
+	// id3FormatIdentifier 是 metadata_descriptor 里用来声明 timed ID3 的四字符标识。
+	id3FormatIdentifier = "ID3 "
+	// id3FormatIdentifierCode 是同一个标识在 registration_descriptor 里的 32 位编码。
+	id3FormatIdentifierCode uint32 = 0x49443320
+)
+
+// readPMTStreams 用 astits 读出 PMT 的全部基本流声明。
+//
+// 只用来识别解封装库没有归类的轨：媒体验证与样本解析仍然走解封装库，
+// 这里不消费 PES，也不改变任何解析结果。
+func readPMTStreams(path string) (map[uint16]*astits.PMTElementaryStream, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	demuxer := astits.NewDemuxer(context.Background(), file)
+	for {
+		data, nextErr := demuxer.NextData()
+		if nextErr != nil {
+			return nil, nextErr
+		}
+		if data == nil {
+			break
+		}
+		if data.PMT == nil {
+			continue
+		}
+		streams := make(map[uint16]*astits.PMTElementaryStream, len(data.PMT.ElementaryStreams))
+		for _, es := range data.PMT.ElementaryStreams {
+			streams[es.ElementaryPID] = es
+		}
+		if len(streams) > 0 {
+			return streams, nil
+		}
+	}
+	return nil, fmt.Errorf("PMT 里没有基本流声明")
+}
+
+// isTimedID3Metadata 判断一个 PMT 基本流是不是 Apple HLS 的 timed ID3 元数据轨。
+//
+// 这类轨用 stream_type 0x15（Metadata）声明，并带 metadata_descriptor，
+// 其 metadata_format_identifier 为 "ID3 "；部分封装器改用 registration_descriptor
+// 声明同一个标识，也一并接受。只有确认是 ID3 元数据才跳过，其它不支持的码点
+// 仍按原样报错，避免把真正的音视频轨静默丢掉。
+func isTimedID3Metadata(es *astits.PMTElementaryStream) bool {
+	if es == nil {
+		return false
+	}
+	switch es.StreamType {
+	case astits.StreamTypeMetadata, astits.StreamTypePrivateData:
+	default:
+		return false
+	}
+
+	for _, d := range es.ElementaryStreamDescriptors {
+		if d == nil {
+			continue
+		}
+		switch d.Tag {
+		case metadataDescriptorTag:
+			if d.Unknown != nil && hasID3MetadataFormatIdentifier(d.Unknown.Content) {
+				return true
+			}
+		case astits.DescriptorTagRegistration:
+			if d.Registration != nil && d.Registration.FormatIdentifier == id3FormatIdentifierCode {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasID3MetadataFormatIdentifier 解析 metadata_descriptor 的内容（不含 tag/length），
+// 检查两处可选的格式标识里是否出现 "ID3 "。
+func hasID3MetadataFormatIdentifier(content []byte) bool {
+	if len(content) < 2 {
+		return false
+	}
+	pos := 2
+	if binary.BigEndian.Uint16(content[:2]) == 0xFFFF {
+		if len(content) < pos+4 {
+			return false
+		}
+		if string(content[pos:pos+4]) == id3FormatIdentifier {
+			return true
+		}
+		pos += 4
+	}
+	if len(content) < pos+1 || content[pos] != 0xFF {
+		return false
+	}
+	pos++
+	if len(content) < pos+4 {
+		return false
+	}
+	return string(content[pos:pos+4]) == id3FormatIdentifier
+}
+
+// mpegtsCodecName 把一个解封装库没有归类成功的码点翻译成可读名称。
 func mpegtsCodecName(codec mpegtscodecs.Codec) string {
 	switch codec.(type) {
 	case *mpegtscodecs.MPEG4AudioLATM:

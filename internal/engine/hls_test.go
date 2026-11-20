@@ -2,9 +2,13 @@ package engine_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -204,5 +208,144 @@ func TestManager_HLSCompletedTaskAdoptsArtifactSize(t *testing.T) {
 	}
 	if completed.Downloaded != info.Size() {
 		t.Fatalf("completed Downloaded = %d, want artifact size %d", completed.Downloaded, info.Size())
+	}
+}
+
+func TestManager_ProbeHLS_SingleFetchAndNoPlaylistSizeLeak(t *testing.T) {
+	var masterHits atomic.Int32
+	var allowPlaylist atomic.Bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/master.m3u8":
+			masterHits.Add(1)
+			if !allowPlaylist.Load() {
+				w.WriteHeader(http.StatusGone)
+				return
+			}
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720\nindex.m3u8\n"))
+		case "/index.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n"))
+		case "/seg0.ts":
+			w.Header().Set("Content-Length", "4096")
+			w.WriteHeader(http.StatusOK)
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(make([]byte, 4096))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(srv.Client()), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+
+	// When playlist inspection fails, TotalBytes must remain -1 (never playlist byte length).
+	probeFail, probeErr := mgr.ProbeURL(context.Background(), srv.URL+"/master.m3u8?token=1", nil)
+	if probeErr == nil {
+		t.Fatal("expected probe error on 410 master.m3u8")
+	}
+	if probeFail == nil || probeFail.TotalBytes != -1 {
+		t.Fatalf("expected failed HLS probe TotalBytes=-1, got %+v", probeFail)
+	}
+	if got := masterHits.Load(); got != 1 {
+		t.Fatalf("expected master.m3u8 to be fetched once (no Range pre-probe), got %d", got)
+	}
+
+	// When playlist succeeds, master.m3u8 is fetched only once even for single-variant resolution.
+	allowPlaylist.Store(true)
+	masterHits.Store(0)
+	probeOK, err := mgr.ProbeURL(context.Background(), srv.URL+"/master.m3u8?token=2", nil)
+	if err != nil {
+		t.Fatalf("ProbeURL failed: %v", err)
+	}
+	if got := masterHits.Load(); got != 1 {
+		t.Fatalf("expected single-variant HLS probe to fetch master.m3u8 once, got %d", got)
+	}
+	if probeOK.HLS == nil || probeOK.HLS.Media == nil {
+		t.Fatalf("expected single-variant HLS probe to resolve Media, got %+v", probeOK)
+	}
+	if probeOK.TotalBytes != 4096 {
+		t.Fatalf("expected resolved segment TotalBytes=4096, got %d", probeOK.TotalBytes)
+	}
+}
+
+func TestManager_RetryHLS_ResolvesMediaWithoutRawPlaylistDownload(t *testing.T) {
+	sample, err := os.ReadFile(filepath.Join("..", "media", "testdata", "h264_aac.ts"))
+	if err != nil {
+		t.Fatalf("read media sample: %v", err)
+	}
+
+	var ready atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ready.Load() {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		switch r.URL.Path {
+		case "/master.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720\nindex.m3u8\n"))
+		case "/index.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n"))
+		case "/seg0.ts":
+			w.Header().Set("Content-Length", strconv.Itoa(len(sample)))
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			_, _ = w.Write(sample)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	store, err := task.NewFileTaskStore(filepath.Join(tmpDir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	mgr := engine.NewManager(store, engine.NewHTTPDownloader(srv.Client()), engine.Config{MaxActiveTasks: 1})
+	defer mgr.Close()
+
+	ctx := context.Background()
+	created, err := mgr.CreateTask(ctx, engine.CreateRequest{
+		URL:       srv.URL + "/master.m3u8?h=abc",
+		Directory: tmpDir,
+		Filename:  "video.mp4",
+		MaxConn:   2,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if created.Status != task.StatusError || created.Media != nil {
+		t.Fatalf("expected initial failed HLS task with Media=nil, got status=%s media=%v", created.Status, created.Media)
+	}
+
+	// Once upstream recovers, Retry must resolve HLS Media and complete with a valid muxed MP4.
+	ready.Store(true)
+	if err := mgr.Retry(ctx, created.ID); err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	completed := waitForStatus(t, store, created.ID, 10*time.Second, task.StatusCompleted)
+	if completed.Media == nil {
+		t.Fatal("expected Retry to resolve HLS Media on playlist task")
+	}
+	outBytes, err := os.ReadFile(filepath.Join(tmpDir, "video.mp4"))
+	if err != nil {
+		t.Fatalf("read muxed output: %v", err)
+	}
+	if len(outBytes) < 8 || string(outBytes[4:8]) != "ftyp" {
+		t.Fatalf("expected valid MP4 output, got prefix %x", outBytes[:min(16, len(outBytes))])
 	}
 }

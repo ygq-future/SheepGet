@@ -1,13 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildMediaRequestHeaders,
   formatBytes,
   formatDuration,
   inferPageTitle,
   isHlsSegment,
+  isLikelyDomMediaUrl,
   isMediaResponse,
   mimeShortLabel,
   parseContentDispositionFilename,
+  suggestMediaFilename,
 } from './media';
 
 describe('media detection', () => {
@@ -167,5 +170,77 @@ describe('media detection', () => {
     assert.equal(inferPageTitle(doc(null, '  多行\n标题\t啊  ')), '多行 标题 啊');
     // 空标题返回空串
     assert.equal(inferPageTitle(doc(null, '  ')), '');
+  });
+});
+
+describe('DOM media filtering and filename normalization', () => {
+  it('rejects webpage/script URLs and self-referencing page URLs in DOM media reports', () => {
+    const pageUrl = 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a';
+    assert.equal(isLikelyDomMediaUrl(pageUrl, pageUrl), false);
+    assert.equal(isLikelyDomMediaUrl('https://cn.pornhub.com/get_media.php?id=1', pageUrl), false);
+    assert.equal(isLikelyDomMediaUrl('https://example.com/player.html', pageUrl), false);
+    assert.equal(isLikelyDomMediaUrl('https://example.com/api/meta.json', pageUrl), false);
+    assert.equal(isLikelyDomMediaUrl('https://example.com/page.html?next=a.m3u8', pageUrl), false);
+
+    // Extensionless CDN endpoints distinct from pageUrl and real media URLs stay allowed
+    assert.equal(isLikelyDomMediaUrl('https://cdn.example.com/stream?token=xyz', pageUrl), true);
+    assert.equal(isLikelyDomMediaUrl('https://cdn.example.com/video.mp4', pageUrl), true);
+    assert.equal(isLikelyDomMediaUrl('https://cdn.example.com/master.m3u8', pageUrl), true);
+  });
+
+  it('normalizes script/extensionless media responses away from .php to real media extensions', () => {
+    assert.equal(
+      suggestMediaFilename(
+        'get_video.php',
+        { isHls: false, mime: 'video/mp4' },
+        'Sample Clip',
+        false,
+      ),
+      'Sample Clip.mp4',
+    );
+    assert.equal(
+      suggestMediaFilename('get_video.php', { isHls: false, mime: 'video/mp4' }, undefined, false),
+      'get_video.mp4',
+    );
+    assert.equal(
+      suggestMediaFilename(
+        'playlist.php',
+        { isHls: true, mime: 'application/vnd.apple.mpegurl' },
+        undefined,
+        false,
+      ),
+      'playlist.m3u8',
+    );
+    assert.equal(
+      suggestMediaFilename(
+        'playlist.php',
+        { isHls: true, mime: 'application/vnd.apple.mpegurl' },
+        'Sample Clip',
+        false,
+      ),
+      'Sample Clip.mp4',
+    );
+    assert.equal(
+      suggestMediaFilename('videoplayback', { isHls: false, mime: 'video/webm' }, undefined, false),
+      'videoplayback.webm',
+    );
+    // Content-Disposition explicit filename is always preserved verbatim
+    assert.equal(
+      suggestMediaFilename('explicit.mp4', { isHls: false, mime: 'video/mp4' }, 'Title', true),
+      'explicit.mp4',
+    );
+  });
+
+  it('builds media request headers with both Referer and Origin for hotlink-protected CDNs', () => {
+    const headers = buildMediaRequestHeaders(
+      'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a',
+      undefined,
+      'TestUA/1.0',
+    );
+    assert.deepEqual(headers, {
+      'User-Agent': 'TestUA/1.0',
+      Referer: 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a',
+      Origin: 'https://cn.pornhub.com',
+    });
   });
 });

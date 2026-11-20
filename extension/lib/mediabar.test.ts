@@ -908,3 +908,189 @@ describe('extractMediaUrls and multi-resource source matching', () => {
     assert.equal(tracked.resource?.filename, 'websearch.mp4');
   });
 });
+
+describe('mediabar empty/self-URL filtering, HLS upgrade, and format badge hygiene', () => {
+  it('ignores empty or fragment src attributes whose DOM .src resolves to location.href', () => {
+    const globalEnv: { location?: unknown } = globalThis;
+    const originalLocation = globalEnv.location;
+    globalEnv.location = {
+      href: 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a',
+    };
+
+    try {
+      const mockVideo = {
+        tagName: 'VIDEO',
+        currentSrc: 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a',
+        src: 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a',
+        getAttribute: (attr: string) => (attr === 'src' ? '' : null),
+        querySelectorAll: (sel: string) => {
+          if (sel !== 'source') return [];
+          return [
+            {
+              src: 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a',
+              getAttribute: (attr: string) => (attr === 'src' ? '' : null),
+            },
+            {
+              src: 'https://cn.pornhub.com/view_video.php?viewkey=696f01bad407a#player',
+              getAttribute: (attr: string) => (attr === 'src' ? '#player' : null),
+            },
+            {
+              src: 'https://cdn.phncdn.com/hls/master.m3u8',
+              getAttribute: (attr: string) =>
+                attr === 'src' ? 'https://cdn.phncdn.com/hls/master.m3u8' : null,
+            },
+          ];
+        },
+      } as unknown as HTMLVideoElement;
+
+      const urls = extractMediaUrls(mockVideo);
+      assert.deepEqual(urls, ['https://cdn.phncdn.com/hls/master.m3u8']);
+    } finally {
+      globalEnv.location = originalLocation;
+    }
+  });
+
+  it('upgrades a blob fallback preview resource to HLS when master.m3u8 arrives and hides non-media badge extensions', () => {
+    const originalWindow = globalThis.window;
+    const originalRaf = globalThis.requestAnimationFrame;
+    const originalCaf = globalThis.cancelAnimationFrame;
+    const originalChrome = (globalThis as unknown as { chrome?: unknown }).chrome;
+
+    globalThis.window = {
+      innerWidth: 1280,
+      innerHeight: 800,
+    } as unknown as Window & typeof globalThis;
+    globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    };
+    globalThis.cancelAnimationFrame = () => {};
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+      runtime: { id: 'mock-id', sendMessage: () => {} },
+    };
+
+    try {
+      const manager = new MediaBarManager();
+      let btnHtml = '';
+      const dlBtn = {
+        set innerHTML(val: string) {
+          btnHtml = val;
+        },
+        get innerHTML() {
+          return btnHtml;
+        },
+        title: '',
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      const container = {
+        style: { display: 'none', left: '', top: '', right: '', bottom: '' },
+      } as unknown as HTMLDivElement;
+      const shadowRoot = {
+        set innerHTML(html: string) {
+          btnHtml = html;
+        },
+        get innerHTML() {
+          return btnHtml;
+        },
+        getElementById: (id: string) => {
+          if (id === 'bar') {
+            return {
+              getBoundingClientRect: () => ({ width: 110, height: 26 }),
+              addEventListener: () => {},
+              removeEventListener: () => {},
+            };
+          }
+          if (id === 'dl-btn') return dlBtn;
+          return null;
+        },
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      } as unknown as ShadowRoot;
+
+      const video = {
+        tagName: 'VIDEO',
+        isConnected: true,
+        currentSrc: 'blob:https://cn.pornhub.com/1234',
+        getBoundingClientRect: () => ({
+          left: 100,
+          top: 100,
+          right: 700,
+          bottom: 450,
+          width: 600,
+          height: 350,
+        }),
+      } as unknown as HTMLVideoElement;
+
+      manager.registerTestPlayer(video, { container, shadowRoot });
+      manager.setResources([
+        {
+          id: 'preview',
+          url: 'https://cdn.example.com/preview.php',
+          tabId: 1,
+          filename: 'preview.php',
+          mimeType: 'video/mp4',
+          isHls: false,
+          foundAt: 1,
+        },
+      ]);
+
+      // Even if a filename carried .php, badge displays MP4 rather than PHP
+      assert.ok(btnHtml.includes('>MP4<'), `expected MP4 badge, got: ${btnHtml}`);
+      assert.equal(btnHtml.includes('>PHP<'), false);
+
+      // When the real HLS playlist arrives later, the player upgrades from preview to HLS
+      manager.setResources([
+        {
+          id: 'preview',
+          url: 'https://cdn.example.com/preview.php',
+          tabId: 1,
+          filename: 'preview.php',
+          mimeType: 'video/mp4',
+          isHls: false,
+          foundAt: 1,
+        },
+        {
+          id: 'hls_main',
+          url: 'https://cdn.example.com/master.m3u8',
+          tabId: 1,
+          filename: 'Video.mp4',
+          mimeType: 'application/vnd.apple.mpegurl',
+          isHls: true,
+          foundAt: 2,
+        },
+      ]);
+
+      const tracked = manager.getTrackedPlayer(video);
+      assert.equal(tracked?.resource?.url, 'https://cdn.example.com/master.m3u8');
+      assert.ok(btnHtml.includes('>HLS<'));
+
+      manager.setResources([
+        {
+          id: 'old',
+          url: 'https://cdn.example.com/master.m3u8?token=old',
+          tabId: 1,
+          filename: 'Video.mp4',
+          mimeType: 'application/vnd.apple.mpegurl',
+          isHls: true,
+          foundAt: 3,
+        },
+        {
+          id: 'new',
+          url: 'https://cdn.example.com/master.m3u8?token=new',
+          tabId: 1,
+          filename: 'Video.mp4',
+          mimeType: 'application/vnd.apple.mpegurl',
+          isHls: true,
+          foundAt: 4,
+        },
+      ]);
+      assert.equal(tracked?.resource?.url, 'https://cdn.example.com/master.m3u8?token=new');
+    } finally {
+      globalThis.window = originalWindow;
+      globalThis.requestAnimationFrame = originalRaf;
+      globalThis.cancelAnimationFrame = originalCaf;
+      (globalThis as unknown as { chrome: unknown }).chrome = originalChrome;
+    }
+  });
+});

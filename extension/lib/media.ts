@@ -40,6 +40,67 @@ const MEDIA_EXTENSIONS = new Set([
   'opus',
 ]);
 
+// 网页/服务端脚本/非媒体资源后缀：DOM 兜底扫描时遇到这类链接绝不能盲目当成 MP4。
+// 若这类地址确实返回 video/* 或 m3u8 响应，网络层 onHeadersReceived 会凭 Content-Type 捕获。
+const NON_MEDIA_EXTENSIONS: Record<string, true> = {
+  php: true,
+  phtml: true,
+  html: true,
+  htm: true,
+  xhtml: true,
+  shtml: true,
+  asp: true,
+  aspx: true,
+  jsp: true,
+  jspx: true,
+  cgi: true,
+  pl: true,
+  do: true,
+  action: true,
+  json: true,
+  xml: true,
+  js: true,
+  jsx: true,
+  mjs: true,
+  cjs: true,
+  ts: true,
+  tsx: true,
+  css: true,
+  svg: true,
+  png: true,
+  jpg: true,
+  jpeg: true,
+  gif: true,
+  webp: true,
+  ico: true,
+  txt: true,
+  vtt: true,
+  srt: true,
+  ass: true,
+};
+
+const MIME_TO_EXT: Record<string, string> = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/x-matroska': '.mkv',
+  'video/quicktime': '.mov',
+  'video/x-flv': '.flv',
+  'video/x-msvideo': '.avi',
+  'video/x-ms-wmv': '.wmv',
+  'video/mp2t': '.ts',
+  'audio/mpeg': '.mp3',
+  'audio/mp3': '.mp3',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/aac': '.aac',
+  'audio/ogg': '.ogg',
+  'audio/opus': '.opus',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/flac': '.flac',
+  'audio/webm': '.weba',
+};
+
 const HLS_MIME_PATTERNS = [
   'application/vnd.apple.mpegurl',
   'application/x-mpegurl',
@@ -176,4 +237,135 @@ export function mimeShortLabel(mime?: string): string {
   const subtype = mime.split('/')[1] || mime;
   if (subtype.includes('mpegurl')) return 'm3u8';
   return subtype;
+}
+
+export function isKnownMediaExtension(ext: string): boolean {
+  const clean = ext.toLowerCase().replace(/^\./, '').trim();
+  return MEDIA_EXTENSIONS.has(clean) || HLS_EXTENSIONS.has(clean) || clean === 'ts';
+}
+
+function stripUrlHash(rawUrl: string): string {
+  const idx = rawUrl.indexOf('#');
+  return idx >= 0 ? rawUrl.slice(0, idx) : rawUrl;
+}
+
+/**
+ * 判断从 DOM (<video>/<source>) 提取出的链接是否值得作为兜底媒体资源入池。
+ * 拦截 `.php` / `.html` 等网页或脚本地址，以及回指当前页面本身的空 src 解析结果。
+ */
+export function isLikelyDomMediaUrl(url: string, pageUrl?: string): boolean {
+  if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+    return false;
+  }
+  const ext = extractExtension(url);
+  if (ext && Object.hasOwn(NON_MEDIA_EXTENSIONS, ext)) {
+    return false;
+  }
+  if (pageUrl && stripUrlHash(url) === stripUrlHash(pageUrl) && !isMediaResponse(url).isMedia) {
+    return false;
+  }
+  return true;
+}
+
+export function mediaExtensionForMime(mime?: string, isHls = false): string {
+  if (isHls) return '.m3u8';
+  const normalized = normalizeMime(mime);
+  if (normalized && MIME_TO_EXT[normalized]) {
+    return MIME_TO_EXT[normalized];
+  }
+  if (normalized.startsWith('audio/')) {
+    const sub = normalized.slice('audio/'.length).replace(/^x-/, '');
+    if (/^[a-z0-9]{2,5}$/.test(sub)) return `.${sub}`;
+    return '.m4a';
+  }
+  if (normalized.startsWith('video/')) {
+    const sub = normalized.slice('video/'.length).replace(/^x-/, '');
+    if (/^[a-z0-9]{2,5}$/.test(sub)) return `.${sub}`;
+  }
+  return '.mp4';
+}
+
+/**
+ * 生成建议文件名。命名来源优先级与 IDM 一致：
+ *   1. Content-Disposition 明确给出的文件名原样保留；
+ *   2. 否则若 URL 末段是占位清单名（index.m3u8 等）、纯数字分段（123.m4s）、
+ *      无后缀路径或动态脚本后缀（.php/.aspx 等）：有页面标题时用「标题 + 媒体后缀」，
+ *      无标题时把非媒体后缀替换为真实的媒体后缀（绝不把 .php 当成视频后缀落盘）；
+ *   3. 否则保留 URL 末段。
+ */
+export function suggestMediaFilename(
+  fallback: string,
+  detected: { isHls: boolean; mime: string },
+  pageTitle?: string,
+  hasExplicitFilename = false,
+  sanitizeFn: (name: string) => string = (s) => s.trim(),
+): string {
+  if (hasExplicitFilename) return fallback;
+
+  const urlBasename = fallback.split('?')[0]?.split('/').pop() || '';
+  const ext = extractExtension(urlBasename);
+  const isM4s = ext === 'm4s';
+  const isPlaceholderPlaylist = /^(index|stream|playlist|master|chunklist)\.m3u8?$/i.test(
+    urlBasename,
+  );
+  const isNumericM4s = /^\d[\d_-]*\.m4s$/i.test(urlBasename);
+  const isNonMediaName = !urlBasename || !ext || !isKnownMediaExtension(ext);
+
+  if (!isPlaceholderPlaylist && !isNumericM4s && !isNonMediaName) {
+    return fallback;
+  }
+
+  if (pageTitle && pageTitle.trim()) {
+    const titleSuffix =
+      detected.isHls || isM4s ? '.mp4' : mediaExtensionForMime(detected.mime, false);
+    return sanitizeFn(pageTitle.trim() + titleSuffix);
+  }
+
+  if (!isNonMediaName) {
+    return fallback;
+  }
+
+  const targetExt = mediaExtensionForMime(detected.mime, detected.isHls);
+  if (!urlBasename) {
+    return `media${targetExt}`;
+  }
+  const dotIdx = urlBasename.lastIndexOf('.');
+  const stem = dotIdx > 0 ? urlBasename.slice(0, dotIdx) : urlBasename;
+  return sanitizeFn(`${stem || 'media'}${targetExt}`);
+}
+
+export function extractHttpOrigin(rawUrl?: string): string | undefined {
+  if (!rawUrl) return undefined;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.origin;
+    }
+  } catch {
+    // Ignore invalid URL
+  }
+  return undefined;
+}
+
+export function buildMediaRequestHeaders(
+  pageUrl?: string,
+  referrer?: string,
+  userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '',
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (userAgent) {
+    headers['User-Agent'] = userAgent;
+  }
+  const effectiveReferer = referrer || pageUrl;
+  if (
+    effectiveReferer &&
+    (effectiveReferer.startsWith('http://') || effectiveReferer.startsWith('https://'))
+  ) {
+    headers.Referer = effectiveReferer;
+  }
+  const origin = extractHttpOrigin(pageUrl || referrer);
+  if (origin) {
+    headers.Origin = origin;
+  }
+  return headers;
 }

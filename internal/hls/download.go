@@ -319,9 +319,16 @@ type FallbackTarget struct {
 // Fetcher 负责抓取清单、密钥与分片，始终带着任务的请求上下文（Referer/Cookie 等）。
 // 当配置了 fallbackTargets（例如自定义多代理列表与直连客户端）且主客户端因网络/代理故障请求失败时，
 // 自动按顺序依次尝试备用客户端，一旦连通即切换主客户端并触发回调。
+//
+// 「故障」不只包括请求阶段：服务器发出响应头之后在响应体中途停摆同样会让分片下载卡死。
+// 这类失败发生在 doWithFallback 返回之后，由分片重试循环带着响应所属的 targetGen 回来
+// 调用 failoverFromBodyFailure，走同一条回退链——否则 8 个 worker 会在同一个坏代理上
+// 把重试次数耗尽，备用的代理与直连永远不会被尝试。
 type Fetcher struct {
 	client          *http.Client
 	fallbackTargets []FallbackTarget
+	fallbackCursor  int
+	targetGen       uint64
 	onTargetSwitch  func(FallbackTarget)
 	switchedTarget  *FallbackTarget
 	creds           credentials.RequestCredentials
@@ -338,10 +345,11 @@ func NewFetcher(client *http.Client, creds credentials.RequestCredentials) *Fetc
 		client = http.DefaultClient
 	}
 	return &Fetcher{
-		client:  client,
-		creds:   creds,
-		userAgt: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-		keys:    make(map[string][]byte),
+		client:    client,
+		targetGen: 1,
+		creds:     creds,
+		userAgt:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+		keys:      make(map[string][]byte),
 	}
 }
 
@@ -350,6 +358,7 @@ func (f *Fetcher) WithFallback(fallback *http.Client, onFallback func()) *Fetche
 	if fallback == nil {
 		f.mu.Lock()
 		f.fallbackTargets = nil
+		f.fallbackCursor = 0
 		f.onTargetSwitch = nil
 		f.mu.Unlock()
 		return f
@@ -382,6 +391,7 @@ func (f *Fetcher) WithFallbackChain(targets []FallbackTarget, onSwitch func(Fall
 		}
 	}
 	f.fallbackTargets = valid
+	f.fallbackCursor = 0
 	f.onTargetSwitch = onSwitch
 	return f
 }
@@ -409,12 +419,29 @@ func (f *Fetcher) activeClient() *http.Client {
 	return f.client
 }
 
+// doWithFallback 发起一次请求，主通道失败时沿回退链选择可用通道。它不追踪响应体归属，
+// 供清单与 HEAD 探测这类整块读取的调用方使用；分片路径用 doWithFallbackTracked。
 func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Request, error)) (*http.Response, error) {
+	resp, _, err := f.doWithFallbackTracked(ctx, buildReq)
+	return resp, err
+}
+
+// doWithFallbackTracked 与 doWithFallback 相同，但额外返回这次响应所属通道的 targetGen。
+// 响应体读取失败时，调用方用它判断自己是不是最后一个发现停摆的人：并发分片同时停摆时，
+// 只有通道代号仍等于当前值的那一个推进回退链，其余直接在新通道上重试，不能越级跳过可用代理。
+func (f *Fetcher) doWithFallbackTracked(ctx context.Context, buildReq func() (*http.Request, error)) (*http.Response, uint64, error) {
 	req, err := buildReq()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	client := f.activeClient()
+
+	f.mu.Lock()
+	client := f.client
+	gen := f.targetGen
+	targets := append([]FallbackTarget(nil), f.fallbackTargets...)
+	cursor := f.fallbackCursor
+	f.mu.Unlock()
+
 	resp, err := client.Do(req)
 	// P2-2: 若因复用连接池中的半开/空闲过期连接（对端已关闭 Keep-Alive）导致首次 Do 立即报错，
 	// 立即清理陈旧空闲连接并透明重试一次新建连接，实现长周期连接关闭自愈。
@@ -425,16 +452,11 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 		}
 	}
 	if err == nil && resp.StatusCode != http.StatusBadGateway && resp.StatusCode != http.StatusGatewayTimeout {
-		return resp, nil
+		return resp, gen, nil
 	}
 
-	f.mu.Lock()
-	targets := append([]FallbackTarget(nil), f.fallbackTargets...)
-	onSwitch := f.onTargetSwitch
-	f.mu.Unlock()
-
-	if len(targets) == 0 || ctx.Err() != nil {
-		return resp, err
+	if cursor >= len(targets) || ctx.Err() != nil {
+		return resp, gen, err
 	}
 
 	// 记录主客户端返回的网关错误（如 502/504），并关闭旧响应体，以便回退失败时不会返回 (nil, nil) 或已关闭的 resp。
@@ -447,16 +469,17 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 	}
 
 	var last4xxResp *http.Response
-	for idx, target := range targets {
+	for idx := cursor; idx < len(targets); idx++ {
 		if ctx.Err() != nil {
 			break
 		}
+		target := targets[idx]
 		fbReq, fbReqErr := buildReq()
 		if fbReqErr != nil {
 			if last4xxResp != nil && last4xxResp.Body != nil {
 				drainAndClose(last4xxResp.Body)
 			}
-			return nil, primaryErr
+			return nil, gen, primaryErr
 		}
 		fbResp, fbErr := target.Client.Do(fbReq)
 		if fbErr != nil {
@@ -483,24 +506,60 @@ func (f *Fetcher) doWithFallback(ctx context.Context, buildReq func() (*http.Req
 		}
 		chosen := target
 		f.mu.Lock()
-		f.client = chosen.Client
-		if idx+1 < len(targets) {
-			f.fallbackTargets = append([]FallbackTarget(nil), targets[idx+1:]...)
-		} else {
-			f.fallbackTargets = nil
+		// 并发分片可能已经推进到更远的通道：只前进不后退，否则一个迟到的成功响应
+		// 会把已经切到直连的状态又改回坏代理。
+		adopt := idx+1 > f.fallbackCursor
+		if adopt {
+			f.fallbackCursor = idx + 1
+			f.client = chosen.Client
+			f.targetGen++
+			f.switchedTarget = &chosen
+			gen = f.targetGen
 		}
-		f.switchedTarget = &chosen
+		onSwitch := f.onTargetSwitch
 		f.mu.Unlock()
-		if onSwitch != nil {
+		if adopt && onSwitch != nil {
 			onSwitch(chosen)
 		}
-		return fbResp, nil
+		return fbResp, gen, nil
 	}
 
 	if last4xxResp != nil {
-		return last4xxResp, nil
+		return last4xxResp, gen, nil
 	}
-	return nil, primaryErr
+	return nil, gen, primaryErr
+}
+
+// failoverFromBodyFailure 处理「响应头已到达、响应体在传输途中停摆」的回退。
+//
+// 返回 true 表示这次失败已由通道切换处置：调用方应立即用当前客户端重新抓取整个分片，
+// 不消耗常规重试配额，也不做退避——换一条通道本身就是补救。gen 是该响应所属通道的代号；
+// 若并发分片已经推进过回退链，这里只返回 true 让它用新通道重试，不再重复推进，
+// 避免两个同时停摆的 worker 把可用的中间代理一起跳过。
+func (f *Fetcher) failoverFromBodyFailure(gen uint64) bool {
+	f.mu.Lock()
+	if gen == 0 {
+		gen = f.targetGen
+	}
+	if gen != f.targetGen {
+		f.mu.Unlock()
+		return true
+	}
+	if f.fallbackCursor >= len(f.fallbackTargets) {
+		f.mu.Unlock()
+		return false
+	}
+	chosen := f.fallbackTargets[f.fallbackCursor]
+	f.fallbackCursor++
+	f.client = chosen.Client
+	f.targetGen++
+	f.switchedTarget = &chosen
+	onSwitch := f.onTargetSwitch
+	f.mu.Unlock()
+	if onSwitch != nil {
+		onSwitch(chosen)
+	}
+	return true
 }
 
 // GetText 抓取一份文本清单（主清单或媒体清单）。
@@ -763,7 +822,7 @@ func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest st
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
-		written, err := f.downloadOnce(ctx, seg, dest)
+		written, gen, err := f.downloadOnce(ctx, seg, dest)
 		if err == nil {
 			if gate != nil {
 				gate.onSuccess()
@@ -779,6 +838,14 @@ func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest st
 		if !staleRecovered && ctx.Err() == nil && isStaleKeepAliveError(err) {
 			staleRecovered = true
 			f.activeClient().CloseIdleConnections()
+			attempt--
+			continue
+		}
+		// 响应体停摆发生在 doWithFallback 返回之后：请求阶段已经成功，只有把这次失败带回
+		// 回退链才能切到备用代理/直连。换通道不消耗分片重试配额，也不退避——继续在坏
+		// 通道上等着重试只会让整个任务停在那里。
+		if ctx.Err() == nil && errors.Is(err, ErrStalled) && f.failoverFromBodyFailure(gen) {
+			staleRecovered = false
 			attempt--
 			continue
 		}
@@ -803,42 +870,42 @@ func (f *Fetcher) fetchSegmentWithFlow(ctx context.Context, seg Segment, dest st
 	return 0, fmt.Errorf("分片 %s 下载失败: %w", seg.URI, lastErr)
 }
 
-func (f *Fetcher) downloadOnce(ctx context.Context, seg Segment, dest string) (int64, error) {
+func (f *Fetcher) downloadOnce(ctx context.Context, seg Segment, dest string) (int64, uint64, error) {
 	if seg.Key == nil {
 		return f.streamToDisk(ctx, seg, dest)
 	}
 	if !strings.EqualFold(seg.Key.Method, MethodAES128) {
-		return 0, fmt.Errorf("不支持的加密方法 %s（首期只支持标准 AES-128）", seg.Key.Method)
+		return 0, 0, fmt.Errorf("不支持的加密方法 %s（首期只支持标准 AES-128）", seg.Key.Method)
 	}
 	if seg.Key.URI == "" {
-		return 0, fmt.Errorf("加密分片缺少密钥地址（EXT-X-KEY 没有 URI）")
+		return 0, 0, fmt.Errorf("加密分片缺少密钥地址（EXT-X-KEY 没有 URI）")
 	}
 
-	key, err := f.fetchKey(ctx, seg.Key.URI)
+	key, gen, err := f.fetchKey(ctx, seg.Key.URI)
 	if err != nil {
-		return 0, err
+		return 0, gen, err
 	}
 	iv := seg.Key.IV
 	if len(iv) == 0 {
 		iv = SequenceIV(seg.MediaSeq)
 	}
 
-	encrypted, err := f.readAll(ctx, seg)
+	encrypted, gen, err := f.readAll(ctx, seg)
 	if err != nil {
-		return 0, err
+		return 0, gen, err
 	}
 	plain, err := DecryptAES128(encrypted, key, iv)
 	if err != nil {
-		return 0, err
+		return 0, gen, err
 	}
 	if err := atomicfile.Write(dest, plain, 0o644, false); err != nil {
-		return 0, err
+		return 0, gen, err
 	}
-	return int64(len(plain)), nil
+	return int64(len(plain)), gen, nil
 }
 
 // streamToDisk 直接把未加密的分片写进目标文件：不经过内存，大分片也不会占用额外内存。
-func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (int64, error) {
+func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (int64, uint64, error) {
 	// 超时覆盖从发请求到读完响应体的全程：服务器发出响应头后停住不动是最难缠的
 	// 卡死形态，只有把 body 读取也放进同一个期限里才兜得住。空闲看门狗再补一刀：
 	// 字节流彻底停止时不必等满总超时。
@@ -846,9 +913,9 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	defer cancel()
 	reqCtx, watch := stallWatch(ctx)
 	defer watch.Stop()
-	resp, err := f.do(reqCtx, seg.URI, seg.RangeStart, seg.RangeLength)
+	resp, gen, err := f.doTracked(reqCtx, seg.URI, seg.RangeStart, seg.RangeLength)
 	if err != nil {
-		return 0, watch.Err(ctx, err)
+		return 0, gen, watch.Err(ctx, err)
 	}
 	defer drainAndClose(resp.Body)
 	watch.Touch()
@@ -866,43 +933,43 @@ func (f *Fetcher) streamToDisk(ctx context.Context, seg Segment, dest string) (i
 	if seg.RangeLength > 0 {
 		if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == seg.RangeLength {
 			if err := atomicfile.Rename(partPath, dest); err == nil {
-				return seg.RangeLength, nil
+				return seg.RangeLength, gen, nil
 			}
 		}
 	}
 	file, err := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return 0, err
+		return 0, gen, err
 	}
 	written, copyErr := io.Copy(file, body)
 	closeErr := file.Close()
 	if copyErr != nil {
 		_ = os.Remove(partPath)
-		return 0, watch.Err(ctx, copyErr)
+		return 0, gen, watch.Err(ctx, copyErr)
 	}
 	if closeErr != nil {
 		_ = os.Remove(partPath)
-		return 0, closeErr
+		return 0, gen, closeErr
 	}
 	if seg.RangeLength > 0 && written != seg.RangeLength {
 		_ = os.Remove(partPath)
-		return 0, fmt.Errorf("分片长度不符：期望 %d 字节，实际 %d 字节", seg.RangeLength, written)
+		return 0, gen, fmt.Errorf("分片长度不符：期望 %d 字节，实际 %d 字节", seg.RangeLength, written)
 	}
 	if err := atomicfile.Rename(partPath, dest); err != nil {
 		// 数据已完整落盘并通过校验，若重命名仍因极端占用失败，保留 .part 供下次重试直接恢复或覆写，不主动自毁。
-		return 0, err
+		return 0, gen, err
 	}
-	return written, nil
+	return written, gen, nil
 }
 
-func (f *Fetcher) readAll(ctx context.Context, seg Segment) ([]byte, error) {
+func (f *Fetcher) readAll(ctx context.Context, seg Segment) ([]byte, uint64, error) {
 	ctx, cancel := withRequestTimeout(ctx)
 	defer cancel()
 	reqCtx, watch := stallWatch(ctx)
 	defer watch.Stop()
-	resp, err := f.do(reqCtx, seg.URI, seg.RangeStart, seg.RangeLength)
+	resp, gen, err := f.doTracked(reqCtx, seg.URI, seg.RangeStart, seg.RangeLength)
 	if err != nil {
-		return nil, watch.Err(ctx, err)
+		return nil, gen, watch.Err(ctx, err)
 	}
 	defer drainAndClose(resp.Body)
 	watch.Touch()
@@ -915,53 +982,60 @@ func (f *Fetcher) readAll(ctx context.Context, seg Segment) ([]byte, error) {
 	}
 	data, readErr := io.ReadAll(body)
 	if readErr != nil {
-		return nil, watch.Err(ctx, readErr)
+		return nil, gen, watch.Err(ctx, readErr)
 	}
-	return data, nil
+	return data, gen, nil
 }
 
 // fetchKey 取一个密钥并缓存：同一密钥地址在同一次下载里只取一次。
-func (f *Fetcher) fetchKey(ctx context.Context, uri string) ([]byte, error) {
+func (f *Fetcher) fetchKey(ctx context.Context, uri string) ([]byte, uint64, error) {
 	f.mu.Lock()
 	cached, ok := f.keys[uri]
+	gen := f.targetGen
 	f.mu.Unlock()
 	if ok {
-		return cached, nil
+		return cached, gen, nil
 	}
 
-	key, err := func() ([]byte, error) {
+	key, gen, err := func() ([]byte, uint64, error) {
 		ctx, cancel := withRequestTimeout(ctx)
 		defer cancel()
 		reqCtx, watch := stallWatch(ctx)
 		defer watch.Stop()
-		resp, err := f.do(reqCtx, uri, 0, 0)
+		resp, gen, err := f.doTracked(reqCtx, uri, 0, 0)
 		if err != nil {
-			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, err))
+			return nil, gen, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, err))
 		}
 		defer drainAndClose(resp.Body)
 		watch.Touch()
 		data, readErr := io.ReadAll(watch.Reader(resp.Body))
 		if readErr != nil {
-			return nil, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, readErr))
+			return nil, gen, fmt.Errorf("读取 AES-128 密钥失败: %w", watch.Err(ctx, readErr))
 		}
-		return data, nil
+		return data, gen, nil
 	}()
 	if err != nil {
-		return nil, err
+		return nil, gen, err
 	}
 	if len(key) != 16 {
-		return nil, fmt.Errorf("AES-128 密钥必须是 16 字节，实际 %d 字节", len(key))
+		return nil, gen, fmt.Errorf("AES-128 密钥必须是 16 字节，实际 %d 字节", len(key))
 	}
 
 	f.mu.Lock()
 	f.keys[uri] = key
 	f.mu.Unlock()
-	return key, nil
+	return key, gen, nil
 }
 
 // do 发起一次带任务请求上下文的 GET；length 大于 0 时按范围取。
 func (f *Fetcher) do(ctx context.Context, rawURL string, start, length int64) (*http.Response, error) {
-	resp, err := f.doWithFallback(ctx, func() (*http.Request, error) {
+	resp, _, err := f.doTracked(ctx, rawURL, start, length)
+	return resp, err
+}
+
+// doTracked 与 do 相同，但把响应所属通道的代号一并带回，供响应体读取失败时决定回退。
+func (f *Fetcher) doTracked(ctx context.Context, rawURL string, start, length int64) (*http.Response, uint64, error) {
+	resp, gen, err := f.doWithFallbackTracked(ctx, func() (*http.Request, error) {
 		req, rErr := f.newRequest(ctx, http.MethodGet, rawURL)
 		if rErr != nil {
 			return nil, rErr
@@ -973,13 +1047,13 @@ func (f *Fetcher) do(ctx context.Context, rawURL string, start, length int64) (*
 	})
 	if err != nil {
 		// 请求错误里嵌着完整地址（含令牌类查询参数），脱敏后再往外传：它会进日志，也会写进任务错误信息。
-		return nil, logging.SafeError(err)
+		return nil, gen, logging.SafeError(err)
 	}
 	if resp.StatusCode >= 400 {
 		drainAndClose(resp.Body)
-		return nil, &statusError{code: resp.StatusCode, status: resp.Status}
+		return nil, gen, &statusError{code: resp.StatusCode, status: resp.Status}
 	}
-	return resp, nil
+	return resp, gen, nil
 }
 
 // newRequest 构造一个带任务请求上下文的请求：User-Agent、Accept 与 creds 是每次抓取

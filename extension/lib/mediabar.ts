@@ -1,4 +1,4 @@
-import { formatBytes, type MediaResource } from './media';
+import { formatBytes, isKnownMediaExtension, mimeShortLabel, type MediaResource } from './media';
 import { isExtensionContextValid, safeSendMessage } from './runtime';
 import { createThrottledRunner } from './throttle';
 import type { HandoverResponse, HLSVariantOption } from './types';
@@ -124,39 +124,58 @@ export function extractMediaUrls(target: PlayerTarget | HTMLMediaElement | Eleme
   const rawSources: string[] = [];
 
   if (media.currentSrc) rawSources.push(media.currentSrc);
-  if (media.src) rawSources.push(media.src);
+
+  // HTML 中显式写了 <video src=""> 或 <source src="#"> 时，DOM 的 .src IDL 属性会被浏览器
+  // 解析成当前网页 URL 本身（例如 view_video.php?...）；只在原属性非空且非纯锚点时采用。
+  const rawVideoSrcAttr = media.getAttribute?.('src');
+  const hasInvalidVideoAttr =
+    rawVideoSrcAttr !== null &&
+    rawVideoSrcAttr !== undefined &&
+    (rawVideoSrcAttr.trim() === '' || rawVideoSrcAttr.trim().startsWith('#'));
+  if (!hasInvalidVideoAttr) {
+    if (media.src) rawSources.push(media.src);
+    if (rawVideoSrcAttr) rawSources.push(rawVideoSrcAttr);
+  }
 
   if ('querySelectorAll' in media && typeof media.querySelectorAll === 'function') {
     try {
       const sources = media.querySelectorAll('source');
       for (const s of Array.from(sources)) {
+        const rawAttr = s.getAttribute?.('src');
+        const invalidAttr =
+          rawAttr !== null &&
+          rawAttr !== undefined &&
+          (rawAttr.trim() === '' || rawAttr.trim().startsWith('#'));
+        if (invalidAttr) continue;
         if (s.src) rawSources.push(s.src);
-        const rawSrc = s.getAttribute('src');
-        if (rawSrc) rawSources.push(rawSrc);
+        if (rawAttr) rawSources.push(rawAttr);
       }
     } catch {
       // Ignore DOM query error
     }
   }
 
-  const rawSrcAttr = media.getAttribute?.('src');
-  if (rawSrcAttr) rawSources.push(rawSrcAttr);
-
-  const base = typeof location !== 'undefined' ? location.href : 'http://localhost';
+  const hasLocation = typeof location !== 'undefined' && Boolean(location.href);
+  const base = hasLocation ? location.href : 'http://localhost';
+  const pageBaseNoHash = hasLocation ? location.href.split('#')[0] : '';
   for (const raw of rawSources) {
-    if (!raw) continue;
-    if (raw.startsWith('blob:') || raw.startsWith('data:')) {
-      if (!urls.includes(raw)) urls.push(raw);
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (trimmed.startsWith('blob:') || trimmed.startsWith('data:')) {
+      if (!urls.includes(trimmed)) urls.push(trimmed);
       continue;
     }
     try {
-      const resolved = new URL(raw, base).href;
+      const resolved = new URL(trimmed, base).href;
+      if (pageBaseNoHash && resolved.split('#')[0] === pageBaseNoHash) {
+        continue;
+      }
       if (!urls.includes(resolved)) {
         urls.push(resolved);
       }
     } catch {
-      if (!urls.includes(raw)) {
-        urls.push(raw);
+      if (!urls.includes(trimmed)) {
+        urls.push(trimmed);
       }
     }
   }
@@ -585,21 +604,24 @@ export class MediaBarManager {
   }
 
   private associateResource(tracked: TrackedPlayer) {
-    if (tracked.resource && this.availableResources.some((r) => r.url === tracked.resource?.url)) {
-      return;
-    }
-    tracked.resource = undefined;
-
     const candidateUrls = extractMediaUrls(tracked.target);
     if (!candidateUrls.length && tracked.initialSrc) {
       candidateUrls.push(tracked.initialSrc);
     }
 
-    // 1. Direct or resolved candidate match
+    let directMatch: MediaResource | undefined;
     for (const cand of candidateUrls) {
-      if (!cand.startsWith('blob:')) {
-        const match = this.availableResources.find((r) => {
-          if (r.url === cand) return true;
+      if (cand.startsWith('blob:')) continue;
+      const match = this.availableResources.find((r) => r.url === cand);
+      if (match) {
+        directMatch = match;
+        break;
+      }
+    }
+    if (!directMatch) {
+      for (const cand of candidateUrls) {
+        if (cand.startsWith('blob:')) continue;
+        const match = this.availableResources.findLast((r) => {
           try {
             const u1 = new URL(r.url);
             const u2 = new URL(cand);
@@ -609,41 +631,53 @@ export class MediaBarManager {
           }
         });
         if (match) {
-          tracked.resource = match;
-          if (match.isHls) this.prefetchVariants(tracked);
-          return;
+          directMatch = match;
+          break;
         }
       }
     }
 
-    // 2. Blob match (MSE / HLS player instance attached to blob: URL)
-    const hasBlob = candidateUrls.some((u) => u.startsWith('blob:'));
-    if (hasBlob) {
-      const hlsResource = this.availableResources.find((r) => r.isHls);
-      if (hlsResource) {
-        tracked.resource = hlsResource;
-        this.prefetchVariants(tracked);
-        return;
-      }
-      const single = this.availableResources[0];
-      if (single) {
-        tracked.resource = single;
-        if (single.isHls) this.prefetchVariants(tracked);
-        return;
+    let bestMatch = directMatch;
+    if (!bestMatch) {
+      const hasBlob = candidateUrls.some((u) => u.startsWith('blob:'));
+      if (hasBlob) {
+        const firstHls = this.availableResources.find((r) => r.isHls);
+        bestMatch = firstHls
+          ? this.availableResources.findLast((r) => {
+              if (!r.isHls) return false;
+              try {
+                const first = new URL(firstHls.url);
+                const candidate = new URL(r.url);
+                return first.origin === candidate.origin && first.pathname === candidate.pathname;
+              } catch {
+                return r.url === firstHls.url;
+              }
+            })
+          : this.availableResources[0];
+      } else {
+        const hlsResources = this.availableResources.filter((r) => r.isHls);
+        if (hlsResources.length === 1 && hlsResources[0]) {
+          bestMatch = hlsResources[0];
+        } else if (this.availableResources.length === 1 && this.availableResources[0]) {
+          bestMatch = this.availableResources[0];
+        }
       }
     }
 
-    // 3. Fallback: single resource or unique HLS resource
-    const hlsResources = this.availableResources.filter((r) => r.isHls);
-    if (hlsResources.length === 1 && hlsResources[0]) {
-      tracked.resource = hlsResources[0];
-      this.prefetchVariants(tracked);
+    if (!bestMatch) {
+      tracked.resource = undefined;
       return;
     }
-    const single = this.availableResources[0];
-    if (this.availableResources.length === 1 && single) {
-      tracked.resource = single;
-      if (single.isHls) this.prefetchVariants(tracked);
+
+    const changedUrl = tracked.resource?.url !== bestMatch.url;
+    tracked.resource = bestMatch;
+    if (changedUrl) {
+      tracked.variants = undefined;
+      tracked.variantUri = undefined;
+      tracked.loadingVariants = false;
+      if (bestMatch.isHls) {
+        this.prefetchVariants(tracked);
+      }
     }
   }
   private prefetchVariants(tracked: TrackedPlayer) {
@@ -780,12 +814,12 @@ export class MediaBarManager {
       if (!res) return 'VIDEO';
       if (res.isHls) return 'HLS';
       const ext = res.filename?.split('.').pop()?.toUpperCase();
-      if (ext && ext.length <= 4 && /^[A-Z0-9]+$/.test(ext)) {
+      if (ext && isKnownMediaExtension(ext) && ext.length <= 4 && /^[A-Z0-9]+$/.test(ext)) {
         return ext;
       }
-      const mime = res.mimeType?.split('/').pop()?.toUpperCase();
-      if (mime && mime.length <= 4 && /^[A-Z0-9]+$/.test(mime)) {
-        return mime;
+      const shortMime = mimeShortLabel(res.mimeType).toUpperCase();
+      if (shortMime && shortMime.length <= 4 && /^[A-Z0-9]+$/.test(shortMime)) {
+        return shortMime;
       }
       return 'MP4';
     };
@@ -846,7 +880,9 @@ export class MediaBarManager {
           box-sizing: border-box;
           background: ${resource?.isHls ? 'rgba(168, 85, 247, 0.14)' : 'rgba(16, 185, 129, 0.14)'};
           color: ${resource?.isHls ? '#c084fc' : '#34d399'};
-          border: 1px solid ${resource?.isHls ? 'rgba(168, 85, 247, 0.28)' : 'rgba(16, 185, 129, 0.28)'};
+          border: 1px solid ${
+            resource?.isHls ? 'rgba(168, 85, 247, 0.28)' : 'rgba(16, 185, 129, 0.28)'
+          };
           font-size: 9.5px;
           font-weight: 700;
           line-height: 1;
@@ -1183,7 +1219,9 @@ export class MediaBarManager {
         if (duration > 0) {
           const estBytes = (v.bandwidth * duration) / 8;
           bw.textContent = formatBytes(estBytes);
-          bw.title = `预估大小: ${formatBytes(estBytes)} (码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps)`;
+          bw.title = `预估大小: ${formatBytes(estBytes)} (码率: ${(v.bandwidth / 1e6).toFixed(
+            1,
+          )} Mbps)`;
         } else {
           bw.textContent = `${(v.bandwidth / 1e6).toFixed(1)} Mbps`;
           bw.title = `码率: ${(v.bandwidth / 1e6).toFixed(1)} Mbps`;

@@ -120,13 +120,13 @@ func looksLikePlaylist(rawURL, contentType string) bool {
 	return hlsPlaylistContentTypes[mime]
 }
 
-// inspectPlaylist 在探测阶段读一次清单，给出可选清晰度。它只读清单本身：
-// 分片长度要逐个问服务器，那要等清晰度选定之后才算得起（见 ResolveHLS）。
-func (m *Manager) inspectPlaylist(ctx context.Context, playlistURL string, creds credentials.RequestCredentials) (*HLSProbe, error) {
+// inspectPlaylist 在探测阶段读一次清单，返回可选清晰度与原始解析结果，供单变体时直接复用，
+// 避免同一个清单地址再发一次请求。
+func (m *Manager) inspectPlaylist(ctx context.Context, playlistURL string, creds credentials.RequestCredentials) (*HLSProbe, *hls.Fetcher, *hls.InspectResult, error) {
 	f := m.newHLSFetcher(creds)
 	res, err := hls.Inspect(ctx, f, playlistURL)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	return &HLSProbe{
 		IsHLS:          true,
@@ -135,7 +135,7 @@ func (m *Manager) inspectPlaylist(ctx context.Context, playlistURL string, creds
 		Options:        hls.VariantOptions(res.Variants),
 		DirectTransfer: f.UsedFallback(),
 		ProxyAddr:      f.SwitchedProxyAddr(),
-	}, nil
+	}, f, res, nil
 }
 
 // HLSVariantOptions 读取一份清单的可选清晰度，整理成带展示名的选项。
@@ -171,7 +171,10 @@ func (m *Manager) resolveHLS(ctx context.Context, playlistURL, variantURI string
 	if err != nil {
 		return nil, err
 	}
+	return m.resolveHLSFromInspect(ctx, f, playlistURL, res, variantURI)
+}
 
+func (m *Manager) resolveHLSFromInspect(ctx context.Context, f *hls.Fetcher, playlistURL string, res *hls.InspectResult, variantURI string) (*hls.Source, error) {
 	variant, err := pickVariant(res.Variants, variantURI)
 	if err != nil {
 		return nil, err
